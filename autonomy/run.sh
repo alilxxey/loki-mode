@@ -673,8 +673,8 @@ fi
 # Track worktree PIDs for cleanup (requires bash 4+ for associative arrays)
 # BASH_VERSION_MAJOR is defined at script startup
 if [ "$BASH_VERSION_MAJOR" -ge 4 ] 2>/dev/null; then
-    declare -A WORKTREE_PIDS
-    declare -A WORKTREE_PATHS
+    declare -A WORKTREE_PIDS=()
+    declare -A WORKTREE_PATHS=()
 else
     # Fallback: parallel mode will check and warn
     # shellcheck disable=SC2178
@@ -2584,7 +2584,10 @@ run_parallel_orchestrator() {
   "worktrees": {
 $(for stream in "${!WORKTREE_PATHS[@]}"; do
     local path="${WORKTREE_PATHS[$stream]}"
-    local pid="${WORKTREE_PIDS[$stream]:-null}"
+    local pid="null"
+    if [ -n "${WORKTREE_PIDS[$stream]+x}" ]; then
+        pid="${WORKTREE_PIDS[$stream]}"
+    fi
     local status="stopped"
     if [ "$pid" != "null" ] && kill -0 "$pid" 2>/dev/null; then
         status="running"
