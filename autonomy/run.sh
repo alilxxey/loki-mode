@@ -5119,7 +5119,7 @@ COMPOUND_SCRIPT
 enforce_static_analysis() {
     local loki_dir="${TARGET_DIR:-.}/.loki"
     local quality_dir="$loki_dir/quality"
-    mkdir -p "$quality_dir"
+    mkdir -p "$quality_dir" "$loki_dir/signals"
 
     local changed_files
     changed_files=$(git -C "${TARGET_DIR:-.}" diff --name-only HEAD~1 2>/dev/null || \
@@ -5262,7 +5262,7 @@ SAFEOF
 enforce_test_coverage() {
     local loki_dir="${TARGET_DIR:-.}/.loki"
     local quality_dir="$loki_dir/quality"
-    mkdir -p "$quality_dir"
+    mkdir -p "$quality_dir" "$loki_dir/signals"
 
     local min_coverage="${LOKI_MIN_COVERAGE:-80}"
     local test_passed=true

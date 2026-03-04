@@ -8576,8 +8576,16 @@ if count == 0:
             echo -e "${BOLD}Memory Search: $query${NC}"
             echo ""
 
+            # Use python3.12 for ML packages (3.14 lacks sentence-transformers)
+            local _search_py="python3"
+            if command -v /opt/homebrew/bin/python3.12 &>/dev/null; then
+                _search_py="/opt/homebrew/bin/python3.12"
+            elif command -v python3.12 &>/dev/null; then
+                _search_py="python3.12"
+            fi
+
             # Try vector search first, fall back to keyword
-            python3 << PYEOF
+            $_search_py << PYEOF
 import os, json, sys, glob
 
 query = """$query"""
@@ -9081,7 +9089,7 @@ except Exception as e:
                     # Build initial index if memory files exist
                     echo ""
                     echo -n "  Building vector indices... "
-                    python3 -c "
+                    $py_ml -c "
 try:
     import sys
     sys.path.insert(0, '.')
@@ -9104,7 +9112,13 @@ except Exception as e:
                     ;;
 
                 rebuild)
-                    python3 -c "
+                    local py_rb="python3"
+                    if command -v /opt/homebrew/bin/python3.12 &>/dev/null; then
+                        py_rb="/opt/homebrew/bin/python3.12"
+                    elif command -v python3.12 &>/dev/null; then
+                        py_rb="python3.12"
+                    fi
+                    $py_rb -c "
 try:
     import sys
     sys.path.insert(0, '.')
