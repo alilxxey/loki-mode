@@ -428,6 +428,9 @@ show_help() {
     echo "  doctor [--json]  Check system prerequisites and skill symlinks"
     echo "  setup-skill      Create skill symlinks for all providers"
     echo "  watchdog [cmd]   Process health monitoring (status|help)"
+    echo "  telemetry [cmd]  OpenTelemetry management (status|enable|disable)"
+    echo "  worktree [cmd]   Parallel worktree management (list|merge|clean|status)"
+    echo "  agent [cmd]      Agent type dispatch (list|info|run|start|review)"
     echo "  remote [PRD]     Start remote session (connect from phone/browser, Claude Pro/Max)"
     echo "  version          Show version"
     echo "  help             Show this help"
@@ -1633,7 +1636,7 @@ cmd_provider() {
 
     case "$subcommand" in
         show|current)
-            cmd_provider_show
+            cmd_provider_show "$@"
             ;;
         set)
             cmd_provider_set "$@"
@@ -4596,6 +4599,48 @@ cmd_doctor() {
             warn_count=$((warn_count + 1))
         fi
     done
+    echo ""
+
+    echo -e "${CYAN}Integrations:${NC}"
+    # MCP SDK check
+    if python3 -c "import mcp" 2>/dev/null; then
+        echo -e "  ${GREEN}PASS${NC}  MCP SDK (Python)"
+        pass_count=$((pass_count + 1))
+    else
+        echo -e "  ${YELLOW}WARN${NC}  MCP SDK - not installed (pip3 install mcp)"
+        warn_count=$((warn_count + 1))
+    fi
+    # Vector search dependencies
+    if python3 -c "import numpy" 2>/dev/null; then
+        echo -e "  ${GREEN}PASS${NC}  numpy (vector search)"
+        pass_count=$((pass_count + 1))
+    else
+        echo -e "  ${YELLOW}WARN${NC}  numpy - not installed (pip3 install numpy)"
+        warn_count=$((warn_count + 1))
+    fi
+    if python3 -c "import sentence_transformers" 2>/dev/null; then
+        echo -e "  ${GREEN}PASS${NC}  sentence-transformers (embeddings)"
+        pass_count=$((pass_count + 1))
+    else
+        echo -e "  ${YELLOW}WARN${NC}  sentence-transformers - not installed (pip3 install sentence-transformers)"
+        warn_count=$((warn_count + 1))
+    fi
+    # ChromaDB check
+    if curl -sf http://localhost:8100/api/v2/heartbeat >/dev/null 2>&1; then
+        echo -e "  ${GREEN}PASS${NC}  ChromaDB server (port 8100)"
+        pass_count=$((pass_count + 1))
+    else
+        echo -e "  ${YELLOW}WARN${NC}  ChromaDB - not running (docker start loki-chroma)"
+        warn_count=$((warn_count + 1))
+    fi
+    # OTEL status
+    if [ -n "${LOKI_OTEL_ENDPOINT:-}" ]; then
+        echo -e "  ${GREEN}PASS${NC}  OTEL endpoint: $LOKI_OTEL_ENDPOINT"
+        pass_count=$((pass_count + 1))
+    else
+        echo -e "  ${YELLOW}WARN${NC}  OTEL - not configured (set LOKI_OTEL_ENDPOINT)"
+        warn_count=$((warn_count + 1))
+    fi
     echo ""
 
     echo -e "${CYAN}System:${NC}"
@@ -7657,6 +7702,12 @@ main() {
         cluster)
             cmd_cluster "$@"
             ;;
+        worktree|wt)
+            cmd_worktree "$@"
+            ;;
+        agent)
+            cmd_agent "$@"
+            ;;
         state)
             cmd_state "$@"
             ;;
@@ -7665,6 +7716,9 @@ main() {
             ;;
         syslog)
             cmd_syslog "$@"
+            ;;
+        telemetry|otel)
+            cmd_telemetry "$@"
             ;;
         remote|rc)
             cmd_remote "$@"
@@ -7682,6 +7736,164 @@ main() {
             echo -e "${RED}Unknown command: $command${NC}"
             echo "Run 'loki help' for usage."
             exit 1
+            ;;
+    esac
+}
+
+# Worktree management (v6.7.0)
+cmd_worktree() {
+    local subcommand="${1:-list}"
+    shift 2>/dev/null || true
+
+    case "$subcommand" in
+        list)
+            echo -e "${BOLD}Worktree Status${NC}"
+            echo ""
+
+            # List git worktrees
+            local worktrees
+            worktrees=$(git worktree list --porcelain 2>/dev/null)
+            if [ -z "$worktrees" ]; then
+                echo "  No active worktrees"
+                return 0
+            fi
+
+            local count=0
+            local current_wt=""
+            while IFS= read -r line; do
+                case "$line" in
+                    "worktree "*)
+                        current_wt="${line#worktree }"
+                        ;;
+                    "branch "*)
+                        local branch="${line#branch refs/heads/}"
+                        local status="running"
+                        local stream_name=""
+
+                        # Check for merge signal
+                        if [[ "$branch" == loki-parallel-* ]]; then
+                            stream_name="${branch#loki-parallel-}"
+                            if [ -f ".loki/signals/MERGE_REQUESTED_${stream_name}" ]; then
+                                status="merge-ready"
+                            elif [ -f ".loki/signals/WORKTREE_FAILED_${stream_name}" ]; then
+                                status="failed"
+                            fi
+                        fi
+
+                        # Skip main worktree
+                        if [ "$current_wt" != "$(git rev-parse --show-toplevel 2>/dev/null)" ]; then
+                            case "$status" in
+                                merge-ready) echo -e "  ${GREEN}[merge-ready]${NC} $branch  ${DIM}$current_wt${NC}" ;;
+                                failed)      echo -e "  ${RED}[failed]${NC}      $branch  ${DIM}$current_wt${NC}" ;;
+                                *)           echo -e "  ${CYAN}[active]${NC}      $branch  ${DIM}$current_wt${NC}" ;;
+                            esac
+                            count=$((count + 1))
+                        fi
+                        current_wt=""
+                        ;;
+                esac
+            done <<< "$worktrees"
+
+            if [ "$count" -eq 0 ]; then
+                echo "  No parallel worktrees (only main)"
+            fi
+            echo ""
+            echo "  Total: $count worktree(s)"
+            ;;
+
+        merge)
+            local name="${1:-}"
+            if [ -z "$name" ]; then
+                echo -e "${RED}Usage: loki worktree merge <name>${NC}"
+                return 1
+            fi
+
+            echo -e "${BOLD}Merging worktree: $name${NC}"
+            local signal_file=".loki/signals/MERGE_REQUESTED_${name}"
+            if [ ! -f "$signal_file" ]; then
+                echo -e "${RED}No merge signal found for: $name${NC}"
+                echo "Use 'loki worktree list' to see available worktrees."
+                return 1
+            fi
+
+            local branch
+            branch=$(python3 -c "import json; print(json.load(open('$signal_file'))['branch'])" 2>/dev/null)
+            local worktree_path
+            worktree_path=$(python3 -c "import json; print(json.load(open('$signal_file'))['worktree'])" 2>/dev/null)
+
+            if git merge --no-ff "$branch" -m "merge($name): auto-merge from parallel worktree"; then
+                echo -e "${GREEN}Merge successful${NC}"
+                rm -f "$signal_file"
+                if [ -n "$worktree_path" ] && [ -d "$worktree_path" ]; then
+                    git worktree remove "$worktree_path" --force 2>/dev/null || true
+                    git branch -d "$branch" 2>/dev/null || true
+                fi
+            else
+                echo -e "${RED}Merge conflict - resolve manually${NC}"
+                git merge --abort 2>/dev/null || true
+                return 1
+            fi
+            ;;
+
+        clean)
+            echo -e "${BOLD}Cleaning all worktrees...${NC}"
+            local removed=0
+            git worktree list --porcelain 2>/dev/null | grep "^worktree " | while read -r line; do
+                local wt="${line#worktree }"
+                if [ "$wt" != "$(git rev-parse --show-toplevel 2>/dev/null)" ]; then
+                    echo "  Removing: $wt"
+                    git worktree remove "$wt" --force 2>/dev/null || true
+                    removed=$((removed + 1))
+                fi
+            done
+            rm -f .loki/signals/MERGE_REQUESTED_* .loki/signals/WORKTREE_FAILED_* 2>/dev/null || true
+            echo -e "${GREEN}Cleanup complete${NC}"
+            ;;
+
+        status)
+            echo -e "${BOLD}Parallel Orchestrator Status${NC}"
+            echo ""
+
+            local merge_ready=0
+            local failed=0
+            local active=0
+
+            for f in .loki/signals/MERGE_REQUESTED_*; do
+                [ -f "$f" ] && merge_ready=$((merge_ready + 1))
+            done
+            for f in .loki/signals/WORKTREE_FAILED_*; do
+                [ -f "$f" ] && failed=$((failed + 1))
+            done
+
+            local total_wt
+            total_wt=$(git worktree list 2>/dev/null | wc -l | tr -d ' ')
+            total_wt=$((total_wt - 1))  # Exclude main
+            [ "$total_wt" -lt 0 ] && total_wt=0
+            active=$((total_wt - merge_ready - failed))
+            [ "$active" -lt 0 ] && active=0
+
+            echo "  Active worktrees:  $active"
+            echo "  Merge-ready:       $merge_ready"
+            echo "  Failed:            $failed"
+            echo "  Total:             $total_wt"
+            ;;
+
+        --help|-h|help)
+            echo -e "${BOLD}loki worktree${NC} - Manage parallel worktrees (v6.7.0)"
+            echo ""
+            echo "Usage: loki worktree <command>"
+            echo ""
+            echo "Commands:"
+            echo "  list       List active worktrees with status"
+            echo "  merge NAME Merge a completed worktree back"
+            echo "  clean      Remove all worktrees"
+            echo "  status     Show parallel orchestrator state"
+            echo ""
+            ;;
+        *)
+            echo -e "${RED}Unknown worktree command: $subcommand${NC}"
+            echo "Run 'loki worktree help' for usage."
+            return 1
             ;;
     esac
 }
@@ -7967,6 +8179,126 @@ print()
             cmd_audit scan "$@"
             return
             ;;
+        lint)
+            echo -e "${BOLD}Running static analysis...${NC}"
+            echo ""
+            local findings=0
+            local target="${2:-.}"
+
+            # JavaScript/TypeScript
+            if [ -f "$target/package.json" ]; then
+                echo -e "${CYAN}JavaScript/TypeScript:${NC}"
+                local js_files
+                js_files=$(find "$target" -name "*.js" -o -name "*.ts" -o -name "*.jsx" -o -name "*.tsx" | grep -v node_modules | grep -v dist | head -50)
+                if [ -n "$js_files" ]; then
+                    if [ -f "$target/.eslintrc.js" ] || [ -f "$target/.eslintrc.json" ] || [ -f "$target/.eslintrc.yml" ] || [ -f "$target/eslint.config.js" ] || [ -f "$target/eslint.config.mjs" ]; then
+                        npx eslint $js_files 2>&1 | head -50
+                        [ ${PIPESTATUS[0]} -ne 0 ] && findings=$((findings + 1))
+                    else
+                        echo "  No ESLint config found - running syntax check"
+                        for f in $js_files; do
+                            node --check "$f" 2>&1 || findings=$((findings + 1))
+                        done
+                    fi
+                fi
+            fi
+
+            # Python
+            if [ -f "$target/setup.py" ] || [ -f "$target/pyproject.toml" ] || [ -f "$target/requirements.txt" ]; then
+                echo -e "${CYAN}Python:${NC}"
+                local py_files
+                py_files=$(find "$target" -name "*.py" | grep -v __pycache__ | grep -v .venv | grep -v venv | head -50)
+                if [ -n "$py_files" ]; then
+                    if command -v ruff &>/dev/null; then
+                        ruff check $py_files 2>&1 | head -50
+                        [ ${PIPESTATUS[0]} -ne 0 ] && findings=$((findings + 1))
+                    else
+                        echo "  ruff not available - running py_compile"
+                        for f in $py_files; do
+                            python3 -m py_compile "$f" 2>&1 || findings=$((findings + 1))
+                        done
+                    fi
+                fi
+            fi
+
+            # Shell scripts
+            local sh_files
+            sh_files=$(find "$target" -name "*.sh" | grep -v node_modules | head -20)
+            if [ -n "$sh_files" ]; then
+                echo -e "${CYAN}Shell:${NC}"
+                if command -v shellcheck &>/dev/null; then
+                    shellcheck $sh_files 2>&1 | head -50
+                    [ ${PIPESTATUS[0]} -ne 0 ] && findings=$((findings + 1))
+                else
+                    echo "  shellcheck not available - running bash -n"
+                    for f in $sh_files; do
+                        bash -n "$f" 2>&1 || findings=$((findings + 1))
+                    done
+                fi
+            fi
+
+            echo ""
+            if [ "$findings" -gt 0 ]; then
+                echo -e "${RED}Static analysis found issues ($findings checks failed)${NC}"
+                return 1
+            else
+                echo -e "${GREEN}Static analysis passed${NC}"
+                return 0
+            fi
+            ;;
+
+        test)
+            echo -e "${BOLD}Running test coverage check...${NC}"
+            echo ""
+            local target="${2:-.}"
+            local min_coverage="${LOKI_MIN_COVERAGE:-80}"
+            local test_failed=0
+
+            # JavaScript/TypeScript (jest/vitest)
+            if [ -f "$target/package.json" ]; then
+                local test_cmd=""
+                if grep -q '"vitest"' "$target/package.json" 2>/dev/null; then
+                    test_cmd="npx vitest run --coverage"
+                elif grep -q '"jest"' "$target/package.json" 2>/dev/null; then
+                    test_cmd="npx jest --coverage --passWithNoTests"
+                fi
+                if [ -n "$test_cmd" ]; then
+                    echo -e "${CYAN}Running: $test_cmd${NC}"
+                    (cd "$target" && eval "$test_cmd") 2>&1
+                    [ $? -ne 0 ] && test_failed=1
+                fi
+            fi
+
+            # Python (pytest)
+            if [ -f "$target/setup.py" ] || [ -f "$target/pyproject.toml" ]; then
+                if command -v pytest &>/dev/null; then
+                    echo -e "${CYAN}Running: pytest --cov${NC}"
+                    (cd "$target" && pytest --cov 2>&1) || test_failed=1
+                fi
+            fi
+
+            # Go
+            if [ -f "$target/go.mod" ]; then
+                echo -e "${CYAN}Running: go test -cover${NC}"
+                (cd "$target" && go test -cover ./... 2>&1) || test_failed=1
+            fi
+
+            # Rust
+            if [ -f "$target/Cargo.toml" ]; then
+                echo -e "${CYAN}Running: cargo test${NC}"
+                (cd "$target" && cargo test 2>&1) || test_failed=1
+            fi
+
+            echo ""
+            if [ "$test_failed" -ne 0 ]; then
+                echo -e "${RED}Test coverage gate FAILED${NC}"
+                return 1
+            else
+                echo -e "${GREEN}Tests passed (min coverage: ${min_coverage}%)${NC}"
+                return 0
+            fi
+            ;;
+
         --help|-h|help)
             echo -e "${BOLD}loki audit${NC} - Agent audit log and quality scanning"
             echo ""
@@ -7976,6 +8308,8 @@ print()
             echo "  log [N]     Show last N audit log entries (default: 50)"
             echo "  count       Count actions by type"
             echo "  scan        Run quality scan against dashboard API"
+            echo "  lint        Run static analysis on project files"
+            echo "  test        Run test coverage check"
             echo "  help        Show this help"
             echo ""
             echo "Quality Scan Options (loki audit scan):"
@@ -8227,33 +8561,97 @@ if count == 0:
             local query="${2:-}"
             if [ -z "$query" ]; then
                 echo -e "${RED}Usage: loki memory search <query>${NC}"
-                exit 1
+                return 1
             fi
 
-            echo -e "${BOLD}Search Results for: $query${NC}"
-            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo -e "${BOLD}Memory Search: $query${NC}"
+            echo ""
 
-            LOKI_SEARCH_QUERY="$query" LOKI_LEARNINGS_DIR="$learnings_dir" python3 -c "
-import json, os
+            # Try vector search first, fall back to keyword
+            python3 << PYEOF
+import os, json, sys, glob
 
-learnings_dir = os.environ['LOKI_LEARNINGS_DIR']
-query = os.environ['LOKI_SEARCH_QUERY'].lower()
+query = """$query"""
+results = []
 
-for filename in ['patterns.jsonl', 'mistakes.jsonl', 'successes.jsonl']:
-    filepath = os.path.join(learnings_dir, filename)
-    if not os.path.exists(filepath):
+# Keyword search across all memory files
+memory_dirs = [
+    '.loki/memory/episodic',
+    '.loki/memory/semantic',
+    '.loki/memory/skills',
+    '.loki/memory/handoffs',
+]
+
+for mdir in memory_dirs:
+    if not os.path.isdir(mdir):
         continue
+    for fpath in glob.glob(os.path.join(mdir, '*.json')):
+        try:
+            with open(fpath) as f:
+                data = json.load(f)
+            text = json.dumps(data).lower()
+            if query.lower() in text:
+                # Score by number of matches
+                score = text.count(query.lower())
+                title = data.get('title', data.get('task_id', data.get('name', os.path.basename(fpath))))
+                category = os.path.basename(mdir)
+                results.append((score, category, title, fpath))
+        except Exception:
+            continue
 
-    category = filename.replace('.jsonl', '')
-    with open(filepath, 'r') as f:
-        for line in f:
-            try:
-                e = json.loads(line)
-                desc = e.get('description', '').lower()
-                if query in desc:
-                    print(f\"[{category}] [{e.get('project', 'unknown')}] {e['description'][:80]}...\")
-            except: pass
-" 2>/dev/null
+# Also search markdown files
+for mdir in ['.loki/memory', '.loki']:
+    if not os.path.isdir(mdir):
+        continue
+    for fpath in glob.glob(os.path.join(mdir, '*.md')):
+        try:
+            with open(fpath) as f:
+                text = f.read().lower()
+            if query.lower() in text:
+                score = text.count(query.lower())
+                title = os.path.basename(fpath)
+                results.append((score, 'docs', title, fpath))
+        except Exception:
+            continue
+
+# Try vector search if available
+vector_results = []
+try:
+    sys.path.insert(0, '.')
+    from memory.retrieval import MemoryRetrieval
+    from memory.storage import MemoryStorage
+    storage = MemoryStorage('.loki/memory')
+    retriever = MemoryRetrieval(storage)
+    vr = retriever.search(query, top_k=5)
+    for item in vr:
+        vector_results.append(item)
+    if vector_results:
+        print("  [Vector Search Results]")
+        for item in vector_results[:5]:
+            if isinstance(item, dict):
+                print(f"    {item.get('title', item.get('id', '?'))}: {item.get('summary', '')[:80]}")
+            else:
+                print(f"    {str(item)[:80]}")
+        print()
+except ImportError:
+    pass  # Vector search not available
+except Exception:
+    pass
+
+# Show keyword results
+if results:
+    results.sort(key=lambda x: -x[0])
+    print("  [Keyword Search Results]")
+    for score, category, title, fpath in results[:10]:
+        print(f"    [{category}] {title}  ({score} matches)")
+        print(f"           {fpath}")
+    print()
+    print(f"  Found: {len(results)} result(s)")
+else:
+    if not vector_results:
+        print("  No results found for: " + query)
+        print("  Tip: Try broader search terms")
+PYEOF
             ;;
 
         clear)
@@ -8611,10 +9009,74 @@ except Exception as e:
             ;;
 
         vectors)
-            # Manage vector indices
-            if [ "${2:-}" = "rebuild" ]; then
-                python3 -c "
+            local vec_cmd="${2:-stats}"
+            case "$vec_cmd" in
+                setup)
+                    echo -e "${BOLD}Vector Search Setup${NC}"
+                    echo ""
+
+                    # Check/install numpy
+                    echo -n "  Checking numpy... "
+                    if python3 -c "import numpy" 2>/dev/null; then
+                        echo -e "${GREEN}installed${NC}"
+                    else
+                        echo -n "installing... "
+                        if pip3 install numpy 2>/dev/null; then
+                            echo -e "${GREEN}done${NC}"
+                        else
+                            echo -e "${RED}failed${NC}"
+                            echo "    Try: pip3 install numpy"
+                        fi
+                    fi
+
+                    # Check/install sentence-transformers
+                    echo -n "  Checking sentence-transformers... "
+                    if python3 -c "import sentence_transformers" 2>/dev/null; then
+                        echo -e "${GREEN}installed${NC}"
+                    else
+                        echo -n "installing (this may take a while)... "
+                        if pip3 install sentence-transformers 2>/dev/null; then
+                            echo -e "${GREEN}done${NC}"
+                        else
+                            echo -e "${RED}failed${NC}"
+                            echo "    Try: pip3 install sentence-transformers"
+                        fi
+                    fi
+
+                    # Create vector directory
+                    mkdir -p .loki/memory/vectors
+                    echo -e "  Vector directory: ${GREEN}.loki/memory/vectors/${NC}"
+
+                    # Build initial index if memory files exist
+                    echo ""
+                    echo -n "  Building vector indices... "
+                    python3 -c "
 try:
+    import sys
+    sys.path.insert(0, '.')
+    from memory.retrieval import MemoryRetrieval
+    from memory.storage import MemoryStorage
+    storage = MemoryStorage('.loki/memory')
+    retriever = MemoryRetrieval(storage)
+    retriever.build_indices()
+    retriever.save_indices()
+    print('done')
+except ImportError as e:
+    print(f'skipped (missing: {e})')
+except Exception as e:
+    print(f'error: {e}')
+" 2>/dev/null || echo "skipped"
+
+                    echo ""
+                    echo -e "${GREEN}Vector search setup complete${NC}"
+                    echo "Run 'loki memory search <query>' to search."
+                    ;;
+
+                rebuild)
+                    python3 -c "
+try:
+    import sys
+    sys.path.insert(0, '.')
     from memory.retrieval import MemoryRetrieval
     from memory.storage import MemoryStorage
     storage = MemoryStorage('.loki/memory')
@@ -8627,19 +9089,23 @@ except ImportError as e:
 except Exception as e:
     print(f'Error: {e}')
 " 2>/dev/null
-            else
-                echo "Vector index stats:"
-                if ls -1 .loki/memory/vectors/*.npz 2>/dev/null | head -1 >/dev/null 2>&1; then
-                    for f in .loki/memory/vectors/*.npz; do
-                        if [ -f "$f" ]; then
-                            count=$(python3 -c "import numpy as np; d=np.load('$f'); print(len(d['ids']))" 2>/dev/null || echo "error")
-                            echo "  $(basename "$f"): $count vectors"
-                        fi
-                    done
-                else
-                    echo "  No vector indices found"
-                fi
-            fi
+                    ;;
+
+                stats|*)
+                    echo "Vector index stats:"
+                    if ls -1 .loki/memory/vectors/*.npz 2>/dev/null | head -1 >/dev/null 2>&1; then
+                        for f in .loki/memory/vectors/*.npz; do
+                            if [ -f "$f" ]; then
+                                count=$(python3 -c "import numpy as np; d=np.load('$f'); print(len(d['ids']))" 2>/dev/null || echo "error")
+                                echo "  $(basename "$f"): $count vectors"
+                            fi
+                        done
+                    else
+                        echo "  No vector indices found"
+                        echo "  Run 'loki memory vectors setup' to initialize"
+                    fi
+                    ;;
+            esac
             ;;
 
         namespace|ns)
@@ -10630,6 +11096,113 @@ for line in sys.stdin:
     esac
 }
 
+# Telemetry management (v6.7.0)
+cmd_telemetry() {
+    local subcommand="${1:-status}"
+    shift 2>/dev/null || true
+
+    case "$subcommand" in
+        status)
+            echo -e "${BOLD}Telemetry Status${NC}"
+            echo ""
+
+            local endpoint="${LOKI_OTEL_ENDPOINT:-}"
+            if [ -n "$endpoint" ]; then
+                echo -e "  Endpoint:  ${GREEN}$endpoint${NC}"
+            else
+                echo -e "  Endpoint:  ${YELLOW}not configured${NC}"
+            fi
+
+            # Check SDK mode
+            local sdk_mode="unknown"
+            if command -v node &>/dev/null; then
+                sdk_mode=$(node -e "
+try {
+    require('@opentelemetry/sdk-trace-node');
+    console.log('real-sdk');
+} catch(_) {
+    console.log('custom-exporter');
+}
+" 2>/dev/null || echo "unavailable")
+            fi
+            echo -e "  SDK mode:  $sdk_mode"
+
+            # Check config file
+            local config_file=".loki/config.json"
+            if [ -f "$config_file" ]; then
+                local saved_endpoint
+                saved_endpoint=$(python3 -c "import json; print(json.load(open('$config_file')).get('otel_endpoint',''))" 2>/dev/null || echo "")
+                if [ -n "$saved_endpoint" ]; then
+                    echo -e "  Saved:     $saved_endpoint"
+                fi
+            fi
+            echo ""
+            ;;
+
+        enable)
+            local endpoint="${1:-http://localhost:4318}"
+            echo -e "${BOLD}Enabling telemetry${NC}"
+
+            # Save to config
+            mkdir -p .loki
+            local config_file=".loki/config.json"
+            if [ -f "$config_file" ]; then
+                python3 -c "
+import json
+with open('$config_file') as f:
+    config = json.load(f)
+config['otel_endpoint'] = '$endpoint'
+with open('$config_file', 'w') as f:
+    json.dump(config, f, indent=2)
+" 2>/dev/null
+            else
+                echo "{\"otel_endpoint\": \"$endpoint\"}" > "$config_file"
+            fi
+
+            echo -e "  Endpoint set to: ${GREEN}$endpoint${NC}"
+            echo ""
+            echo "  Set LOKI_OTEL_ENDPOINT=$endpoint in your shell for immediate use."
+            echo "  Or restart loki to pick up the saved config."
+            ;;
+
+        disable)
+            echo -e "${BOLD}Disabling telemetry${NC}"
+
+            local config_file=".loki/config.json"
+            if [ -f "$config_file" ]; then
+                python3 -c "
+import json
+with open('$config_file') as f:
+    config = json.load(f)
+config.pop('otel_endpoint', None)
+with open('$config_file', 'w') as f:
+    json.dump(config, f, indent=2)
+" 2>/dev/null
+            fi
+
+            echo -e "  Telemetry disabled"
+            echo "  Unset LOKI_OTEL_ENDPOINT in your shell for immediate effect."
+            ;;
+
+        --help|-h|help)
+            echo -e "${BOLD}loki telemetry${NC} - OpenTelemetry management (v6.7.0)"
+            echo ""
+            echo "Usage: loki telemetry <command>"
+            echo ""
+            echo "Commands:"
+            echo "  status              Show current telemetry config"
+            echo "  enable [endpoint]   Enable OTEL (default: http://localhost:4318)"
+            echo "  disable             Disable OTEL"
+            echo ""
+            ;;
+        *)
+            echo -e "${RED}Unknown telemetry command: $subcommand${NC}"
+            echo "Run 'loki telemetry help' for usage."
+            return 1
+            ;;
+    esac
+}
+
 # Remote Control - start a remote-controllable Claude session
 cmd_remote() {
     local rc_flags=()
@@ -10941,6 +11514,283 @@ cmd_completions() {
             echo "  eval \"\$(loki completions zsh)\" >> ~/.zshrc"
             echo ""
             exit 1
+            ;;
+    esac
+}
+
+# Agent type dispatch (v6.7.0)
+cmd_agent() {
+    local subcommand="${1:-list}"
+    shift 2>/dev/null || true
+
+    # Find agents/types.json relative to script location
+    local script_dir
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local types_file="${script_dir}/../agents/types.json"
+    if [ ! -f "$types_file" ]; then
+        # Try relative to current dir (development)
+        types_file="agents/types.json"
+    fi
+    if [ ! -f "$types_file" ]; then
+        echo -e "${RED}Error: agents/types.json not found${NC}"
+        echo "Expected at: ${script_dir}/../agents/types.json"
+        return 1
+    fi
+
+    case "$subcommand" in
+        list)
+            local filter_swarm="${1:-}"
+            echo -e "${BOLD}Agent Types${NC}"
+            echo ""
+            python3 << PYEOF
+import json, sys
+
+with open("$types_file") as f:
+    agents = json.load(f)
+
+filter_swarm = "$filter_swarm"
+if filter_swarm and filter_swarm.startswith("--swarm"):
+    # Handle --swarm=X or --swarm X
+    if "=" in filter_swarm:
+        filter_swarm = filter_swarm.split("=")[1]
+    else:
+        filter_swarm = "${2:-}"
+
+swarms = {}
+for a in agents:
+    s = a["swarm"]
+    if filter_swarm and s != filter_swarm:
+        continue
+    swarms.setdefault(s, []).append(a)
+
+total = 0
+for swarm_name in sorted(swarms.keys()):
+    print(f"  {swarm_name.upper()} SWARM:")
+    for a in swarms[swarm_name]:
+        caps = a.get("capabilities", "")
+        if len(caps) > 60:
+            caps = caps[:57] + "..."
+        print(f"    {a['type']:22s} {caps}")
+        total += 1
+    print()
+
+print(f"  Total: {total} agent type(s)")
+PYEOF
+            ;;
+
+        info)
+            local agent_type="${1:-}"
+            if [ -z "$agent_type" ]; then
+                echo -e "${RED}Usage: loki agent info <type>${NC}"
+                return 1
+            fi
+            python3 << PYEOF
+import json, sys
+
+with open("$types_file") as f:
+    agents = json.load(f)
+
+target = "$agent_type"
+found = None
+for a in agents:
+    if a["type"] == target:
+        found = a
+        break
+
+if not found:
+    print(f"Agent type not found: {target}")
+    print("Run 'loki agent list' to see all types.")
+    sys.exit(1)
+
+print(f"Type:         {found['type']}")
+print(f"Name:         {found['name']}")
+print(f"Swarm:        {found['swarm']}")
+print(f"Capabilities: {found['capabilities']}")
+print(f"Focus:        {', '.join(found.get('focus', []))}")
+print()
+print(f"Persona:")
+print(f"  {found['persona']}")
+PYEOF
+            ;;
+
+        run)
+            local agent_type="${1:-}"
+            local prompt="${2:-}"
+            if [ -z "$agent_type" ] || [ -z "$prompt" ]; then
+                echo -e "${RED}Usage: loki agent run <type> \"<prompt>\"${NC}"
+                return 1
+            fi
+
+            # Get persona from types.json
+            local persona
+            persona=$(python3 -c "
+import json
+with open('$types_file') as f:
+    agents = json.load(f)
+for a in agents:
+    if a['type'] == '$agent_type':
+        print(a['persona'])
+        break
+" 2>/dev/null)
+
+            if [ -z "$persona" ]; then
+                echo -e "${RED}Unknown agent type: $agent_type${NC}"
+                return 1
+            fi
+
+            local full_prompt="$persona $prompt"
+            echo -e "${BOLD}Running as: $agent_type${NC}"
+            echo -e "${DIM}Persona: ${persona:0:80}...${NC}"
+            echo ""
+
+            # Invoke current provider
+            local provider="${LOKI_PROVIDER:-claude}"
+            if [ -f ".loki/state/provider" ]; then
+                provider=$(cat ".loki/state/provider" 2>/dev/null)
+            fi
+
+            case "$provider" in
+                claude)
+                    claude -p "$full_prompt" 2>&1
+                    ;;
+                codex)
+                    codex exec --full-auto "$full_prompt" 2>&1
+                    ;;
+                gemini)
+                    gemini --approval-mode=yolo "$full_prompt" 2>&1
+                    ;;
+                cline)
+                    cline -y "$full_prompt" 2>&1
+                    ;;
+                aider)
+                    aider --message "$full_prompt" --yes-always --no-auto-commits < /dev/null 2>&1
+                    ;;
+                *)
+                    echo -e "${RED}Unknown provider: $provider${NC}"
+                    return 1
+                    ;;
+            esac
+            ;;
+
+        start)
+            local agent_type="${1:-}"
+            local prd="${2:-}"
+            if [ -z "$agent_type" ] || [ -z "$prd" ]; then
+                echo -e "${RED}Usage: loki agent start <type> \"<prompt>\" or loki agent start <type> <prd-file>${NC}"
+                return 1
+            fi
+
+            # Get persona
+            local persona
+            persona=$(python3 -c "
+import json
+with open('$types_file') as f:
+    agents = json.load(f)
+for a in agents:
+    if a['type'] == '$agent_type':
+        print(a['persona'])
+        break
+" 2>/dev/null)
+
+            if [ -z "$persona" ]; then
+                echo -e "${RED}Unknown agent type: $agent_type${NC}"
+                return 1
+            fi
+
+            echo -e "${BOLD}Starting autonomous session as: $agent_type${NC}"
+
+            # Set agent persona as env var for run.sh to pick up
+            export LOKI_AGENT_PERSONA="$persona"
+            export LOKI_AGENT_TYPE="$agent_type"
+
+            # Delegate to regular start
+            if [ -f "$prd" ]; then
+                cmd_start "$prd"
+            else
+                # Treat as inline prompt - create temp PRD
+                local tmp_prd
+                tmp_prd=$(mktemp /tmp/loki-agent-prd-XXXXXX.md)
+                echo "# Agent Task: $agent_type" > "$tmp_prd"
+                echo "" >> "$tmp_prd"
+                echo "$prd" >> "$tmp_prd"
+                cmd_start "$tmp_prd"
+                rm -f "$tmp_prd"
+            fi
+            ;;
+
+        review)
+            local agent_type="${1:-ops-security}"
+            echo -e "${BOLD}Code review as: $agent_type${NC}"
+
+            local persona
+            persona=$(python3 -c "
+import json
+with open('$types_file') as f:
+    agents = json.load(f)
+for a in agents:
+    if a['type'] == '$agent_type':
+        print(a['persona'])
+        break
+" 2>/dev/null)
+
+            if [ -z "$persona" ]; then
+                echo -e "${RED}Unknown agent type: $agent_type${NC}"
+                return 1
+            fi
+
+            local diff
+            diff=$(git diff HEAD~1 2>/dev/null || git diff --cached 2>/dev/null || echo "No changes to review")
+
+            local review_prompt="$persona
+
+Review the following code changes. Focus on your area of expertise.
+Provide findings as:
+- CRITICAL: Must fix before merge
+- HIGH: Should fix
+- MEDIUM: Improvement suggestion
+- LOW: Nitpick
+
+Changes:
+$diff"
+
+            local provider="${LOKI_PROVIDER:-claude}"
+            [ -f ".loki/state/provider" ] && provider=$(cat ".loki/state/provider" 2>/dev/null)
+
+            case "$provider" in
+                claude)  claude -p "$review_prompt" 2>&1 ;;
+                codex)   codex exec --full-auto "$review_prompt" 2>&1 ;;
+                gemini)  gemini --approval-mode=yolo "$review_prompt" 2>&1 ;;
+                cline)   cline -y "$review_prompt" 2>&1 ;;
+                *)       echo -e "${RED}Unknown provider: $provider${NC}"; return 1 ;;
+            esac
+            ;;
+
+        --help|-h|help)
+            echo -e "${BOLD}loki agent${NC} - Agent type dispatch (v6.7.0)"
+            echo ""
+            echo "Usage: loki agent <command> [args]"
+            echo ""
+            echo "Commands:"
+            echo "  list [--swarm NAME]        List all agent types (optionally filter by swarm)"
+            echo "  info <type>                Show agent type details"
+            echo "  run <type> \"<prompt>\"       Single-shot: run prompt with agent persona"
+            echo "  start <type> <prd|prompt>  Full autonomous loop with agent persona"
+            echo "  review [type]              Code review with agent persona (default: ops-security)"
+            echo "  help                       Show this help"
+            echo ""
+            echo "Examples:"
+            echo "  loki agent list"
+            echo "  loki agent list --swarm engineering"
+            echo "  loki agent info eng-frontend"
+            echo "  loki agent run eng-frontend \"Create a responsive navbar\""
+            echo "  loki agent start eng-backend ./api-prd.md"
+            echo "  loki agent review ops-security"
+            echo ""
+            ;;
+        *)
+            echo -e "${RED}Unknown agent command: $subcommand${NC}"
+            echo "Run 'loki agent help' for usage."
+            return 1
             ;;
     esac
 }

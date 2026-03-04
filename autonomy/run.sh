@@ -1410,7 +1410,7 @@ get_provider_tier_param() {
             ;;
         aider)
             # Aider uses single externally-configured model
-            echo "${LOKI_AIDER_MODEL:-claude-3.7-sonnet}"
+            echo "${LOKI_AIDER_MODEL:-claude-sonnet-4-5-20250929}"
             ;;
         *)
             echo "development"
@@ -2181,38 +2181,53 @@ spawn_worktree_session() {
 
     (
         cd "$worktree_path" || exit 1
+        _wt_exit=0
         # Provider-specific invocation for parallel sessions
         case "${PROVIDER_NAME:-claude}" in
             claude)
                 claude --dangerously-skip-permissions \
                     -p "Loki Mode: $task_prompt. Read .loki/CONTINUITY.md for context." \
-                    >> "$log_file" 2>&1
+                    >> "$log_file" 2>&1 || _wt_exit=$?
                 ;;
             codex)
                 codex exec --full-auto \
                     "Loki Mode: $task_prompt. Read .loki/CONTINUITY.md for context." \
-                    >> "$log_file" 2>&1
+                    >> "$log_file" 2>&1 || _wt_exit=$?
                 ;;
             gemini)
-                # Note: -p flag is DEPRECATED per gemini --help. Using positional prompt.
-                # Uses invoke_gemini helper for rate limit fallback to flash model
                 invoke_gemini "Loki Mode: $task_prompt. Read .loki/CONTINUITY.md for context." \
-                    >> "$log_file" 2>&1
+                    >> "$log_file" 2>&1 || _wt_exit=$?
                 ;;
             cline)
-                # Cline supports parallel instances
                 invoke_cline "Loki Mode: $task_prompt. Read .loki/CONTINUITY.md for context." \
-                    >> "$log_file" 2>&1
+                    >> "$log_file" 2>&1 || _wt_exit=$?
                 ;;
             aider)
-                # Aider has known issues with parallel - skip
                 log_warn "Aider does not support parallel sessions, skipping"
+                _wt_exit=1
                 ;;
             *)
                 log_error "Unknown provider: ${PROVIDER_NAME}"
-                return 1
+                _wt_exit=1
                 ;;
         esac
+
+        # Completion signaling (v6.7.0)
+        if [ $_wt_exit -eq 0 ]; then
+            # Commit any uncommitted work
+            git -C "$worktree_path" add -A 2>/dev/null
+            git -C "$worktree_path" commit -m "feat($stream_name): worktree work complete" 2>/dev/null || true
+            # Signal merge readiness to main orchestrator
+            mkdir -p "${TARGET_DIR:-.}/.loki/signals"
+            cat > "${TARGET_DIR:-.}/.loki/signals/MERGE_REQUESTED_${stream_name}" <<EOSIG
+{"stream":"$stream_name","branch":"$(git -C "$worktree_path" branch --show-current 2>/dev/null)","worktree":"$worktree_path","timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)","exit_code":$_wt_exit}
+EOSIG
+            echo "WORKTREE_COMPLETE: $stream_name" >> "$log_file"
+        else
+            mkdir -p "${TARGET_DIR:-.}/.loki/signals"
+            echo "{\"stream\":\"$stream_name\",\"status\":\"failed\",\"exit_code\":$_wt_exit,\"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" \
+                > "${TARGET_DIR:-.}/.loki/signals/WORKTREE_FAILED_${stream_name}"
+        fi
     ) &
 
     local pid=$!
@@ -2221,6 +2236,70 @@ spawn_worktree_session() {
 
     log_info "Session spawned: $stream_name (PID: $pid)"
     return 0
+}
+
+# Merge a completed worktree back to main branch (v6.7.0)
+# Usage: merge_worktree <stream_name>
+merge_worktree() {
+    local stream_name="$1"
+    local signal_file="${TARGET_DIR:-.}/.loki/signals/MERGE_REQUESTED_${stream_name}"
+
+    if [ ! -f "$signal_file" ]; then
+        log_error "No merge signal found for: $stream_name"
+        return 1
+    fi
+
+    local branch worktree_path
+    branch=$(python3 -c "import json; print(json.load(open('$signal_file'))['branch'])" 2>/dev/null)
+    worktree_path=$(python3 -c "import json; print(json.load(open('$signal_file'))['worktree'])" 2>/dev/null)
+
+    if [ -z "$branch" ]; then
+        log_error "Could not determine branch for: $stream_name"
+        return 1
+    fi
+
+    log_step "Merging worktree: $stream_name (branch: $branch)"
+
+    # Merge into current branch
+    local current_branch
+    current_branch=$(git -C "${TARGET_DIR:-.}" branch --show-current 2>/dev/null)
+
+    if git -C "${TARGET_DIR:-.}" merge --no-ff "$branch" -m "merge($stream_name): auto-merge from parallel worktree" 2>&1; then
+        log_info "Merge successful: $stream_name"
+        # Clean up signal and worktree
+        rm -f "$signal_file"
+        if [ -n "$worktree_path" ] && [ -d "$worktree_path" ]; then
+            git -C "${TARGET_DIR:-.}" worktree remove "$worktree_path" --force 2>/dev/null || true
+            git -C "${TARGET_DIR:-.}" branch -d "$branch" 2>/dev/null || true
+        fi
+        return 0
+    else
+        log_error "Merge conflict for $stream_name - manual resolution needed"
+        git -C "${TARGET_DIR:-.}" merge --abort 2>/dev/null || true
+        return 1
+    fi
+}
+
+# Check and process all pending merge signals (v6.7.0)
+process_pending_merges() {
+    local signals_dir="${TARGET_DIR:-.}/.loki/signals"
+    local merged=0
+    local failed=0
+
+    for signal_file in "$signals_dir"/MERGE_REQUESTED_*; do
+        [ -f "$signal_file" ] || continue
+        local stream_name
+        stream_name=$(basename "$signal_file" | sed 's/MERGE_REQUESTED_//')
+        if merge_worktree "$stream_name"; then
+            ((merged++))
+        else
+            ((failed++))
+        fi
+    done
+
+    if [ $merged -gt 0 ] || [ $failed -gt 0 ]; then
+        log_info "Merge results: $merged successful, $failed failed"
+    fi
 }
 
 # List all active worktrees
@@ -2908,7 +2987,7 @@ invoke_cline_capture() {
 invoke_aider() {
     local prompt="$1"
     shift
-    local model="${LOKI_AIDER_MODEL:-claude-3.7-sonnet}"
+    local model="${LOKI_AIDER_MODEL:-claude-sonnet-4-5-20250929}"
     local extra_flags="${LOKI_AIDER_FLAGS:-}"
     # shellcheck disable=SC2086
     # < /dev/null prevents aider from blocking on stdin in non-interactive mode
@@ -2921,7 +3000,7 @@ invoke_aider() {
 invoke_aider_capture() {
     local prompt="$1"
     shift
-    local model="${LOKI_AIDER_MODEL:-claude-3.7-sonnet}"
+    local model="${LOKI_AIDER_MODEL:-claude-sonnet-4-5-20250929}"
     local extra_flags="${LOKI_AIDER_FLAGS:-}"
     # shellcheck disable=SC2086
     aider --message "$prompt" --yes-always --no-auto-commits \
@@ -3446,7 +3525,7 @@ track_iteration_complete() {
     elif [ "${PROVIDER_NAME:-claude}" = "cline" ]; then
         model_tier="${LOKI_CLINE_MODEL:-sonnet}"
     elif [ "${PROVIDER_NAME:-claude}" = "aider" ]; then
-        model_tier="${LOKI_AIDER_MODEL:-claude-3.7-sonnet}"
+        model_tier="${LOKI_AIDER_MODEL:-claude-sonnet-4-5-20250929}"
     fi
     local phase="${LAST_KNOWN_PHASE:-}"
     [ -z "$phase" ] && phase=$(python3 -c "import json; print(json.load(open('.loki/state/orchestrator.json')).get('currentPhase', 'unknown'))" 2>/dev/null || echo "unknown")
@@ -5028,6 +5107,511 @@ if created > 0:
 else:
     print("No new solutions to compound (need 2+ related learnings per category)")
 COMPOUND_SCRIPT
+}
+
+# ============================================================================
+# Static Analysis Hard Gate (v6.7.0)
+# Detects project type, runs appropriate linter on changed files
+# Returns 1 on critical findings, stores results in .loki/quality/
+# ============================================================================
+
+enforce_static_analysis() {
+    local loki_dir="${TARGET_DIR:-.}/.loki"
+    local quality_dir="$loki_dir/quality"
+    mkdir -p "$quality_dir"
+
+    local changed_files
+    changed_files=$(git -C "${TARGET_DIR:-.}" diff --name-only HEAD~1 2>/dev/null || git -C "${TARGET_DIR:-.}" diff --name-only --cached 2>/dev/null || echo "")
+    if [ -z "$changed_files" ]; then
+        log_info "Static analysis: No changed files to analyze"
+        touch "$quality_dir/static-analysis.pass"
+        return 0
+    fi
+
+    log_header "STATIC ANALYSIS GATE"
+
+    local findings=0
+    local total_checked=0
+    local summary_parts=""
+    local target_dir="${TARGET_DIR:-.}"
+
+    # JavaScript/TypeScript
+    local js_files
+    js_files=$(echo "$changed_files" | grep -E '\.(js|ts|jsx|tsx)$' || true)
+    if [ -n "$js_files" ] && [ -f "$target_dir/package.json" ]; then
+        total_checked=$((total_checked + 1))
+        log_step "Checking JavaScript/TypeScript files..."
+        local abs_js_files=""
+        while IFS= read -r f; do
+            [ -f "$target_dir/$f" ] && abs_js_files="$abs_js_files $target_dir/$f"
+        done <<< "$js_files"
+        if [ -n "$abs_js_files" ]; then
+            if [ -f "$target_dir/.eslintrc.js" ] || [ -f "$target_dir/.eslintrc.json" ] || [ -f "$target_dir/.eslintrc.yml" ] || [ -f "$target_dir/eslint.config.js" ] || [ -f "$target_dir/eslint.config.mjs" ]; then
+                local eslint_out
+                eslint_out=$(cd "$target_dir" && npx eslint $abs_js_files 2>&1) || {
+                    findings=$((findings + 1))
+                    summary_parts="${summary_parts}ESLint errors found. "
+                    log_warn "ESLint found issues"
+                }
+            else
+                for f in $abs_js_files; do
+                    node --check "$f" 2>&1 || {
+                        findings=$((findings + 1))
+                        summary_parts="${summary_parts}JS syntax error in $(basename "$f"). "
+                    }
+                done
+            fi
+        fi
+    fi
+
+    # Python
+    local py_files
+    py_files=$(echo "$changed_files" | grep -E '\.py$' || true)
+    if [ -n "$py_files" ]; then
+        total_checked=$((total_checked + 1))
+        log_step "Checking Python files..."
+        local compile_failures=0
+        while IFS= read -r f; do
+            [ -f "$target_dir/$f" ] && {
+                python3 -m py_compile "$target_dir/$f" 2>&1 || compile_failures=$((compile_failures + 1))
+            }
+        done <<< "$py_files"
+        if [ $compile_failures -gt 0 ]; then
+            findings=$((findings + 1))
+            summary_parts="${summary_parts}${compile_failures} Python compile errors. "
+        fi
+        if command -v ruff &>/dev/null; then
+            local ruff_files=""
+            while IFS= read -r f; do
+                [ -f "$target_dir/$f" ] && ruff_files="$ruff_files $target_dir/$f"
+            done <<< "$py_files"
+            if [ -n "$ruff_files" ]; then
+                ruff check $ruff_files 2>&1 || {
+                    findings=$((findings + 1))
+                    summary_parts="${summary_parts}Ruff lint errors. "
+                }
+            fi
+        fi
+    fi
+
+    # Shell scripts
+    local sh_files
+    sh_files=$(echo "$changed_files" | grep -E '\.sh$' || true)
+    if [ -n "$sh_files" ]; then
+        total_checked=$((total_checked + 1))
+        log_step "Checking shell scripts..."
+        local sh_failures=0
+        while IFS= read -r f; do
+            [ -f "$target_dir/$f" ] && {
+                if command -v shellcheck &>/dev/null; then
+                    shellcheck "$target_dir/$f" 2>&1 || sh_failures=$((sh_failures + 1))
+                else
+                    bash -n "$target_dir/$f" 2>&1 || sh_failures=$((sh_failures + 1))
+                fi
+            }
+        done <<< "$sh_files"
+        if [ $sh_failures -gt 0 ]; then
+            findings=$((findings + 1))
+            summary_parts="${summary_parts}${sh_failures} shell script issues. "
+        fi
+    fi
+
+    # Go
+    local go_files
+    go_files=$(echo "$changed_files" | grep -E '\.go$' || true)
+    if [ -n "$go_files" ] && [ -f "$target_dir/go.mod" ]; then
+        total_checked=$((total_checked + 1))
+        log_step "Checking Go files..."
+        (cd "$target_dir" && go vet ./... 2>&1) || {
+            findings=$((findings + 1))
+            summary_parts="${summary_parts}Go vet errors. "
+        }
+    fi
+
+    # Rust
+    if echo "$changed_files" | grep -qE '\.rs$' && [ -f "$target_dir/Cargo.toml" ]; then
+        total_checked=$((total_checked + 1))
+        log_step "Checking Rust files..."
+        (cd "$target_dir" && cargo check 2>&1) || {
+            findings=$((findings + 1))
+            summary_parts="${summary_parts}Cargo check errors. "
+        }
+    fi
+
+    # Store results
+    local result_status="pass"
+    [ $findings -gt 0 ] && result_status="fail"
+    python3 -c "
+import json
+result = {
+    'status': '$result_status',
+    'findings_count': $findings,
+    'checks_run': $total_checked,
+    'summary': '${summary_parts:-All checks passed.}',
+    'changed_files': $(echo "$changed_files" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read().strip().split('\n')))" 2>/dev/null || echo '[]')
+}
+with open('$quality_dir/static-analysis.json', 'w') as f:
+    json.dump(result, f, indent=2)
+" 2>/dev/null || true
+
+    if [ $findings -gt 0 ]; then
+        log_warn "Static analysis FAILED: $findings issue(s) found"
+        touch "$loki_dir/signals/STATIC_ANALYSIS_FAILED"
+        rm -f "$quality_dir/static-analysis.pass"
+        return 1
+    else
+        log_info "Static analysis passed ($total_checked check types run)"
+        touch "$quality_dir/static-analysis.pass"
+        rm -f "$loki_dir/signals/STATIC_ANALYSIS_FAILED"
+        return 0
+    fi
+}
+
+# ============================================================================
+# Test Coverage Hard Gate (v6.7.0)
+# Detects test runner, runs tests with coverage, enforces minimum threshold
+# Returns 1 if tests fail, stores results in .loki/quality/
+# ============================================================================
+
+enforce_test_coverage() {
+    local loki_dir="${TARGET_DIR:-.}/.loki"
+    local quality_dir="$loki_dir/quality"
+    mkdir -p "$quality_dir"
+
+    local target_dir="${TARGET_DIR:-.}"
+    local min_coverage="${LOKI_MIN_COVERAGE:-80}"
+    local test_failed=0
+    local tests_run=0
+    local summary_parts=""
+
+    log_header "TEST COVERAGE GATE"
+
+    # JavaScript/TypeScript (jest/vitest)
+    if [ -f "$target_dir/package.json" ]; then
+        local test_cmd=""
+        if grep -q '"vitest"' "$target_dir/package.json" 2>/dev/null; then
+            test_cmd="npx vitest run --coverage"
+        elif grep -q '"jest"' "$target_dir/package.json" 2>/dev/null; then
+            test_cmd="npx jest --coverage --passWithNoTests"
+        elif grep -q '"test"' "$target_dir/package.json" 2>/dev/null; then
+            test_cmd="npm test"
+        fi
+        if [ -n "$test_cmd" ]; then
+            tests_run=$((tests_run + 1))
+            log_step "Running: $test_cmd"
+            (cd "$target_dir" && eval "$test_cmd" 2>&1) || {
+                test_failed=$((test_failed + 1))
+                summary_parts="${summary_parts}JS/TS tests failed. "
+            }
+        fi
+    fi
+
+    # Python (pytest)
+    if [ -f "$target_dir/setup.py" ] || [ -f "$target_dir/pyproject.toml" ] || [ -f "$target_dir/requirements.txt" ]; then
+        if command -v pytest &>/dev/null || [ -f "$target_dir/pytest.ini" ] || [ -f "$target_dir/setup.cfg" ]; then
+            tests_run=$((tests_run + 1))
+            log_step "Running: pytest"
+            (cd "$target_dir" && python3 -m pytest --tb=short 2>&1) || {
+                test_failed=$((test_failed + 1))
+                summary_parts="${summary_parts}Python tests failed. "
+            }
+        fi
+    fi
+
+    # Go
+    if [ -f "$target_dir/go.mod" ]; then
+        tests_run=$((tests_run + 1))
+        log_step "Running: go test -cover"
+        (cd "$target_dir" && go test -cover ./... 2>&1) || {
+            test_failed=$((test_failed + 1))
+            summary_parts="${summary_parts}Go tests failed. "
+        }
+    fi
+
+    # Rust
+    if [ -f "$target_dir/Cargo.toml" ]; then
+        tests_run=$((tests_run + 1))
+        log_step "Running: cargo test"
+        (cd "$target_dir" && cargo test 2>&1) || {
+            test_failed=$((test_failed + 1))
+            summary_parts="${summary_parts}Rust tests failed. "
+        }
+    fi
+
+    if [ $tests_run -eq 0 ]; then
+        log_info "Test coverage: No test runners detected, skipping"
+        touch "$quality_dir/unit-tests.pass"
+        python3 -c "
+import json
+with open('$quality_dir/test-results.json', 'w') as f:
+    json.dump({'status': 'skipped', 'summary': 'No test runners detected', 'tests_run': 0}, f, indent=2)
+" 2>/dev/null || true
+        return 0
+    fi
+
+    # Store results
+    local result_status="pass"
+    [ $test_failed -gt 0 ] && result_status="fail"
+    python3 -c "
+import json
+result = {
+    'status': '$result_status',
+    'test_suites_run': $tests_run,
+    'test_suites_failed': $test_failed,
+    'min_coverage': $min_coverage,
+    'summary': '${summary_parts:-All $tests_run test suite(s) passed.}'
+}
+with open('$quality_dir/test-results.json', 'w') as f:
+    json.dump(result, f, indent=2)
+" 2>/dev/null || true
+
+    if [ $test_failed -gt 0 ]; then
+        log_warn "Test coverage gate FAILED: $test_failed of $tests_run suite(s) failed"
+        rm -f "$quality_dir/unit-tests.pass"
+        return 1
+    else
+        log_info "Tests passed: $tests_run suite(s), min coverage: ${min_coverage}%"
+        touch "$quality_dir/unit-tests.pass"
+        return 0
+    fi
+}
+
+# ============================================================================
+# Hard Quality Gate: Static Analysis (v6.7.0)
+# Detects project type and runs appropriate linter on changed files
+# Results stored in .loki/quality/static-analysis.json
+# ============================================================================
+
+enforce_static_analysis() {
+    local loki_dir="${TARGET_DIR:-.}/.loki"
+    local quality_dir="$loki_dir/quality"
+    mkdir -p "$quality_dir"
+
+    local changed_files
+    changed_files=$(git -C "${TARGET_DIR:-.}" diff --name-only HEAD~1 2>/dev/null || \
+                    git -C "${TARGET_DIR:-.}" diff --name-only --cached 2>/dev/null || echo "")
+    if [ -z "$changed_files" ]; then
+        log_info "Static analysis: no changed files to check"
+        touch "$quality_dir/static-analysis.pass"
+        return 0
+    fi
+
+    local findings=0
+    local total_checked=0
+    local details=""
+
+    # JavaScript/TypeScript
+    local js_files
+    js_files=$(echo "$changed_files" | grep -E '\.(js|ts|jsx|tsx)$' || true)
+    if [ -n "$js_files" ]; then
+        local abs_files=""
+        for f in $js_files; do
+            [ -f "${TARGET_DIR:-.}/$f" ] && abs_files="$abs_files ${TARGET_DIR:-.}/$f"
+        done
+        if [ -n "$abs_files" ]; then
+            total_checked=$((total_checked + $(echo "$abs_files" | wc -w)))
+            if [ -f "${TARGET_DIR:-.}/.eslintrc.js" ] || [ -f "${TARGET_DIR:-.}/.eslintrc.json" ] || \
+               [ -f "${TARGET_DIR:-.}/eslint.config.js" ] || [ -f "${TARGET_DIR:-.}/eslint.config.mjs" ]; then
+                local eslint_out
+                # shellcheck disable=SC2086
+                eslint_out=$(cd "${TARGET_DIR:-.}" && npx eslint $js_files 2>&1) || {
+                    findings=$((findings + 1))
+                    details="${details}ESLint: $(echo "$eslint_out" | tail -3 | tr '\n' ' '). "
+                }
+            else
+                for f in $abs_files; do
+                    node --check "$f" 2>&1 || {
+                        findings=$((findings + 1))
+                        details="${details}Syntax error: $f. "
+                    }
+                done
+            fi
+        fi
+    fi
+
+    # Python
+    local py_files
+    py_files=$(echo "$changed_files" | grep -E '\.py$' || true)
+    if [ -n "$py_files" ]; then
+        for f in $py_files; do
+            [ -f "${TARGET_DIR:-.}/$f" ] || continue
+            total_checked=$((total_checked + 1))
+            python3 -m py_compile "${TARGET_DIR:-.}/$f" 2>&1 || {
+                findings=$((findings + 1))
+                details="${details}py_compile failed: $f. "
+            }
+        done
+        if command -v ruff &>/dev/null; then
+            local ruff_files=""
+            for f in $py_files; do
+                [ -f "${TARGET_DIR:-.}/$f" ] && ruff_files="$ruff_files ${TARGET_DIR:-.}/$f"
+            done
+            if [ -n "$ruff_files" ]; then
+                # shellcheck disable=SC2086
+                ruff check $ruff_files 2>&1 || {
+                    findings=$((findings + 1))
+                    details="${details}Ruff check found issues. "
+                }
+            fi
+        fi
+    fi
+
+    # Shell scripts
+    local sh_files
+    sh_files=$(echo "$changed_files" | grep -E '\.sh$' || true)
+    if [ -n "$sh_files" ]; then
+        for f in $sh_files; do
+            [ -f "${TARGET_DIR:-.}/$f" ] || continue
+            total_checked=$((total_checked + 1))
+            bash -n "${TARGET_DIR:-.}/$f" 2>&1 || {
+                findings=$((findings + 1))
+                details="${details}Syntax error: $f. "
+            }
+        done
+        if command -v shellcheck &>/dev/null; then
+            for f in $sh_files; do
+                [ -f "${TARGET_DIR:-.}/$f" ] || continue
+                shellcheck "${TARGET_DIR:-.}/$f" 2>&1 || {
+                    findings=$((findings + 1))
+                    details="${details}shellcheck: $f. "
+                }
+            done
+        fi
+    fi
+
+    # Go
+    if [ -f "${TARGET_DIR:-.}/go.mod" ]; then
+        local go_files
+        go_files=$(echo "$changed_files" | grep -E '\.go$' || true)
+        if [ -n "$go_files" ] && command -v go &>/dev/null; then
+            total_checked=$((total_checked + $(echo "$go_files" | wc -w)))
+            (cd "${TARGET_DIR:-.}" && go vet ./... 2>&1) || {
+                findings=$((findings + 1))
+                details="${details}go vet found issues. "
+            }
+        fi
+    fi
+
+    # Rust
+    if [ -f "${TARGET_DIR:-.}/Cargo.toml" ] && command -v cargo &>/dev/null; then
+        total_checked=$((total_checked + 1))
+        (cd "${TARGET_DIR:-.}" && cargo check 2>&1) || {
+            findings=$((findings + 1))
+            details="${details}cargo check failed. "
+        }
+    fi
+
+    # Write results
+    cat > "$quality_dir/static-analysis.json" << SAFEOF
+{"timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)","files_checked":$total_checked,"findings":$findings,"summary":"$details","pass":$([ $findings -eq 0 ] && echo "true" || echo "false")}
+SAFEOF
+
+    if [ "$findings" -gt 0 ]; then
+        rm -f "$quality_dir/static-analysis.pass"
+        echo "static_analysis" > "$loki_dir/signals/STATIC_ANALYSIS_FAILED" 2>/dev/null || true
+        log_warn "Static analysis: $findings issue(s) in $total_checked files"
+        return 1
+    else
+        touch "$quality_dir/static-analysis.pass"
+        rm -f "$loki_dir/signals/STATIC_ANALYSIS_FAILED" 2>/dev/null || true
+        log_info "Static analysis: $total_checked files checked, all clean"
+        return 0
+    fi
+}
+
+# ============================================================================
+# Hard Quality Gate: Test Coverage (v6.7.0)
+# Detects test runner and runs tests with coverage reporting
+# Results stored in .loki/quality/test-results.json
+# ============================================================================
+
+enforce_test_coverage() {
+    local loki_dir="${TARGET_DIR:-.}/.loki"
+    local quality_dir="$loki_dir/quality"
+    mkdir -p "$quality_dir"
+
+    local min_coverage="${LOKI_MIN_COVERAGE:-80}"
+    local test_passed=true
+    local coverage_pct=0
+    local test_runner="none"
+    local details=""
+
+    # JavaScript/TypeScript
+    if [ -f "${TARGET_DIR:-.}/package.json" ]; then
+        if grep -q '"vitest"' "${TARGET_DIR:-.}/package.json" 2>/dev/null; then
+            test_runner="vitest"
+            local output
+            output=$(cd "${TARGET_DIR:-.}" && npx vitest run --reporter=json 2>&1) || test_passed=false
+            details="vitest: $(echo "$output" | tail -3 | tr '\n' ' ')"
+        elif grep -q '"jest"' "${TARGET_DIR:-.}/package.json" 2>/dev/null; then
+            test_runner="jest"
+            local output
+            output=$(cd "${TARGET_DIR:-.}" && npx jest --passWithNoTests --forceExit 2>&1) || test_passed=false
+            details="jest: $(echo "$output" | tail -3 | tr '\n' ' ')"
+        elif grep -q '"mocha"' "${TARGET_DIR:-.}/package.json" 2>/dev/null; then
+            test_runner="mocha"
+            local output
+            output=$(cd "${TARGET_DIR:-.}" && npx mocha 2>&1) || test_passed=false
+            details="mocha: $(echo "$output" | tail -3 | tr '\n' ' ')"
+        fi
+    fi
+
+    # Python
+    if [ "$test_runner" = "none" ]; then
+        if [ -f "${TARGET_DIR:-.}/setup.py" ] || [ -f "${TARGET_DIR:-.}/pyproject.toml" ] || \
+           [ -d "${TARGET_DIR:-.}/tests" ]; then
+            if command -v pytest &>/dev/null; then
+                test_runner="pytest"
+                local output
+                output=$(cd "${TARGET_DIR:-.}" && pytest --tb=short 2>&1) || test_passed=false
+                details="pytest: $(echo "$output" | tail -5 | tr '\n' ' ')"
+            fi
+        fi
+    fi
+
+    # Go
+    if [ "$test_runner" = "none" ] && [ -f "${TARGET_DIR:-.}/go.mod" ] && command -v go &>/dev/null; then
+        test_runner="go-test"
+        local output
+        output=$(cd "${TARGET_DIR:-.}" && go test ./... 2>&1) || test_passed=false
+        details="go test: $(echo "$output" | tail -3 | tr '\n' ' ')"
+    fi
+
+    # Rust
+    if [ "$test_runner" = "none" ] && [ -f "${TARGET_DIR:-.}/Cargo.toml" ] && command -v cargo &>/dev/null; then
+        test_runner="cargo-test"
+        local output
+        output=$(cd "${TARGET_DIR:-.}" && cargo test 2>&1) || test_passed=false
+        details="cargo test: $(echo "$output" | tail -3 | tr '\n' ' ')"
+    fi
+
+    if [ "$test_runner" = "none" ]; then
+        log_info "Test coverage: no test runner detected, skipping"
+        touch "$quality_dir/unit-tests.pass"
+        cat > "$quality_dir/test-results.json" << TREOF
+{"timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)","runner":"none","pass":true,"summary":"No test runner detected"}
+TREOF
+        return 0
+    fi
+
+    # Sanitize details for JSON
+    details=$(echo "$details" | tr '"' "'" | tr '\n' ' ' | head -c 500)
+
+    cat > "$quality_dir/test-results.json" << TREOF
+{"timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)","runner":"$test_runner","pass":$test_passed,"min_coverage":$min_coverage,"summary":"$details"}
+TREOF
+
+    if [ "$test_passed" = "true" ]; then
+        touch "$quality_dir/unit-tests.pass"
+        rm -f "$loki_dir/signals/TESTS_FAILED" 2>/dev/null || true
+        log_info "Test coverage gate: $test_runner passed"
+        return 0
+    else
+        rm -f "$quality_dir/unit-tests.pass"
+        echo "tests_failed" > "$loki_dir/signals/TESTS_FAILED" 2>/dev/null || true
+        log_warn "Test coverage gate: $test_runner FAILED"
+        return 1
+    fi
 }
 
 # ============================================================================
@@ -7109,6 +7693,25 @@ build_prompt() {
         context_injection="$context_injection $memory_context"
     fi
 
+    # Gate failure injection (v6.7.0) - tells LLM what to fix
+    local gate_failure_context=""
+    if [ -f "${TARGET_DIR:-.}/.loki/quality/gate-failures.txt" ]; then
+        local failures
+        failures=$(cat "${TARGET_DIR:-.}/.loki/quality/gate-failures.txt")
+        gate_failure_context="QUALITY GATE FAILURES FROM PREVIOUS ITERATION: [$failures]. "
+        if [ -f "${TARGET_DIR:-.}/.loki/quality/static-analysis.json" ]; then
+            local sa_summary
+            sa_summary=$(python3 -c "import json; d=json.load(open('${TARGET_DIR:-.}/.loki/quality/static-analysis.json')); print(d.get('summary',''))" 2>/dev/null || echo "")
+            [ -n "$sa_summary" ] && gate_failure_context="${gate_failure_context}Static analysis: ${sa_summary}. "
+        fi
+        if [ -f "${TARGET_DIR:-.}/.loki/quality/test-results.json" ]; then
+            local test_summary
+            test_summary=$(python3 -c "import json; d=json.load(open('${TARGET_DIR:-.}/.loki/quality/test-results.json')); print(d.get('summary',''))" 2>/dev/null || echo "")
+            [ -n "$test_summary" ] && gate_failure_context="${gate_failure_context}Tests: ${test_summary}. "
+        fi
+        gate_failure_context="${gate_failure_context}FIX THESE ISSUES BEFORE PROCEEDING WITH NEW WORK."
+    fi
+
     # Human directive injection (from HUMAN_INPUT.md)
     # NOTE: Do NOT unset LOKI_HUMAN_INPUT here - build_prompt runs in a subshell
     # (command substitution) so unset would not affect the parent shell.
@@ -7240,15 +7843,15 @@ except: pass
     else
         if [ $retry -eq 0 ]; then
             if [ -n "$prd" ]; then
-                echo "Loki Mode with PRD at $prd. $human_directive $queue_tasks $bmad_context $checklist_status $app_runner_info $playwright_info $memory_context_section $rarv_instruction $memory_instruction $compaction_reminder $completion_instruction $sdlc_instruction $autonomous_suffix"
+                echo "Loki Mode with PRD at $prd. $human_directive $gate_failure_context $queue_tasks $bmad_context $checklist_status $app_runner_info $playwright_info $memory_context_section $rarv_instruction $memory_instruction $compaction_reminder $completion_instruction $sdlc_instruction $autonomous_suffix"
             else
-                echo "Loki Mode. $human_directive $queue_tasks $bmad_context $checklist_status $app_runner_info $playwright_info $memory_context_section $analysis_instruction $rarv_instruction $memory_instruction $compaction_reminder $completion_instruction $sdlc_instruction $autonomous_suffix"
+                echo "Loki Mode. $human_directive $gate_failure_context $queue_tasks $bmad_context $checklist_status $app_runner_info $playwright_info $memory_context_section $analysis_instruction $rarv_instruction $memory_instruction $compaction_reminder $completion_instruction $sdlc_instruction $autonomous_suffix"
             fi
         else
             if [ -n "$prd" ]; then
-                echo "Loki Mode - Resume iteration #$iteration (retry #$retry). PRD: $prd. $human_directive $queue_tasks $bmad_context $checklist_status $app_runner_info $playwright_info $memory_context_section $rarv_instruction $memory_instruction $compaction_reminder $completion_instruction $sdlc_instruction $autonomous_suffix"
+                echo "Loki Mode - Resume iteration #$iteration (retry #$retry). PRD: $prd. $human_directive $gate_failure_context $queue_tasks $bmad_context $checklist_status $app_runner_info $playwright_info $memory_context_section $rarv_instruction $memory_instruction $compaction_reminder $completion_instruction $sdlc_instruction $autonomous_suffix"
             else
-                echo "Loki Mode - Resume iteration #$iteration (retry #$retry). $human_directive $queue_tasks $bmad_context $checklist_status $app_runner_info $playwright_info $memory_context_section Use .loki/generated-prd.md if exists. $rarv_instruction $memory_instruction $compaction_reminder $completion_instruction $sdlc_instruction $autonomous_suffix"
+                echo "Loki Mode - Resume iteration #$iteration (retry #$retry). $human_directive $gate_failure_context $queue_tasks $bmad_context $checklist_status $app_runner_info $playwright_info $memory_context_section Use .loki/generated-prd.md if exists. $rarv_instruction $memory_instruction $compaction_reminder $completion_instruction $sdlc_instruction $autonomous_suffix"
             fi
         fi
     fi
@@ -7841,8 +8444,8 @@ if __name__ == "__main__":
                 ;;
             aider)
                 # Aider: Tier 3 - degraded mode, 18+ providers
-                echo "[loki] Aider model: ${LOKI_AIDER_MODEL:-claude-3.7-sonnet}, tier: $tier_param" >> "$log_file"
-                echo "[loki] Aider model: ${LOKI_AIDER_MODEL:-claude-3.7-sonnet}, tier: $tier_param" >> "$agent_log"
+                echo "[loki] Aider model: ${LOKI_AIDER_MODEL:-claude-sonnet-4-5-20250929}, tier: $tier_param" >> "$log_file"
+                echo "[loki] Aider model: ${LOKI_AIDER_MODEL:-claude-sonnet-4-5-20250929}, tier: $tier_param" >> "$agent_log"
                 { invoke_aider "$prompt" 2>&1 | tee -a "$log_file" "$agent_log"; \
                 } && exit_code=0 || exit_code=$?
                 ;;
@@ -7933,9 +8536,40 @@ if __name__ == "__main__":
         # Checkpoint after each iteration (v5.57.0)
         create_checkpoint "iteration-${ITERATION_COUNT} complete" "iteration-${ITERATION_COUNT}"
 
-        # Code review gate (v5.35.0)
-        if [ "$PHASE_CODE_REVIEW" = "true" ] && [ "$ITERATION_COUNT" -gt 0 ]; then
-            run_code_review || log_warn "Code review found issues - check .loki/quality/reviews/"
+        # Quality gates (v6.7.0 - hard enforcement)
+        local gate_failures=""
+        if [ "${LOKI_HARD_GATES:-true}" = "true" ]; then
+            # Static analysis gate
+            if [ "${PHASE_STATIC_ANALYSIS:-true}" = "true" ]; then
+                enforce_static_analysis || {
+                    gate_failures="${gate_failures}static_analysis,"
+                    log_warn "Static analysis FAILED - findings injected into next iteration"
+                }
+            fi
+            # Test coverage gate
+            if [ "${PHASE_UNIT_TESTS:-true}" = "true" ]; then
+                enforce_test_coverage || {
+                    gate_failures="${gate_failures}test_coverage,"
+                    log_warn "Test coverage gate FAILED - must pass next iteration"
+                }
+            fi
+            # Code review gate (upgraded from advisory)
+            if [ "$PHASE_CODE_REVIEW" = "true" ] && [ "$ITERATION_COUNT" -gt 0 ]; then
+                run_code_review || {
+                    gate_failures="${gate_failures}code_review,"
+                    log_warn "Code review BLOCKED - Critical/High findings"
+                }
+            fi
+            # Store gate failures for prompt injection
+            if [ -n "$gate_failures" ]; then
+                echo "$gate_failures" > "${TARGET_DIR:-.}/.loki/quality/gate-failures.txt"
+            else
+                rm -f "${TARGET_DIR:-.}/.loki/quality/gate-failures.txt"
+            fi
+        else
+            if [ "$PHASE_CODE_REVIEW" = "true" ] && [ "$ITERATION_COUNT" -gt 0 ]; then
+                run_code_review || log_warn "Code review found issues - check .loki/quality/reviews/"
+            fi
         fi
 
         # Check for success - ONLY stop on explicit completion promise

@@ -49,9 +49,9 @@ PROVIDER_MAX_PARALLEL=1
 # Model Configuration
 # Aider supports 18+ providers; model configured via LOKI_AIDER_MODEL env var
 # or provider-specific env vars (OPENAI_API_KEY, OPENAI_API_BASE, etc.)
-PROVIDER_MODEL_PLANNING="${LOKI_AIDER_MODEL:-claude-3.7-sonnet}"
-PROVIDER_MODEL_DEVELOPMENT="${LOKI_AIDER_MODEL:-claude-3.7-sonnet}"
-PROVIDER_MODEL_FAST="${LOKI_AIDER_MODEL:-claude-3.7-sonnet}"
+PROVIDER_MODEL_PLANNING="${LOKI_AIDER_MODEL:-claude-sonnet-4-5-20250929}"
+PROVIDER_MODEL_DEVELOPMENT="${LOKI_AIDER_MODEL:-claude-sonnet-4-5-20250929}"
+PROVIDER_MODEL_FAST="${LOKI_AIDER_MODEL:-claude-sonnet-4-5-20250929}"
 
 # No Task tool - model is configured externally
 PROVIDER_TASK_MODEL_PARAM=""
@@ -95,7 +95,7 @@ provider_version() {
 provider_invoke() {
     local prompt="$1"
     shift
-    local model="${LOKI_AIDER_MODEL:-claude-3.7-sonnet}"
+    local model="${LOKI_AIDER_MODEL:-claude-sonnet-4-5-20250929}"
     local extra_flags="${LOKI_AIDER_FLAGS:-}"
     # shellcheck disable=SC2086
     aider --message "$prompt" \
@@ -108,7 +108,7 @@ provider_invoke() {
 # Model tier to parameter (Aider uses single model, returns model name)
 provider_get_tier_param() {
     local tier="$1"
-    echo "${LOKI_AIDER_MODEL:-claude-3.7-sonnet}"
+    echo "${LOKI_AIDER_MODEL:-claude-sonnet-4-5-20250929}"
 }
 
 # Dynamic model resolution (v6.0.0)
@@ -116,7 +116,7 @@ provider_get_tier_param() {
 # just returns the configured model name. maxTier has no effect.
 resolve_model_for_tier() {
     local tier="$1"
-    echo "${LOKI_AIDER_MODEL:-claude-3.7-sonnet}"
+    echo "${LOKI_AIDER_MODEL:-claude-sonnet-4-5-20250929}"
 }
 
 # Tier-aware invocation

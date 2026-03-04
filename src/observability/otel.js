@@ -581,6 +581,8 @@ class OTLPExporter {
 let _initialized = false;
 let _tracerProvider = null;
 let _meterProvider = null;
+let _realSDKProvider = null;
+let _usingRealSDK = false;
 
 function initialize() {
   if (_initialized) return;
@@ -590,42 +592,78 @@ function initialize() {
     throw new Error('LOKI_OTEL_ENDPOINT is not set. Use index.js for conditional loading.');
   }
 
-  // OTLPExporter constructor validates the URL scheme (http/https only)
-  _activeExporter = new OTLPExporter(endpoint);
-  _tracerProvider = {
-    getTracer: (name) => ({
-      startSpan: (spanName, options) => {
-        const opts = options || {};
-        return new Span(
-          spanName,
-          opts.traceId,
-          opts.parentSpanId,
-          opts.attributes
-        );
-      },
-    }),
-  };
+  // Try real OpenTelemetry SDK first, fall back to custom OTLP exporter
+  let usingRealSDK = false;
+  try {
+    const { NodeTracerProvider } = require('@opentelemetry/sdk-trace-node');
+    const { OTLPTraceExporter } = require('@opentelemetry/exporter-trace-otlp-http');
+    const { SimpleSpanProcessor } = require('@opentelemetry/sdk-trace-base');
+    const api = require('@opentelemetry/api');
 
-  _meterProvider = {
-    getMeter: (name) => ({
-      createCounter: (n, desc, unit) => new Counter(n, desc, unit),
-      createGauge: (n, desc, unit) => new Gauge(n, desc, unit),
-      createHistogram: (n, desc, unit, boundaries) => new Histogram(n, desc, unit, boundaries),
-    }),
-  };
+    const exporter = new OTLPTraceExporter({ url: endpoint + '/v1/traces' });
+    const provider = new NodeTracerProvider();
+    provider.addSpanProcessor(new SimpleSpanProcessor(exporter));
+    provider.register();
+
+    _tracerProvider = {
+      getTracer: (name) => api.trace.getTracer(name),
+    };
+    _meterProvider = {
+      getMeter: (name) => ({
+        createCounter: (n, desc, unit) => new Counter(n, desc, unit),
+        createGauge: (n, desc, unit) => new Gauge(n, desc, unit),
+        createHistogram: (n, desc, unit, boundaries) => new Histogram(n, desc, unit, boundaries),
+      }),
+    };
+    _realSDKProvider = provider;
+    usingRealSDK = true;
+  } catch (_sdkErr) {
+    // Real SDK not available -- fall back to custom OTLP exporter
+    _activeExporter = new OTLPExporter(endpoint);
+    _tracerProvider = {
+      getTracer: (name) => ({
+        startSpan: (spanName, options) => {
+          const opts = options || {};
+          return new Span(
+            spanName,
+            opts.traceId,
+            opts.parentSpanId,
+            opts.attributes
+          );
+        },
+      }),
+    };
+
+    _meterProvider = {
+      getMeter: (name) => ({
+        createCounter: (n, desc, unit) => new Counter(n, desc, unit),
+        createGauge: (n, desc, unit) => new Gauge(n, desc, unit),
+        createHistogram: (n, desc, unit, boundaries) => new Histogram(n, desc, unit, boundaries),
+      }),
+    };
+  }
 
   _initialized = true;
+  _usingRealSDK = usingRealSDK;
 }
 
 function shutdown() {
+  if (_realSDKProvider) {
+    try { _realSDKProvider.shutdown(); } catch (_e) { /* ignore */ }
+    _realSDKProvider = null;
+  }
   if (_activeExporter) {
-    // Flush pending spans before nullifying to prevent data loss
     _activeExporter.shutdown();
   }
   _activeExporter = null;
   _initialized = false;
+  _usingRealSDK = false;
   _tracerProvider = null;
   _meterProvider = null;
+}
+
+function isUsingRealSDK() {
+  return _usingRealSDK;
 }
 
 function isInitialized() {
@@ -640,6 +678,7 @@ module.exports = {
   initialize,
   shutdown,
   isInitialized,
+  isUsingRealSDK,
   getExporter,
   get tracerProvider() {
     return _tracerProvider;
