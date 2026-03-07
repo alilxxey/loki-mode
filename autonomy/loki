@@ -11585,7 +11585,22 @@ cmd_remote() {
     emit_event session cli remote_start "prd=${prd_abs:-none}"
 
     # Hand off to claude remote-control
-    exec claude remote-control ${rc_flags[@]+"${rc_flags[@]}"}
+    # Note: not using exec so we can provide guidance if it fails
+    claude remote-control ${rc_flags[@]+"${rc_flags[@]}"}
+    local rc_exit=$?
+
+    if [ $rc_exit -ne 0 ]; then
+        echo ""
+        echo -e "${YELLOW}Troubleshooting:${NC}"
+        echo ""
+        echo -e "  ${CYAN}Workspace not trusted?${NC}"
+        echo "    Run 'claude' in this directory first to accept the trust dialog,"
+        echo "    then exit (/exit) and run 'loki remote' again."
+        echo ""
+        echo -e "  ${CYAN}Not logged in?${NC}"
+        echo "    Run 'claude' then '/login' -- requires a Pro or Max subscription."
+        exit $rc_exit
+    fi
 }
 
 # Syslog/SIEM integration management
