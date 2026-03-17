@@ -5597,293 +5597,253 @@ cmd_sandbox() {
     exec "$SANDBOX_SH" "$subcommand" "$@"
 }
 
-# Demo mode - simulated session showing multi-agent orchestration
+# Demo mode - build a real project from a bundled PRD template
 cmd_demo() {
     # Handle --help
     if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
-        echo -e "${BOLD}loki demo${NC} - Run interactive demo"
+        echo -e "${BOLD}loki demo${NC} - Build a real project from a bundled template"
         echo ""
-        echo "Simulates a full autonomous session in ~60 seconds."
-        echo "Starts the dashboard on port 57374 for real-time visualization."
+        echo "Creates a temporary directory, copies the Simple Todo App PRD, and"
+        echo "runs 'loki start' to build it end-to-end. Shows a summary when done"
+        echo "and offers to open the result in a browser."
         echo ""
-        echo "Usage: loki demo"
+        echo "Usage: loki demo [options]"
+        echo ""
+        echo "Options:"
+        echo "  --dir PATH    Use a specific directory instead of a temp dir"
+        echo "  --keep        Keep the temp directory on exit (default: kept)"
+        echo "  --provider P  AI provider to use (default: claude)"
+        echo "  --dry-run     Show what would happen without running"
+        echo ""
+        echo "Examples:"
+        echo "  loki demo                        # Build todo app in temp dir"
+        echo "  loki demo --dir ~/demo-project   # Build in specific directory"
+        echo "  loki demo --provider codex       # Use Codex instead of Claude"
         return 0
     fi
 
-    local version=$(get_version)
-    local demo_duration=60
+    local version
+    version=$(get_version)
     local demo_prd="$SKILL_DIR/templates/simple-todo-app.md"
+    local demo_dir=""
+    local provider=""
+    local dry_run=false
+    local start_args=()
 
-    # Fall back to examples/ if templates/ doesn't exist yet
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --dir)
+                if [[ -z "${2:-}" ]]; then
+                    echo -e "${RED}Error: --dir requires a path${NC}"
+                    return 1
+                fi
+                demo_dir="$2"
+                shift 2
+                ;;
+            --dir=*)
+                demo_dir="${1#*=}"
+                shift
+                ;;
+            --provider)
+                if [[ -z "${2:-}" ]]; then
+                    echo -e "${RED}Error: --provider requires a value${NC}"
+                    return 1
+                fi
+                provider="$2"
+                shift 2
+                ;;
+            --provider=*)
+                provider="${1#*=}"
+                shift
+                ;;
+            --keep)
+                # kept by default now, accepted for compat
+                shift
+                ;;
+            --dry-run)
+                dry_run=true
+                shift
+                ;;
+            *)
+                echo -e "${RED}Unknown option: $1${NC}"
+                echo "Run 'loki demo --help' for usage."
+                return 1
+                ;;
+        esac
+    done
+
+    # Fall back to examples/ if templates/ doesn't exist
     if [ ! -f "$demo_prd" ]; then
         demo_prd="$SKILL_DIR/examples/simple-todo-app.md"
     fi
 
     if [ ! -f "$demo_prd" ]; then
         echo -e "${RED}Error: Demo PRD not found${NC}"
-        echo "Expected at: $demo_prd"
-        exit 1
+        echo "Expected at: $SKILL_DIR/templates/simple-todo-app.md"
+        return 1
     fi
 
-    echo -e "${BOLD}Loki Mode v$version - Interactive Demo${NC}"
-    echo ""
-    echo -e "${CYAN}This demo simulates a full autonomous session in ~60 seconds.${NC}"
-    echo -e "${CYAN}Watch multi-agent orchestration, quality gates, and phase transitions.${NC}"
-    echo ""
-    echo -e "PRD: ${BOLD}Simple Todo App${NC}"
-    echo -e "Dashboard: ${BLUE}http://127.0.0.1:57374${NC}"
-    echo ""
-
-    # Track if we created .loki for cleanup
-    local demo_created_loki=false
-    if [ ! -d "$LOKI_DIR" ]; then
-        demo_created_loki=true
+    # Set up the demo directory
+    if [ -z "$demo_dir" ]; then
+        demo_dir=$(mktemp -d "${TMPDIR:-/tmp}/loki-demo-XXXXXX")
+    else
+        # Expand ~ if present
+        demo_dir="${demo_dir/#\~/$HOME}"
+        mkdir -p "$demo_dir"
     fi
 
-    # Set up demo .loki directory
-    mkdir -p "$LOKI_DIR"/{queue,memory,metrics/efficiency,state,council,logs,dashboard}
+    echo -e "${BOLD}Loki Mode v$version - Demo${NC}"
+    echo ""
+    echo -e "  PRD:       Simple Todo App"
+    echo -e "  Directory: ${CYAN}$demo_dir${NC}"
+    if [ -n "$provider" ]; then
+        echo -e "  Provider:  $provider"
+    else
+        echo -e "  Provider:  claude (default)"
+    fi
+    echo ""
 
-    # Write initial session.json
-    local demo_pid=$$
-    local start_time
-    start_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-    cat > "$LOKI_DIR/session.json" << SESSEOF
-{
-  "status": "running",
-  "pid": $demo_pid,
-  "provider": "claude",
-  "started": "$start_time",
-  "project": "$(pwd)",
-  "mode": "demo"
-}
-SESSEOF
-    echo "$demo_pid" > "$LOKI_DIR/loki.pid"
+    # Copy PRD into demo directory
+    cp "$demo_prd" "$demo_dir/prd.md"
 
-    # Start dashboard server
-    local dashboard_started=false
-    if command -v python3 &> /dev/null && [ -f "$SKILL_DIR/dashboard/server.py" ]; then
-        # Kill any existing dashboard on this port
-        local existing_pids
-        existing_pids=$(lsof -ti :57374 2>/dev/null || true)
-        if [ -n "$existing_pids" ]; then
-            echo "$existing_pids" | xargs kill 2>/dev/null || true
-            sleep 1
+    # Initialize git repo if not already one
+    if [ ! -d "$demo_dir/.git" ]; then
+        git -C "$demo_dir" init -q 2>/dev/null || true
+    fi
+
+    if [ "$dry_run" = true ]; then
+        echo -e "${YELLOW}[dry-run] Would run:${NC}"
+        echo "  cd $demo_dir"
+        echo -n "  loki start prd.md --simple --yes"
+        [ -n "$provider" ] && echo -n " --provider $provider"
+        echo ""
+        echo ""
+        echo -e "${DIM}PRD copied to: $demo_dir/prd.md${NC}"
+        return 0
+    fi
+
+    echo -e "${DIM}Starting autonomous build...${NC}"
+    echo -e "${DIM}(Press Ctrl+C to stop at any time)${NC}"
+    echo ""
+
+    # Build start args
+    start_args+=("prd.md" "--simple" "--yes")
+    if [ -n "$provider" ]; then
+        start_args+=("--provider" "$provider")
+    fi
+
+    # Run loki start from the demo directory
+    local start_exit=0
+    (cd "$demo_dir" && cmd_start "${start_args[@]}") || start_exit=$?
+
+    echo ""
+    echo -e "${DIM}---------------------------------------${NC}"
+    echo -e "${BOLD}Demo Complete${NC}"
+    echo -e "${DIM}---------------------------------------${NC}"
+    echo ""
+
+    # Show summary of what was generated
+    echo -e "${BOLD}Project Directory:${NC} $demo_dir"
+    echo ""
+
+    if [ -d "$demo_dir" ]; then
+        # Count generated files (exclude .git and .loki)
+        local file_count
+        file_count=$(find "$demo_dir" -type f \
+            -not -path "$demo_dir/.git/*" \
+            -not -path "$demo_dir/.loki/*" \
+            -not -name "prd.md" \
+            2>/dev/null | wc -l | tr -d ' ')
+
+        local dir_count
+        dir_count=$(find "$demo_dir" -type d \
+            -not -path "$demo_dir/.git" \
+            -not -path "$demo_dir/.git/*" \
+            -not -path "$demo_dir/.loki" \
+            -not -path "$demo_dir/.loki/*" \
+            -not -path "$demo_dir" \
+            2>/dev/null | wc -l | tr -d ' ')
+
+        echo -e "${BOLD}Generated:${NC} $file_count files in $dir_count directories"
+        echo ""
+
+        # Show top-level structure
+        if command -v tree &>/dev/null; then
+            echo -e "${BOLD}Project Structure:${NC}"
+            tree -L 2 --dirsfirst -I '.git|.loki' "$demo_dir" 2>/dev/null || \
+                ls -1 "$demo_dir" 2>/dev/null
+            echo ""
+        else
+            echo -e "${BOLD}Top-level contents:${NC}"
+            ls -1 "$demo_dir" | grep -v '^\.\(git\|loki\)$' || true
+            echo ""
         fi
 
-        # Set up dashboard venv
-        if ! ensure_dashboard_venv; then
-            echo -e "${YELLOW}Warning: Dashboard dependencies not available, continuing without dashboard${NC}"
-        fi
-        local demo_python="$DASHBOARD_PYTHON"
+        # Check for common web artifacts and offer to open
+        local has_web=false
+        local open_target=""
 
-        LOKI_DIR="$LOKI_DIR" PYTHONPATH="$SKILL_DIR" "$demo_python" -m uvicorn dashboard.server:app \
-            --host 127.0.0.1 --port 57374 --log-level warning &>/dev/null &
-        local dash_pid=$!
-        echo "$dash_pid" > "$LOKI_DIR/dashboard/dashboard.pid"
-
-        # Wait for dashboard to be ready
-        local wait_count=0
-        while [ $wait_count -lt 10 ]; do
-            if curl -s http://127.0.0.1:57374/health &>/dev/null; then
-                dashboard_started=true
-                echo -e "${GREEN}Dashboard started${NC} at http://127.0.0.1:57374"
+        # Check for common entry points
+        for candidate in \
+            "$demo_dir/index.html" \
+            "$demo_dir/dist/index.html" \
+            "$demo_dir/build/index.html" \
+            "$demo_dir/public/index.html" \
+            "$demo_dir/frontend/dist/index.html" \
+            "$demo_dir/client/dist/index.html"; do
+            if [ -f "$candidate" ]; then
+                has_web=true
+                open_target="$candidate"
                 break
             fi
-            sleep 0.5
-            wait_count=$((wait_count + 1))
         done
 
-        if [ "$dashboard_started" = false ]; then
-            echo -e "${YELLOW}Warning: Dashboard failed to start, continuing without it${NC}"
+        # Check for package.json with start script
+        local has_start_script=false
+        if [ -f "$demo_dir/package.json" ]; then
+            if grep -q '"start"' "$demo_dir/package.json" 2>/dev/null; then
+                has_start_script=true
+            fi
+            if grep -q '"dev"' "$demo_dir/package.json" 2>/dev/null; then
+                has_start_script=true
+            fi
+        fi
+
+        if [ "$has_web" = true ] && [ -n "$open_target" ]; then
+            echo -e "${CYAN}A web frontend was generated.${NC}"
+            echo ""
+            echo -n "Open in browser? [Y/n] "
+            read -r answer </dev/tty 2>/dev/null || answer="n"
+            if [[ -z "$answer" || "$answer" =~ ^[Yy] ]]; then
+                if command -v open &>/dev/null; then
+                    open "$open_target"
+                elif command -v xdg-open &>/dev/null; then
+                    xdg-open "$open_target"
+                else
+                    echo -e "Open this file in your browser: ${BLUE}$open_target${NC}"
+                fi
+            fi
+        elif [ "$has_start_script" = true ]; then
+            echo -e "${CYAN}A start script was found in package.json.${NC}"
+            echo -e "To run the app:"
+            echo -e "  cd $demo_dir && npm install && npm start"
         fi
     fi
 
     echo ""
-    echo -e "${DIM}------- Demo Session Starting -------${NC}"
-    echo ""
+    echo -e "${BOLD}Next steps:${NC}"
+    echo -e "  cd $demo_dir                   # Explore the generated project"
+    echo -e "  loki start ./your-prd.md       # Build your own project"
+    echo -e "  loki init                      # Create a PRD interactively"
 
-    # Define demo phases and their durations
-    local phases=("PLANNING" "ARCHITECTURE" "DEVELOPMENT" "TESTING" "CODE_REVIEW" "QUALITY_ASSURANCE" "DEPLOYMENT_PREP")
-    local phase_durations=(6 6 15 10 8 8 7)
-    local agents=("planner" "architect" "frontend-dev" "backend-dev" "test-engineer" "reviewer-1" "reviewer-2" "reviewer-3" "qa-engineer" "deploy-engineer")
-    local tasks=("Analyze PRD requirements" "Design system architecture" "Scaffold React frontend" "Create Express API server" "Set up SQLite database" "Implement todo CRUD operations" "Write unit tests" "Run code review (3 reviewers)" "Quality gate validation" "Prepare deployment artifacts")
-
-    local iteration=1
-    local completed_tasks=0
-    local total_tasks=${#tasks[@]}
-    local elapsed=0
-    local task_idx=0
-
-    # Cleanup handler (guard against double-run)
-    local _demo_cleaned=false
-    cleanup_demo() {
-        if [ "$_demo_cleaned" = true ]; then return; fi
-        _demo_cleaned=true
+    if [ $start_exit -ne 0 ]; then
         echo ""
-        echo -e "${DIM}------- Demo Session Complete -------${NC}"
-        echo ""
+        echo -e "${YELLOW}Note: loki start exited with code $start_exit.${NC}"
+        echo -e "${YELLOW}The demo directory is preserved at: $demo_dir${NC}"
+    fi
 
-        # Summary
-        echo -e "${BOLD}Session Summary${NC}"
-        echo -e "  Phases completed:  ${#phases[@]}/${#phases[@]}"
-        echo -e "  Tasks completed:   $total_tasks/$total_tasks"
-        echo -e "  Quality gates:     7/7 passed"
-        echo -e "  Agents dispatched: ${#agents[@]}"
-        echo -e "  Iterations:        $iteration"
-        echo -e "  Duration:          ${elapsed}s"
-        echo ""
-        echo -e "${GREEN}All quality gates passed. Project ready for deployment.${NC}"
-        echo ""
-        echo -e "${CYAN}Ready to try it for real?${NC}"
-        echo -e "  loki start ./prd.md        Start with your own PRD"
-        echo -e "  loki init                  Build a PRD interactively"
-        echo -e "  loki quick \"add feature\"   Quick single-task mode"
-        echo ""
-
-        # Mark session stopped
-        if [ -f "$LOKI_DIR/session.json" ]; then
-            LOKI_SESSION_FILE="$LOKI_DIR/session.json" python3 -c "
-import json, os
-p = os.environ['LOKI_SESSION_FILE']
-with open(p, 'r') as f:
-    d = json.load(f)
-d['status'] = 'stopped'
-with open(p, 'w') as f:
-    json.dump(d, f, indent=2)
-" 2>/dev/null || true
-        fi
-
-        # Kill dashboard
-        if [ -f "$LOKI_DIR/dashboard/dashboard.pid" ]; then
-            local dpid
-            dpid=$(cat "$LOKI_DIR/dashboard/dashboard.pid" 2>/dev/null)
-            if [ -n "$dpid" ]; then
-                kill "$dpid" 2>/dev/null || true
-            fi
-        fi
-        # Also kill by port
-        local port_pids
-        port_pids=$(lsof -ti :57374 2>/dev/null || true)
-        if [ -n "$port_pids" ]; then
-            echo "$port_pids" | xargs kill 2>/dev/null || true
-        fi
-
-        # Clean up demo artifacts if we created .loki
-        if [ "$demo_created_loki" = true ] && [ -d "$LOKI_DIR" ]; then
-            rm -rf "$LOKI_DIR"
-        fi
-    }
-
-    trap cleanup_demo EXIT INT TERM
-
-    # Run through phases
-    for phase_idx in "${!phases[@]}"; do
-        local phase="${phases[$phase_idx]}"
-        local duration="${phase_durations[$phase_idx]}"
-
-        echo -e "${BOLD}[$phase]${NC} Phase $((phase_idx + 1))/${#phases[@]}"
-
-        # Write dashboard state for this phase
-        _write_demo_state "$phase" "$iteration" "$completed_tasks" "$total_tasks" "$elapsed"
-
-        # Simulate work within this phase
-        local phase_elapsed=0
-        while [ $phase_elapsed -lt $duration ]; do
-            # Show task progress
-            if [ $task_idx -lt $total_tasks ]; then
-                local task="${tasks[$task_idx]}"
-                local agent="${agents[$((task_idx % ${#agents[@]}))]}"
-                echo -e "  ${CYAN}[agent:$agent]${NC} $task"
-
-                # Write task to queue
-                echo "{\"id\":\"task-$task_idx\",\"title\":\"$task\",\"status\":\"completed\",\"agent\":\"$agent\"}" \
-                    > "$LOKI_DIR/queue/task-$task_idx.json" 2>/dev/null
-
-                completed_tasks=$((completed_tasks + 1))
-                task_idx=$((task_idx + 1))
-            fi
-
-            # Quality gate checks at specific phases
-            if [ "$phase" = "CODE_REVIEW" ]; then
-                echo -e "  ${GREEN}[gate]${NC} Blind review: 3/3 reviewers approve"
-                sleep 1
-                echo -e "  ${GREEN}[gate]${NC} Anti-sycophancy check: devil's advocate triggered"
-                sleep 1
-            elif [ "$phase" = "QUALITY_ASSURANCE" ]; then
-                echo -e "  ${GREEN}[gate]${NC} Static analysis: 0 issues"
-                sleep 1
-                echo -e "  ${GREEN}[gate]${NC} Test coverage: 87% (threshold: 80%)"
-                sleep 1
-                echo -e "  ${GREEN}[gate]${NC} Security scan: no vulnerabilities"
-                sleep 1
-            fi
-
-            iteration=$((iteration + 1))
-            local step_sleep=2
-            if [ $((duration - phase_elapsed)) -lt 3 ]; then
-                step_sleep=1
-            fi
-            sleep $step_sleep
-            phase_elapsed=$((phase_elapsed + step_sleep))
-            elapsed=$((elapsed + step_sleep))
-
-            # Update dashboard state
-            _write_demo_state "$phase" "$iteration" "$completed_tasks" "$total_tasks" "$elapsed"
-        done
-
-        echo ""
-    done
-
-    # Final state - completion council
-    echo -e "${BOLD}[COMPLETION_COUNCIL]${NC} Evaluating project completion..."
-    _write_demo_state "COMPLETION_COUNCIL" "$iteration" "$total_tasks" "$total_tasks" "$elapsed"
-    sleep 2
-    echo -e "  ${GREEN}[council]${NC} Member 1: COMPLETE (all acceptance criteria met)"
-    sleep 1
-    echo -e "  ${GREEN}[council]${NC} Member 2: COMPLETE (tests passing, code reviewed)"
-    sleep 1
-    echo -e "  ${GREEN}[council]${NC} Member 3: COMPLETE (deployment artifacts ready)"
-    sleep 1
-    echo -e "  ${GREEN}[verdict]${NC} Unanimous: PROJECT COMPLETE (3/3 votes)"
-
-    # Write final state
-    _write_demo_state "COMPLETE" "$iteration" "$total_tasks" "$total_tasks" "$elapsed"
-
-    exit 0
-}
-
-# Helper: write dashboard-state.json during demo
-_write_demo_state() {
-    local phase="$1" iteration="$2" completed="$3" total="$4" elapsed="$5"
-    local running_agents=$((RANDOM % 3 + 1))
-    local pending=$((total - completed))
-    local temp_file="$LOKI_DIR/.dashboard-state.json.tmp"
-
-    cat > "$temp_file" << STATEEOF
-{
-  "status": "running",
-  "mode": "demo",
-  "phase": "$phase",
-  "iteration": $iteration,
-  "complexity": "standard",
-  "provider": "claude",
-  "current_task": "",
-  "pending_tasks": $pending,
-  "completed_tasks": $completed,
-  "failed_tasks": 0,
-  "running_agents": $running_agents,
-  "total_agents": 10,
-  "uptime_seconds": $elapsed,
-  "version": "$(get_version)",
-  "agents": [],
-  "council": {
-    "enabled": true,
-    "last_verdict": null,
-    "convergence_score": 0
-  }
-}
-STATEEOF
-    mv "$temp_file" "$LOKI_DIR/dashboard-state.json" 2>/dev/null
+    return $start_exit
 }
 
 # Quick mode - lightweight single-task execution

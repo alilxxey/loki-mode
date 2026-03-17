@@ -5,6 +5,11 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v6.13.0 - Real Demo Execution
+
+### Features
+- **`loki demo` rewrite**: Replaced simulated/fake demo with real execution that runs `loki start` on a bundled template. Supports `--dir`, `--provider`, `--dry-run` flags. Shows project summary and offers to open result in browser.
+
 ## v6.12.5 - Remote Control Autonomous Permissions
 
 ### Bug Fixes
