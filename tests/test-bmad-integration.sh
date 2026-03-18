@@ -340,6 +340,199 @@ fi
 echo ""
 
 # ============================================================
+# Category 3b: Priority Ordering Tests (v6.29.0)
+# ============================================================
+echo "--- Priority Ordering Tests ---"
+
+# test_stories_have_priority_field
+has_priority=$($PYTHON3 -c "
+import json, sys
+data = json.loads(sys.stdin.read())
+epics = data.get('epics', [])
+all_have = all(
+    'priority' in story and 'priority_weight' in story
+    for epic in epics
+    for story in epic.get('stories', [])
+)
+print('yes' if all_have else 'no')
+" <<< "$json_output" 2>/dev/null)
+if [ "$has_priority" = "yes" ]; then
+    log_pass "all stories have priority and priority_weight fields"
+else
+    log_fail "stories have priority fields" "some stories missing priority/priority_weight"
+fi
+
+# test_mvp_stories_have_weight_1
+mvp_weight=$($PYTHON3 -c "
+import json, sys
+data = json.loads(sys.stdin.read())
+epics = data.get('epics', [])
+# Epic 1 and 2 are MVP
+for epic in epics:
+    title = epic.get('epic', '')
+    if 'Epic 1' in title or 'Epic 2' in title:
+        for story in epic.get('stories', []):
+            if story.get('priority_weight') != 1 or story.get('priority') != 'mvp':
+                print('fail: ' + story.get('id', '?') + ' has weight=' + str(story.get('priority_weight')))
+                sys.exit(0)
+print('yes')
+" <<< "$json_output" 2>/dev/null)
+if [ "$mvp_weight" = "yes" ]; then
+    log_pass "MVP epic stories (1.x, 2.x) have priority_weight=1"
+else
+    log_fail "MVP stories have weight 1" "$mvp_weight"
+fi
+
+# test_phase2_stories_have_weight_2
+phase2_weight=$($PYTHON3 -c "
+import json, sys
+data = json.loads(sys.stdin.read())
+epics = data.get('epics', [])
+for epic in epics:
+    title = epic.get('epic', '')
+    if 'Epic 3' in title or 'Epic 4' in title:
+        for story in epic.get('stories', []):
+            if story.get('priority_weight') != 2 or story.get('priority') != 'phase2':
+                print('fail: ' + story.get('id', '?') + ' has weight=' + str(story.get('priority_weight')))
+                sys.exit(0)
+print('yes')
+" <<< "$json_output" 2>/dev/null)
+if [ "$phase2_weight" = "yes" ]; then
+    log_pass "Phase 2 epic stories (3.x, 4.x) have priority_weight=2"
+else
+    log_fail "Phase 2 stories have weight 2" "$phase2_weight"
+fi
+
+# test_phase3_stories_have_weight_3
+phase3_weight=$($PYTHON3 -c "
+import json, sys
+data = json.loads(sys.stdin.read())
+epics = data.get('epics', [])
+for epic in epics:
+    title = epic.get('epic', '')
+    if 'Epic 5' in title:
+        if epic.get('priority_weight') != 3 or epic.get('priority') != 'phase3':
+            print('fail: epic weight=' + str(epic.get('priority_weight')))
+            sys.exit(0)
+print('yes')
+" <<< "$json_output" 2>/dev/null)
+if [ "$phase3_weight" = "yes" ]; then
+    log_pass "Phase 3 epic (5) has priority_weight=3"
+else
+    log_fail "Phase 3 epic has weight 3" "$phase3_weight"
+fi
+
+# test_priority_ordering (MVP stories before Phase 2 before Phase 3)
+priority_order=$($PYTHON3 -c "
+import json, sys
+data = json.loads(sys.stdin.read())
+epics = data.get('epics', [])
+# Flatten all stories with their weights
+stories = []
+for epic in epics:
+    for story in epic.get('stories', []):
+        stories.append((story.get('id', ''), story.get('priority_weight', 2)))
+# Sort by weight and verify MVP comes first
+sorted_stories = sorted(stories, key=lambda x: x[1])
+# Check: all weight=1 stories appear before weight=2 stories
+mvp_ids = [s[0] for s in sorted_stories if s[1] == 1]
+phase2_ids = [s[0] for s in sorted_stories if s[1] == 2]
+phase3_ids = [s[0] for s in sorted_stories if s[1] == 3]
+ok = all(s.startswith(('1.', '2.')) for s in mvp_ids) and \
+     all(s.startswith(('3.', '4.')) for s in phase2_ids)
+print('yes' if ok else 'no')
+" <<< "$json_output" 2>/dev/null)
+if [ "$priority_order" = "yes" ]; then
+    log_pass "priority ordering: MVP stories (1.x, 2.x) sort before Phase 2 (3.x, 4.x)"
+else
+    log_fail "priority ordering" "MVP stories not correctly ordered before Phase 2"
+fi
+
+echo ""
+
+# ============================================================
+# Category 3c: Write-Back Tests (v6.29.0)
+# ============================================================
+echo "--- Write-Back Tests ---"
+
+# test_write_back_sprint_status
+WB_SPRINT="$TMPDIR/wb-sprint"
+mkdir -p "$WB_SPRINT/_bmad-output/planning-artifacts"
+cp "$FIXTURE_COMPLETE/_bmad-output/planning-artifacts/prd-taskflow.md" "$WB_SPRINT/_bmad-output/planning-artifacts/"
+cp "$FIXTURE_COMPLETE/_bmad-output/planning-artifacts/epics.md" "$WB_SPRINT/_bmad-output/planning-artifacts/"
+cp "$FIXTURE_COMPLETE/_bmad-output/planning-artifacts/sprint-status.yml" "$WB_SPRINT/_bmad-output/planning-artifacts/"
+
+# Create completed stories file
+echo '["Task CRUD", "Drag-and-Drop State Changes"]' > "$TMPDIR/completed.json"
+
+# Run write-back
+output=$($PYTHON3 "$ADAPTER" "$WB_SPRINT" --write-back --completed-stories-file "$TMPDIR/completed.json" 2>&1)
+exit_code=$?
+if [ "$exit_code" -eq 0 ]; then
+    # Check sprint-status.yml was updated
+    task_crud_status=$(grep -A1 "Task CRUD" "$WB_SPRINT/_bmad-output/planning-artifacts/sprint-status.yml" | grep "status:" | head -1 | sed 's/.*status:[[:space:]]*//')
+    if [ "$task_crud_status" = "completed" ]; then
+        log_pass "write-back updates sprint-status.yml: Task CRUD -> completed"
+    else
+        log_fail "write-back sprint-status" "Task CRUD status='$task_crud_status', expected 'completed'"
+    fi
+else
+    log_fail "write-back sprint-status" "adapter --write-back failed with exit=$exit_code"
+fi
+
+# test_write_back_preserves_uncompleted
+pending_status=$(grep -A1 "Task Assignment" "$WB_SPRINT/_bmad-output/planning-artifacts/sprint-status.yml" | grep "status:" | head -1 | sed 's/.*status:[[:space:]]*//')
+if [ "$pending_status" = "pending" ]; then
+    log_pass "write-back preserves uncompleted stories as pending"
+else
+    log_fail "write-back preserves uncompleted" "Task Assignment status='$pending_status', expected 'pending'"
+fi
+
+# test_write_back_epics_checkboxes
+if grep -q "\[x\] Completed" "$WB_SPRINT/_bmad-output/planning-artifacts/epics.md"; then
+    # Count checkboxes
+    checked_count=$(grep -c "\[x\] Completed" "$WB_SPRINT/_bmad-output/planning-artifacts/epics.md" 2>/dev/null || echo "0")
+    if [ "$checked_count" -ge 2 ]; then
+        log_pass "write-back adds checkboxes to epics.md: $checked_count stories checked"
+    else
+        log_fail "write-back epics checkboxes" "expected >= 2 checked, got $checked_count"
+    fi
+else
+    log_fail "write-back epics checkboxes" "no [x] Completed markers found in epics.md"
+fi
+
+# test_write_back_single_story
+WB_SINGLE="$TMPDIR/wb-single"
+mkdir -p "$WB_SINGLE/_bmad-output/planning-artifacts"
+cp "$FIXTURE_COMPLETE/_bmad-output/planning-artifacts/prd-taskflow.md" "$WB_SINGLE/_bmad-output/planning-artifacts/"
+cp "$FIXTURE_COMPLETE/_bmad-output/planning-artifacts/epics.md" "$WB_SINGLE/_bmad-output/planning-artifacts/"
+cp "$FIXTURE_COMPLETE/_bmad-output/planning-artifacts/sprint-status.yml" "$WB_SINGLE/_bmad-output/planning-artifacts/"
+
+output=$($PYTHON3 "$ADAPTER" "$WB_SINGLE" --write-back --completed-story "Team Management" 2>&1)
+exit_code=$?
+if [ "$exit_code" -eq 0 ]; then
+    team_mgmt_status=$(grep -A1 "Team Management" "$WB_SINGLE/_bmad-output/planning-artifacts/sprint-status.yml" | grep "status:" | head -1 | sed 's/.*status:[[:space:]]*//')
+    if [ "$team_mgmt_status" = "completed" ]; then
+        log_pass "write-back --completed-story works for single story"
+    else
+        log_fail "write-back single story" "Team Management status='$team_mgmt_status', expected 'completed'"
+    fi
+else
+    log_fail "write-back single story" "exit=$exit_code"
+fi
+
+# test_write_back_no_stories_is_safe
+output=$($PYTHON3 "$ADAPTER" "$WB_SINGLE" --write-back 2>&1)
+exit_code=$?
+if [ "$exit_code" -eq 0 ]; then
+    log_pass "write-back with no completed stories exits cleanly"
+else
+    log_fail "write-back no stories" "expected exit 0, got $exit_code"
+fi
+
+echo ""
+
+# ============================================================
 # Category 4: Validation Tests
 # ============================================================
 echo "--- Validation Tests ---"

@@ -1,3 +1,16 @@
+## v6.29.0 (2026-03-18)
+
+### New Features
+- BMAD story priority ordering by MVP/phase label: stories from MVP epics are queued first, then Phase 2, then Phase 3
+- Auto-write-back to sprint-status.yml and epics.md checkboxes when stories are completed
+- New CLI flags: --write-back, --completed-story, --completed-stories-file for bmad-adapter.py
+- Priority fields (priority, priority_weight) added to parsed epic and story data
+
+### Changed
+- parse_epics() now extracts phase labels from Epic List section and headings
+- run.sh BMAD queue population sorts stories by priority_weight before queuing
+- track_iteration_complete() triggers bmad_write_back() after successful iterations
+
 ## v6.28.0 (2026-03-18)
 
 ### New Features

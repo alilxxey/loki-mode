@@ -3629,6 +3629,11 @@ except:
 
     # Clear current-task.json
     echo "{}" > .loki/queue/current-task.json
+
+    # Write-back completed BMAD stories to source artifacts (v6.29.0)
+    if [ "$exit_code" = "0" ]; then
+        bmad_write_back
+    fi
 }
 
 start_status_monitor() {
@@ -8198,6 +8203,9 @@ if not stories:
     print("No BMAD stories found to queue", file=sys.stderr)
     sys.exit(0)
 
+# Sort stories by priority_weight (MVP=1 first, then phase2=2, then phase3=3)
+stories.sort(key=lambda s: s.get("priority_weight", 2) if isinstance(s, dict) else 2)
+
 # Filter out completed stories from sprint-status
 skipped_count = 0
 if completed_stories:
@@ -8267,6 +8275,45 @@ BMAD_QUEUE_EOF
     # Mark as populated so we don't re-add on restart
     touch ".loki/queue/.bmad-populated"
     log_info "BMAD queue population complete"
+}
+
+# Write-back completed BMAD stories to sprint-status.yml and epics.md
+# Called after each iteration to sync completion state back to BMAD artifacts
+bmad_write_back() {
+    # Skip if not a BMAD project
+    local bmad_project="${BMAD_PROJECT_PATH:-}"
+    if [[ -z "$bmad_project" ]]; then
+        return 0
+    fi
+
+    # Skip if no completed stories file
+    local completed_file=".loki/bmad-completed-stories.json"
+    if [[ ! -f "$completed_file" ]]; then
+        return 0
+    fi
+
+    # Skip if completed stories file is empty or just []
+    local story_count
+    story_count=$(python3 -c "import json; data=json.load(open('$completed_file')); print(len(data))" 2>/dev/null || echo "0")
+    if [[ "$story_count" -eq 0 ]]; then
+        return 0
+    fi
+
+    # Find the adapter script
+    local adapter_script="${SCRIPT_DIR}/bmad-adapter.py"
+    if [[ ! -f "$adapter_script" ]]; then
+        log_warn "BMAD adapter not found, skipping write-back"
+        return 0
+    fi
+
+    # Run write-back (warn on failure, never crash)
+    if python3 "$adapter_script" "$bmad_project" \
+        --write-back \
+        --completed-stories-file "$completed_file" 2>/dev/null; then
+        log_info "BMAD write-back: synced completed stories to source artifacts"
+    else
+        log_warn "BMAD write-back failed (non-fatal)"
+    fi
 }
 
 #===============================================================================

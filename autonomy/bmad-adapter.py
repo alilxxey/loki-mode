@@ -306,6 +306,42 @@ def normalize_prd(prd_path: Path) -> Tuple[Dict[str, Any], str]:
 
 # -- Epic/Story Extraction ----------------------------------------------------
 
+def _extract_phase_label(text: str) -> Tuple[str, int]:
+    """Extract MVP/phase label from an epic title or list entry.
+
+    Returns (priority_label, sort_weight):
+        - "(MVP)" -> ("mvp", 1)
+        - "(Phase 2)" or "post-MVP" -> ("phase2", 2)
+        - "(Phase 3)" or "deferred" -> ("phase3", 3)
+        - No label -> ("medium", 2)
+    """
+    lower = text.lower()
+    if "(mvp)" in lower or "mvp" in lower.split():
+        return "mvp", 1
+    if re.search(r"\(phase\s*2\)", lower) or "post-mvp" in lower:
+        return "phase2", 2
+    if re.search(r"\(phase\s*3\)", lower) or "deferred" in lower:
+        return "phase3", 3
+    return "medium", 2
+
+
+def _build_epic_phase_map(body: str) -> Dict[int, Tuple[str, int]]:
+    """Scan the Epic List section for phase labels by epic number.
+
+    Looks for lines like: "- Epic 1: Core Task Board (MVP)"
+    Returns {epic_number: (priority_label, sort_weight)}.
+    """
+    phase_map: Dict[int, Tuple[str, int]] = {}
+    for m in re.finditer(r"Epic\s+(\d+)\s*:\s*(.+)", body):
+        epic_num = int(m.group(1))
+        full_text = m.group(2).strip()
+        label, weight = _extract_phase_label(full_text)
+        # Only store if we actually found a label (not default)
+        if label != "medium" or epic_num not in phase_map:
+            phase_map[epic_num] = (label, weight)
+    return phase_map
+
+
 def parse_epics(epics_path: Path) -> List[Dict[str, Any]]:
     """Parse epics.md into structured JSON.
 
@@ -313,11 +349,15 @@ def parse_epics(epics_path: Path) -> List[Dict[str, Any]]:
         [
             {
                 "epic": "Epic 1: Core Task Board",
+                "priority": "mvp",
+                "priority_weight": 1,
                 "description": "...",
                 "stories": [
                     {
                         "id": "1.1",
                         "title": "Task CRUD",
+                        "priority": "mvp",
+                        "priority_weight": 1,
                         "as_a": "team member",
                         "i_want": "create, edit, and delete tasks",
                         "so_that": "I can track my work items.",
@@ -329,6 +369,9 @@ def parse_epics(epics_path: Path) -> List[Dict[str, Any]]:
     """
     text = _safe_read(epics_path)
     _, body = parse_frontmatter(text)
+
+    # Pre-scan for phase labels in Epic List section and headings
+    epic_phase_map = _build_epic_phase_map(body)
 
     epics: List[Dict[str, Any]] = []
     current_epic: Optional[Dict[str, Any]] = None
@@ -349,7 +392,7 @@ def parse_epics(epics_path: Path) -> List[Dict[str, Any]]:
         stripped = line.strip()
 
         # Epic heading: ## Epic N: Title
-        epic_match = re.match(r"^##\s+(Epic\s+\d+.*)", stripped)
+        epic_match = re.match(r"^##\s+(Epic\s+(\d+).*)", stripped)
         if epic_match:
             # Flush any pending acceptance criteria
             _flush_acceptance()
@@ -357,8 +400,18 @@ def parse_epics(epics_path: Path) -> List[Dict[str, Any]]:
             current_story = None
 
             epic_title = epic_match.group(1).strip()
+            epic_num = int(epic_match.group(2))
+
+            # Get phase from pre-scanned map, fallback to heading text
+            if epic_num in epic_phase_map:
+                priority, weight = epic_phase_map[epic_num]
+            else:
+                priority, weight = _extract_phase_label(epic_title)
+
             current_epic = {
                 "epic": epic_title,
+                "priority": priority,
+                "priority_weight": weight,
                 "description": "",
                 "stories": [],
             }
@@ -373,9 +426,14 @@ def parse_epics(epics_path: Path) -> List[Dict[str, Any]]:
 
             story_id = story_match.group(1)
             story_title = story_match.group(2).strip()
+            # Inherit priority from parent epic
+            epic_priority = current_epic.get("priority", "medium")
+            epic_weight = current_epic.get("priority_weight", 2)
             current_story = {
                 "id": story_id,
                 "title": story_title,
+                "priority": epic_priority,
+                "priority_weight": epic_weight,
                 "as_a": "",
                 "i_want": "",
                 "so_that": "",
@@ -510,6 +568,153 @@ def parse_sprint_status(path: Path) -> set:
                 current_name = None
 
     return completed
+
+
+# -- Sprint Status Write-Back -------------------------------------------------
+
+def write_sprint_status(path: Path, completed_stories: set) -> bool:
+    """Update sprint-status.yml to mark completed stories.
+
+    Reads the existing file, finds story entries by name, and updates
+    their status to 'completed'. Writes back atomically.
+
+    Returns True if any updates were made.
+    """
+    if not path.exists():
+        return False
+
+    text = _safe_read(path)
+    lines = text.split("\n")
+    updated = False
+    current_name: Optional[str] = None
+
+    # Normalize completed story names for matching
+    completed_lower = {s.lower() for s in completed_stories}
+
+    new_lines: List[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+
+        # Track story name
+        name_match = re.match(r'^(\s*)-?\s*name:\s*["\']?(.*?)["\']?\s*$', stripped)
+        if name_match:
+            current_name = name_match.group(2).strip()
+            new_lines.append(line)
+            i += 1
+            continue
+
+        # Update status line for matching stories
+        status_match = re.match(r'^(\s*)status:\s*["\']?(.*?)["\']?\s*$', stripped)
+        if status_match and current_name and current_name.lower() in completed_lower:
+            indent = status_match.group(1)
+            old_status = status_match.group(2).strip().lower()
+            if old_status not in ("completed", "done"):
+                # Preserve indentation, update status
+                new_lines.append(f"{indent}status: completed")
+                updated = True
+                current_name = None
+                i += 1
+                continue
+
+        new_lines.append(line)
+        i += 1
+
+    if updated:
+        _write_atomic(path, "\n".join(new_lines))
+
+    return updated
+
+
+def update_epics_checkboxes(epics_path: Path, completed_stories: set) -> bool:
+    """Update epics.md to check off completed stories.
+
+    For each completed story, adds or updates a checkbox marker
+    under the story heading: `- [x] Completed` or `- [ ] Pending`.
+
+    Returns True if any updates were made.
+    """
+    if not epics_path.exists():
+        return False
+
+    text = _safe_read(epics_path)
+    lines = text.split("\n")
+
+    # Normalize completed story IDs and titles for matching
+    completed_ids = set()
+    completed_titles = set()
+    for s in completed_stories:
+        completed_ids.add(s.lower())
+        completed_titles.add(s.lower())
+
+    new_lines: List[str] = []
+    updated = False
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+
+        # Story heading: ### Story N.M: Title
+        story_match = re.match(r"^###\s+Story\s+(\d+\.\d+):\s*(.*)", stripped)
+        if story_match:
+            story_id = story_match.group(1)
+            story_title = story_match.group(2).strip()
+            is_completed = (
+                story_id in completed_ids
+                or story_title.lower() in completed_titles
+                or f"Story {story_id}: {story_title}".lower() in completed_titles
+            )
+
+            new_lines.append(line)
+            i += 1
+
+            # Check if next non-empty line is already a checkbox
+            # Skip blank lines between heading and checkbox
+            blank_count = 0
+            while i < len(lines) and not lines[i].strip():
+                new_lines.append(lines[i])
+                blank_count += 1
+                i += 1
+
+            if i < len(lines):
+                next_stripped = lines[i].strip()
+                checkbox_match = re.match(r"^-\s+\[([ xX])\]\s+(Completed|Pending)", next_stripped)
+                if checkbox_match:
+                    # Update existing checkbox
+                    if is_completed and checkbox_match.group(1) == " ":
+                        new_lines.append("- [x] Completed")
+                        updated = True
+                        i += 1
+                        continue
+                    elif not is_completed and checkbox_match.group(1) in ("x", "X"):
+                        new_lines.append("- [ ] Pending")
+                        updated = True
+                        i += 1
+                        continue
+                    else:
+                        # Already correct state
+                        new_lines.append(lines[i])
+                        i += 1
+                        continue
+                else:
+                    # No existing checkbox -- insert one if story is completed
+                    if is_completed:
+                        new_lines.append("")
+                        new_lines.append("- [x] Completed")
+                        new_lines.append("")
+                        updated = True
+                    # Continue processing current line (don't skip it)
+                    continue
+            continue
+
+        new_lines.append(line)
+        i += 1
+
+    if updated:
+        _write_atomic(epics_path, "\n".join(new_lines))
+
+    return updated
 
 
 # -- Architecture Summary -----------------------------------------------------
@@ -820,6 +1025,75 @@ def run(
     return 0
 
 
+def write_back(
+    project_path: str,
+    completed_story: Optional[str] = None,
+    completed_stories_file: Optional[str] = None,
+) -> int:
+    """Write-back mode: update sprint-status.yml and epics.md checkboxes.
+
+    Reads completed stories from either --completed-story arg or
+    .loki/bmad-completed-stories.json, then updates the BMAD source files.
+
+    Returns exit code (0 = success, 1 = errors).
+    """
+    artifacts = BmadArtifacts(project_path)
+    if not artifacts.is_valid:
+        print("ERROR: Not a valid BMAD project", file=sys.stderr)
+        return 1
+
+    # Collect completed stories
+    completed: set = set()
+
+    if completed_story:
+        completed.add(completed_story)
+
+    if completed_stories_file:
+        cpath = Path(completed_stories_file)
+        if cpath.exists():
+            try:
+                data = json.loads(cpath.read_text(encoding="utf-8"))
+                if isinstance(data, list):
+                    completed.update(s for s in data if isinstance(s, str))
+            except (json.JSONDecodeError, OSError) as e:
+                print(f"Warning: Could not read completed stories file: {e}", file=sys.stderr)
+
+    if not completed:
+        print("No completed stories to write back", file=sys.stderr)
+        return 0
+
+    updates = 0
+
+    # Update sprint-status.yml
+    if artifacts.sprint_status_path:
+        try:
+            if write_sprint_status(artifacts.sprint_status_path, completed):
+                print(f"Updated sprint-status.yml with {len(completed)} completed stories")
+                updates += 1
+            else:
+                print("sprint-status.yml: no changes needed")
+        except Exception as e:
+            print(f"Warning: Failed to update sprint-status.yml: {e}", file=sys.stderr)
+
+    # Update epics.md checkboxes
+    if artifacts.epics_path:
+        try:
+            if update_epics_checkboxes(artifacts.epics_path, completed):
+                print(f"Updated epics.md checkboxes for {len(completed)} completed stories")
+                updates += 1
+            else:
+                print("epics.md: no changes needed")
+        except Exception as e:
+            print(f"Warning: Failed to update epics.md: {e}", file=sys.stderr)
+
+    if updates > 0:
+        print(f"Write-back complete: {updates} file(s) updated")
+    else:
+        print("Write-back complete: no files updated")
+
+    return 0
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="BMAD Artifact Adapter for Loki Mode",
@@ -830,6 +1104,7 @@ def main() -> None:
             "  python3 bmad-adapter.py ./my-project --json\n"
             "  python3 bmad-adapter.py ./my-project --validate\n"
             "  python3 bmad-adapter.py ./my-project --output-dir .loki/ --validate\n"
+            "  python3 bmad-adapter.py ./my-project --write-back --completed-story 'Task CRUD'\n"
         ),
     )
     parser.add_argument(
@@ -852,14 +1127,38 @@ def main() -> None:
         action="store_true",
         help="Run artifact chain validation",
     )
+    parser.add_argument(
+        "--write-back",
+        action="store_true",
+        dest="write_back_mode",
+        help="Update sprint-status.yml and epics.md with completed stories",
+    )
+    parser.add_argument(
+        "--completed-story",
+        default=None,
+        help="Name/title of a single completed story (for --write-back)",
+    )
+    parser.add_argument(
+        "--completed-stories-file",
+        default=None,
+        help="Path to JSON file with list of completed story names (for --write-back)",
+    )
 
     args = parser.parse_args()
-    exit_code = run(
-        project_path=args.project_path,
-        output_dir=args.output_dir,
-        as_json=args.as_json,
-        validate=args.validate,
-    )
+
+    if args.write_back_mode:
+        exit_code = write_back(
+            project_path=args.project_path,
+            completed_story=args.completed_story,
+            completed_stories_file=args.completed_stories_file,
+        )
+    else:
+        exit_code = run(
+            project_path=args.project_path,
+            output_dir=args.output_dir,
+            as_json=args.as_json,
+            validate=args.validate,
+        )
     sys.exit(exit_code)
 
 
