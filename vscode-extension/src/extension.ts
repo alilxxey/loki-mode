@@ -866,6 +866,10 @@ async function showQuickPick(): Promise<void> {
         { label: '$(info) Show Status', description: 'Display current status' },
         { label: '$(file) Open PRD', description: 'Open PRD file' },
         { label: '$(terminal) Inject Input', description: 'Send input to Loki Mode' },
+        { label: '$(outline-view-icon) Analyze PRD', description: 'Run loki plan' },
+        { label: '$(checklist) Review Code', description: 'Run loki review' },
+        { label: '$(book) Onboard Project', description: 'Run loki onboard' },
+        { label: '$(pass) CI Quality Gates', description: 'Run loki ci' },
     ];
 
     const selected = await vscode.window.showQuickPick(items, {
@@ -906,6 +910,18 @@ async function showQuickPick(): Promise<void> {
             break;
         case '$(terminal) Inject Input':
             await injectInput();
+            break;
+        case '$(outline-view-icon) Analyze PRD':
+            vscode.commands.executeCommand('loki.plan');
+            break;
+        case '$(checklist) Review Code':
+            vscode.commands.executeCommand('loki.review');
+            break;
+        case '$(book) Onboard Project':
+            vscode.commands.executeCommand('loki.onboard');
+            break;
+        case '$(pass) CI Quality Gates':
+            vscode.commands.executeCommand('loki.ci');
             break;
     }
 }
@@ -1056,6 +1072,41 @@ export function activate(context: vscode.ExtensionContext): void {
         }),
         vscode.commands.registerCommand('loki.rollbackCheckpoint', async (item) => {
             await checkpointProvider.rollbackCheckpoint(item);
+        }),
+        vscode.commands.registerCommand('loki.plan', async () => {
+            const prdUri = await vscode.window.showOpenDialog({
+                canSelectFiles: true,
+                canSelectFolders: false,
+                canSelectMany: false,
+                filters: {
+                    'PRD Files': ['md', 'txt', 'json'],
+                    'All Files': ['*']
+                },
+                title: 'Select PRD File to Analyze'
+            });
+            const prdArg = prdUri && prdUri.length > 0 ? ` "${prdUri[0].fsPath}"` : '';
+            const terminal = vscode.window.createTerminal('Loki Plan');
+            terminal.show();
+            terminal.sendText(`loki plan${prdArg}`);
+            logger.info(`Running loki plan${prdArg}`);
+        }),
+        vscode.commands.registerCommand('loki.review', () => {
+            const terminal = vscode.window.createTerminal('Loki Review');
+            terminal.show();
+            terminal.sendText('loki review');
+            logger.info('Running loki review');
+        }),
+        vscode.commands.registerCommand('loki.onboard', () => {
+            const terminal = vscode.window.createTerminal('Loki Onboard');
+            terminal.show();
+            terminal.sendText('loki onboard');
+            logger.info('Running loki onboard');
+        }),
+        vscode.commands.registerCommand('loki.ci', () => {
+            const terminal = vscode.window.createTerminal('Loki CI');
+            terminal.show();
+            terminal.sendText('loki ci');
+            logger.info('Running loki ci');
         })
     ];
 

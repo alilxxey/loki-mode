@@ -5,6 +5,16 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [6.23.0] - 2026-03-18
+
+### Added
+- VSCode extension: added 4 new commands to command palette and quick pick menu
+  - "Analyze PRD Complexity (loki plan)" -- opens file picker for PRD, runs loki plan
+  - "Review Code Quality (loki review)" -- runs loki review on current workspace
+  - "Onboard Project (loki onboard)" -- runs loki onboard in terminal
+  - "Run CI Quality Gates (loki ci)" -- runs loki ci on current changes
+- All new commands available via Command Palette (Ctrl+Shift+P) and the Loki quick pick menu
+
 ## [6.22.0] - 2026-03-18
 
 ### Added
