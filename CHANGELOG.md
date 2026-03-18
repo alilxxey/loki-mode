@@ -5,6 +5,21 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [6.20.0] - 2026-03-18
+
+### Added
+- `loki review` standalone code review command with diff-based quality gates
+- Review sources: uncommitted changes, staged (--staged), GitHub PR (--pr), files/dirs, since commit (--since)
+- Security scanning: hardcoded secrets, SQL injection, eval/exec, unsafe deserialization, disabled SSL
+- Static analysis integration: shellcheck, eslint detection and execution
+- Code style checks: file length, line length, TODO/FIXME markers
+- Anti-pattern detection: console.log artifacts, bare except clauses, hardcoded IPs
+- Structured output with severity ratings (CRITICAL/HIGH/MEDIUM/LOW/INFO)
+- JSON output (--format json) for CI/CD integration
+- Severity filtering (--severity level) to show only findings at or above a threshold
+- Exit codes: 0 (clean), 1 (HIGH findings), 2 (CRITICAL findings)
+- Test suite: `tests/test-review-command.sh` with 6 tests
+
 ## [6.19.0] - 2026-03-18
 
 ### Added
