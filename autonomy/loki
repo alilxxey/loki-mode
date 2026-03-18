@@ -435,6 +435,7 @@ show_help() {
     echo "  agent [cmd]      Agent type dispatch (list|info|run|start|review)"
     echo "  remote [PRD]     Start remote session (connect from phone/browser, Claude Pro/Max)"
   echo "  trigger          Event-driven autonomous execution (schedules, webhooks)"
+    echo "  failover [cmd]   Cross-provider auto-failover (status|--enable|--test|--chain)"
     echo "  plan <PRD>       Dry-run PRD analysis: complexity, cost, and execution plan"
     echo "  version          Show version"
     echo "  help             Show this help"
@@ -8299,6 +8300,225 @@ for line in sys.stdin:
     esac
 }
 
+# Cross-provider auto-failover management (v6.19.0)
+cmd_failover() {
+    local loki_dir="${TARGET_DIR:-.}/.loki"
+    local failover_file="$loki_dir/state/failover.json"
+    local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+    if [ $# -eq 0 ]; then
+        # No args: show current failover config and health
+        if [ ! -f "$failover_file" ]; then
+            echo -e "${BOLD}Cross-Provider Auto-Failover${NC}"
+            echo ""
+            echo "Status: DISABLED"
+            echo ""
+            echo "Enable with: loki failover --enable"
+            echo "Or set:      LOKI_FAILOVER=true loki start"
+            return 0
+        fi
+
+        echo -e "${BOLD}Cross-Provider Auto-Failover${NC}"
+        echo ""
+        python3 << 'PYEOF'
+import json, os
+fpath = os.path.join(os.environ.get('TARGET_DIR', '.'), '.loki/state/failover.json')
+try:
+    with open(fpath) as f:
+        d = json.load(f)
+    status = "ENABLED" if d.get("enabled") else "DISABLED"
+    print(f"Status:           {status}")
+    print(f"Chain:            {' -> '.join(d.get('chain', []))}")
+    print(f"Current provider: {d.get('currentProvider', 'unknown')}")
+    print(f"Primary provider: {d.get('primaryProvider', 'unknown')}")
+    print(f"Failover count:   {d.get('failoverCount', 0)}")
+    last = d.get('lastFailover')
+    print(f"Last failover:    {last if last else 'never'}")
+    print()
+    print("Health Status:")
+    health = d.get('healthCheck', {})
+    for provider in d.get('chain', []):
+        h = health.get(provider, 'unknown')
+        indicator = '[OK]' if h == 'healthy' else '[--]' if h == 'unknown' else '[!!]'
+        print(f"  {indicator} {provider}: {h}")
+except FileNotFoundError:
+    print("Failover not initialized. Run: loki failover --enable")
+except Exception as e:
+    print(f"Error reading failover state: {e}")
+PYEOF
+        return 0
+    fi
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --enable)
+                mkdir -p "$loki_dir/state"
+                local current_provider
+                current_provider=$(cat "$loki_dir/state/provider" 2>/dev/null || echo "claude")
+                local chain="${LOKI_FAILOVER_CHAIN:-claude,codex,gemini}"
+
+                cat > "$failover_file" << FEOF
+{
+  "enabled": true,
+  "chain": $(printf '%s' "$chain" | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read().strip().split(",")))' 2>/dev/null || echo '["claude","codex","gemini"]'),
+  "currentProvider": "$current_provider",
+  "primaryProvider": "$current_provider",
+  "lastFailover": null,
+  "failoverCount": 0,
+  "healthCheck": {}
+}
+FEOF
+                echo -e "${GREEN}Failover enabled${NC}"
+                echo "Chain: $chain"
+                echo "Primary: $current_provider"
+                shift
+                ;;
+            --disable)
+                if [ -f "$failover_file" ]; then
+                    python3 -c "
+import json
+with open('$failover_file') as f: d = json.load(f)
+d['enabled'] = False
+with open('$failover_file', 'w') as f: json.dump(d, f, indent=2)
+" 2>/dev/null
+                    echo -e "${YELLOW}Failover disabled${NC}"
+                else
+                    echo "Failover not initialized."
+                fi
+                shift
+                ;;
+            --chain)
+                shift
+                local new_chain="$1"
+                if [ -z "$new_chain" ]; then
+                    echo -e "${RED}Error: --chain requires a comma-separated list of providers${NC}"
+                    return 1
+                fi
+                # Validate each provider in chain
+                local IFS=','
+                for p in $new_chain; do
+                    case "$p" in
+                        claude|codex|gemini|cline|aider) ;;
+                        *) echo -e "${RED}Error: invalid provider '$p' in chain${NC}"; return 1 ;;
+                    esac
+                done
+                unset IFS
+
+                if [ ! -f "$failover_file" ]; then
+                    echo -e "${RED}Error: failover not initialized. Run: loki failover --enable${NC}"
+                    return 1
+                fi
+
+                python3 -c "
+import json
+with open('$failover_file') as f: d = json.load(f)
+d['chain'] = '$new_chain'.split(',')
+with open('$failover_file', 'w') as f: json.dump(d, f, indent=2)
+" 2>/dev/null
+                echo "Failover chain updated: $new_chain"
+                shift
+                ;;
+            --test)
+                echo -e "${BOLD}Testing all providers in failover chain...${NC}"
+                echo ""
+                # Source provider loader for health checks
+                if [ -f "$script_dir/../providers/loader.sh" ]; then
+                    source "$script_dir/../providers/loader.sh"
+                fi
+
+                local chain_providers="claude,codex,gemini"
+                if [ -f "$failover_file" ]; then
+                    chain_providers=$(python3 -c "import json; print(','.join(json.load(open('$failover_file')).get('chain', ['claude','codex','gemini'])))" 2>/dev/null || echo "claude,codex,gemini")
+                fi
+
+                local IFS=','
+                local all_pass=true
+                for p in $chain_providers; do
+                    printf "  %-10s " "$p:"
+
+                    # Check CLI installed
+                    local cli_name="$p"
+                    if command -v "$cli_name" &>/dev/null; then
+                        local cli_version
+                        cli_version=$("$cli_name" --version 2>/dev/null | head -1 || echo "unknown")
+                        printf "CLI %-20s " "[$cli_version]"
+                    else
+                        printf "CLI %-20s " "[NOT INSTALLED]"
+                        echo -e "${RED}FAIL${NC}"
+                        all_pass=false
+                        continue
+                    fi
+
+                    # Check API key
+                    local has_key=false
+                    case "$p" in
+                        claude) [ -n "${ANTHROPIC_API_KEY:-}" ] && has_key=true ;;
+                        codex) [ -n "${OPENAI_API_KEY:-}" ] && has_key=true ;;
+                        gemini) [ -n "${GOOGLE_API_KEY:-${GEMINI_API_KEY:-}}" ] && has_key=true ;;
+                        cline|aider) has_key=true ;;  # Key check varies
+                    esac
+
+                    if [ "$has_key" = "true" ]; then
+                        printf "Key [OK]  "
+                        echo -e "${GREEN}PASS${NC}"
+                    else
+                        printf "Key [MISSING]  "
+                        echo -e "${RED}FAIL${NC}"
+                        all_pass=false
+                    fi
+                done
+                unset IFS
+
+                echo ""
+                if [ "$all_pass" = "true" ]; then
+                    echo -e "${GREEN}All providers healthy${NC}"
+                else
+                    echo -e "${YELLOW}Some providers unavailable - failover chain may be limited${NC}"
+                fi
+                shift
+                ;;
+            --reset)
+                if [ -f "$failover_file" ]; then
+                    rm -f "$failover_file"
+                    echo "Failover state reset to defaults."
+                else
+                    echo "No failover state to reset."
+                fi
+                shift
+                ;;
+            --help|-h)
+                echo -e "${BOLD}loki failover${NC} - Cross-provider auto-failover management (v6.19.0)"
+                echo ""
+                echo "Usage: loki failover [options]"
+                echo ""
+                echo "Options:"
+                echo "  (no args)        Show failover status and health"
+                echo "  --enable         Enable auto-failover"
+                echo "  --disable        Disable auto-failover"
+                echo "  --chain X,Y,Z    Set failover chain (e.g., claude,codex,gemini)"
+                echo "  --test           Test all providers in chain"
+                echo "  --reset          Reset failover state to defaults"
+                echo "  --help, -h       Show this help"
+                echo ""
+                echo "Environment:"
+                echo "  LOKI_FAILOVER=true         Enable failover at startup"
+                echo "  LOKI_FAILOVER_CHAIN=X,Y,Z  Set default chain"
+                echo ""
+                echo "When a rate limit (429/529) is detected, Loki automatically switches"
+                echo "to the next healthy provider in the chain. After each successful"
+                echo "iteration on a fallback provider, the primary is health-checked and"
+                echo "execution switches back when it recovers."
+                return 0
+                ;;
+            *)
+                echo -e "${RED}Unknown option: $1${NC}"
+                echo "Run 'loki failover --help' for usage."
+                return 1
+                ;;
+        esac
+    done
+}
+
 # Dry-run PRD analysis and cost estimation (v6.18.0)
 cmd_plan() {
     local prd_file=""
@@ -8965,6 +9185,9 @@ main() {
             ;;
         plan)
             cmd_plan "$@"
+            ;;
+        failover)
+            cmd_failover "$@"
             ;;
         version|--version|-v)
             cmd_version

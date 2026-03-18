@@ -6526,6 +6526,278 @@ calculate_wait() {
 }
 
 #===============================================================================
+# Cross-Provider Auto-Failover (v6.19.0)
+#===============================================================================
+
+# Initialize failover state file on startup
+init_failover_state() {
+    local failover_dir="${TARGET_DIR:-.}/.loki/state"
+    local failover_file="$failover_dir/failover.json"
+
+    # Only create if failover is enabled via env or config
+    if [ "${LOKI_FAILOVER:-false}" != "true" ]; then
+        return
+    fi
+
+    mkdir -p "$failover_dir"
+
+    if [ ! -f "$failover_file" ]; then
+        local chain="${LOKI_FAILOVER_CHAIN:-claude,codex,gemini}"
+        local primary="${PROVIDER_NAME:-claude}"
+        cat > "$failover_file" << FEOF
+{
+  "enabled": true,
+  "chain": $(printf '%s' "$chain" | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read().strip().split(",")))' 2>/dev/null || echo '["claude","codex","gemini"]'),
+  "currentProvider": "$primary",
+  "primaryProvider": "$primary",
+  "lastFailover": null,
+  "failoverCount": 0,
+  "healthCheck": {
+    "$primary": "healthy"
+  }
+}
+FEOF
+        log_info "Failover initialized: chain=$chain, primary=$primary"
+    fi
+}
+
+# Read failover config from state file
+# Sets: FAILOVER_ENABLED, FAILOVER_CHAIN, FAILOVER_CURRENT, FAILOVER_PRIMARY
+read_failover_config() {
+    local failover_file="${TARGET_DIR:-.}/.loki/state/failover.json"
+
+    if [ ! -f "$failover_file" ]; then
+        FAILOVER_ENABLED="false"
+        return 1
+    fi
+
+    eval "$(python3 << 'PYEOF' 2>/dev/null || echo 'FAILOVER_ENABLED=false'
+import json, os
+try:
+    with open(os.path.join(os.environ.get('TARGET_DIR', '.'), '.loki/state/failover.json')) as f:
+        d = json.load(f)
+    chain = ','.join(d.get('chain', ['claude','codex','gemini']))
+    print(f'FAILOVER_ENABLED={str(d.get("enabled", False)).lower()}')
+    print(f'FAILOVER_CHAIN="{chain}"')
+    print(f'FAILOVER_CURRENT="{d.get("currentProvider", "claude")}"')
+    print(f'FAILOVER_PRIMARY="{d.get("primaryProvider", "claude")}"')
+    print(f'FAILOVER_COUNT={d.get("failoverCount", 0)}')
+except Exception:
+    print('FAILOVER_ENABLED=false')
+PYEOF
+    )"
+}
+
+# Update failover state file
+update_failover_state() {
+    local key="$1"
+    local value="$2"
+    local failover_file="${TARGET_DIR:-.}/.loki/state/failover.json"
+
+    [ ! -f "$failover_file" ] && return 1
+
+    python3 << PYEOF 2>/dev/null || true
+import json, os
+fpath = os.path.join(os.environ.get('TARGET_DIR', '.'), '.loki/state/failover.json')
+try:
+    with open(fpath) as f:
+        d = json.load(f)
+    key = "$key"
+    value = "$value"
+    # Handle type conversion
+    if value == "null":
+        d[key] = None
+    elif value == "true":
+        d[key] = True
+    elif value == "false":
+        d[key] = False
+    elif value.isdigit():
+        d[key] = int(value)
+    else:
+        d[key] = value
+    with open(fpath, 'w') as f:
+        json.dump(d, f, indent=2)
+except Exception:
+    pass
+PYEOF
+}
+
+# Update health status for a specific provider in failover.json
+update_failover_health() {
+    local provider="$1"
+    local status="$2"  # healthy, unhealthy, unknown
+    local failover_file="${TARGET_DIR:-.}/.loki/state/failover.json"
+
+    [ ! -f "$failover_file" ] && return 1
+
+    python3 << PYEOF 2>/dev/null || true
+import json, os
+fpath = os.path.join(os.environ.get('TARGET_DIR', '.'), '.loki/state/failover.json')
+try:
+    with open(fpath) as f:
+        d = json.load(f)
+    if 'healthCheck' not in d:
+        d['healthCheck'] = {}
+    d['healthCheck']["$provider"] = "$status"
+    with open(fpath, 'w') as f:
+        json.dump(d, f, indent=2)
+except Exception:
+    pass
+PYEOF
+}
+
+# Check provider health: API key exists + CLI installed
+# Returns: 0 if healthy, 1 if unhealthy
+check_provider_health() {
+    local provider="$1"
+
+    # Check CLI is installed
+    case "$provider" in
+        claude)
+            command -v claude &>/dev/null || return 1
+            [ -n "${ANTHROPIC_API_KEY:-}" ] || return 1
+            ;;
+        codex)
+            command -v codex &>/dev/null || return 1
+            [ -n "${OPENAI_API_KEY:-}" ] || return 1
+            ;;
+        gemini)
+            command -v gemini &>/dev/null || return 1
+            [ -n "${GOOGLE_API_KEY:-${GEMINI_API_KEY:-}}" ] || return 1
+            ;;
+        cline)
+            command -v cline &>/dev/null || return 1
+            ;;
+        aider)
+            command -v aider &>/dev/null || return 1
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+
+    return 0
+}
+
+# Attempt failover to next healthy provider in chain
+# Called when rate limit is detected on current provider
+# Returns: 0 if failover succeeded, 1 if all providers exhausted
+attempt_provider_failover() {
+    read_failover_config || return 1
+
+    if [ "$FAILOVER_ENABLED" != "true" ]; then
+        return 1
+    fi
+
+    local current="${FAILOVER_CURRENT:-${PROVIDER_NAME:-claude}}"
+    log_warn "Failover: rate limit on $current, checking chain: $FAILOVER_CHAIN"
+
+    # Mark current as unhealthy
+    update_failover_health "$current" "unhealthy"
+
+    # Walk the chain looking for the next healthy provider
+    local IFS=','
+    local found_current=false
+    local tried_wrap=false
+
+    # Two passes: first from current position to end, then from start to current
+    for provider in $FAILOVER_CHAIN $FAILOVER_CHAIN; do
+        if [ "$provider" = "$current" ]; then
+            if [ "$found_current" = "true" ]; then
+                # We've wrapped around, all exhausted
+                break
+            fi
+            found_current=true
+            continue
+        fi
+
+        [ "$found_current" != "true" ] && continue
+
+        # Check if this provider is healthy
+        if check_provider_health "$provider"; then
+            log_info "Failover: switching from $current to $provider"
+
+            # Load the new provider config
+            local provider_dir
+            provider_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/providers"
+            if [ -f "$provider_dir/$provider.sh" ]; then
+                source "$provider_dir/$provider.sh"
+            fi
+
+            # Update state
+            update_failover_state "currentProvider" "$provider"
+            update_failover_state "lastFailover" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            update_failover_state "failoverCount" "$((FAILOVER_COUNT + 1))"
+            update_failover_health "$provider" "healthy"
+
+            # Update runtime provider vars
+            PROVIDER_NAME="$provider"
+
+            emit_event_json "provider_failover" \
+                "from=$current" \
+                "to=$provider" \
+                "reason=rate_limit" \
+                "iteration=$ITERATION_COUNT" 2>/dev/null || true
+
+            log_info "Failover: now using $provider (failover #$((FAILOVER_COUNT + 1)))"
+            return 0
+        else
+            log_debug "Failover: $provider is unhealthy, skipping"
+            update_failover_health "$provider" "unhealthy"
+        fi
+    done
+
+    log_warn "Failover: all providers in chain exhausted, falling back to retry"
+    return 1
+}
+
+# Check if primary provider has recovered after running on a fallback
+# Called after each successful iteration when on a non-primary provider
+# Returns: 0 if switched back to primary, 1 if still on fallback
+check_primary_recovery() {
+    read_failover_config || return 1
+
+    if [ "$FAILOVER_ENABLED" != "true" ]; then
+        return 1
+    fi
+
+    local current="${FAILOVER_CURRENT:-${PROVIDER_NAME:-claude}}"
+    local primary="${FAILOVER_PRIMARY:-claude}"
+
+    # Already on primary
+    if [ "$current" = "$primary" ]; then
+        return 1
+    fi
+
+    # Check if primary is healthy again
+    if check_provider_health "$primary"; then
+        log_info "Failover: primary provider $primary appears healthy, switching back"
+
+        # Load primary provider config
+        local provider_dir
+        provider_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/providers"
+        if [ -f "$provider_dir/$primary.sh" ]; then
+            source "$provider_dir/$primary.sh"
+        fi
+
+        update_failover_state "currentProvider" "$primary"
+        update_failover_health "$primary" "healthy"
+
+        PROVIDER_NAME="$primary"
+
+        emit_event_json "provider_recovery" \
+            "from=$current" \
+            "to=$primary" \
+            "iteration=$ITERATION_COUNT" 2>/dev/null || true
+
+        log_info "Failover: recovered to primary provider $primary"
+        return 0
+    fi
+
+    return 1
+}
+
+#===============================================================================
 # Rate Limit Detection
 #===============================================================================
 
@@ -8145,6 +8417,9 @@ run_autonomous() {
     load_state
     local retry=$RETRY_COUNT
 
+    # Initialize Cross-Provider Failover (v6.19.0)
+    init_failover_state
+
     # Initialize Completion Council (v5.25.0)
     if type council_init &>/dev/null; then
         council_init "$prd_path"
@@ -8784,6 +9059,9 @@ if __name__ == "__main__":
                 log_warn "Council will evaluate at next check interval (every ${COUNCIL_CHECK_INTERVAL:-5} iterations)"
             fi
 
+            # Cross-provider failover: check if primary has recovered (v6.19.0)
+            check_primary_recovery 2>/dev/null || true
+
             # SUCCESS exit - continue IMMEDIATELY to next iteration (no wait!)
             log_step "Starting next iteration..."
             ((retry++))
@@ -8801,6 +9079,13 @@ if __name__ == "__main__":
         local wait_time
 
         if [ $rate_limit_wait -gt 0 ]; then
+            # Cross-provider failover (v6.19.0): try switching provider before waiting
+            if attempt_provider_failover 2>/dev/null; then
+                log_info "Failover succeeded - retrying immediately with ${PROVIDER_NAME}"
+                ((retry++))
+                continue
+            fi
+
             wait_time=$rate_limit_wait
             local human_time=$(format_duration $wait_time)
             log_warn "Rate limit detected! Waiting until reset (~$human_time)..."

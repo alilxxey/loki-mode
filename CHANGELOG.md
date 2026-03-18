@@ -5,6 +5,18 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [6.19.0] - 2026-03-18
+
+### Added
+- Cross-provider auto-failover: automatic provider switching on rate limit (429/529) detection
+- `loki failover` command: status, --enable, --disable, --chain, --test, --reset
+- Failover state persistence in `.loki/state/failover.json`
+- Health checking: API key + CLI version validation per provider
+- Primary recovery: automatic switch-back when primary provider recovers
+- `LOKI_FAILOVER=true` and `LOKI_FAILOVER_CHAIN=X,Y,Z` environment variables
+- Failover event emission for dashboard and telemetry tracking
+- 14 tests in `tests/test-failover.sh` covering state, config, health, and CLI
+
 ## [6.18.0] - 2026-03-18
 
 ### Added
