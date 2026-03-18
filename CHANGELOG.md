@@ -1,3 +1,22 @@
+## v6.32.0 (2026-03-18)
+
+### New Features
+- `loki metrics` command: session productivity reporter that analyzes past Loki Mode sessions
+  - Reads `.loki/` session data (orchestrator state, queue, efficiency metrics, memory)
+  - Aggregates stats: iterations completed, agents deployed, tasks completed, success rate
+  - Git integration: lines added/removed, commits, files changed, tests written
+  - Time saved estimate: total_iterations x 15min per iteration
+  - ASCII stats card output -- screenshot-worthy formatted report
+  - `--json` flag for machine-readable output
+  - `--last N` flag to analyze only the last N sessions
+  - `--save` flag writes METRICS.md to project root
+  - `--share` flag uploads report as GitHub Gist
+  - `prometheus` subcommand preserves legacy Prometheus/OpenMetrics dashboard fetch
+  - Shell completions updated for bash and zsh
+
+### Tests
+- New test suite: tests/test-metrics-command.sh (12 tests)
+
 ## v6.31.0 (2026-03-18)
 
 ### New Features

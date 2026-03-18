@@ -5,7 +5,7 @@ _loki_completion() {
     _init_completion || return
 
     # Main subcommands (must match autonomy/loki main case statement)
-    local main_commands="start quick demo init stop pause resume status dashboard logs serve api sandbox notify import github issue config provider reset memory compound checkpoint council dogfood projects enterprise voice secrets doctor watchdog audit metrics syslog onboard share version completions help"
+    local main_commands="start quick demo init stop pause resume status dashboard logs serve api sandbox notify import github issue config provider reset memory compound checkpoint council dogfood projects enterprise voice secrets doctor watchdog audit metrics syslog onboard share explain plan report test ci version completions help"
 
     # 1. If we are on the first argument (subcommand)
     if [[ $cword -eq 1 ]]; then
@@ -142,6 +142,15 @@ _loki_completion() {
                 return 0
             fi
             _filedir -d
+            ;;
+
+        metrics)
+            if [[ "$cur" == -* ]]; then
+                COMPREPLY=( $(compgen -W "--json --last --save --share --help" -- "$cur") )
+                return 0
+            fi
+            local metrics_cmds="prometheus"
+            COMPREPLY=( $(compgen -W "${metrics_cmds}" -- "$cur") )
             ;;
 
         share)

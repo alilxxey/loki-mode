@@ -70,6 +70,15 @@ function _loki {
                 issue)
                     _loki_issue
                     ;;
+                metrics)
+                    _arguments \
+                        '--json[Machine-readable JSON output]' \
+                        '--last[Analyze last N sessions]:number:' \
+                        '--save[Write report to METRICS.md]' \
+                        '--share[Upload report as GitHub Gist]' \
+                        '--help[Show help]' \
+                        '1:subcommand:(prometheus)'
+                    ;;
                 share)
                     _arguments \
                         '--private[Create a secret gist]' \
@@ -115,6 +124,7 @@ function _loki_commands {
         'voice:Voice input commands'
         'doctor:Check system prerequisites'
         'onboard:Analyze repo and generate CLAUDE.md'
+        'metrics:Session productivity report'
         'share:Share session report as GitHub Gist'
         'version:Show version'
         'completions:Output shell completions'

@@ -424,7 +424,7 @@ show_help() {
     echo "  review [opts]    Standalone code review with quality gates (diff, staged, PR, files)"
     echo "  optimize         Optimize prompts based on session history"
     echo "  enterprise       Enterprise feature management (tokens, OIDC)"
-    echo "  metrics          Prometheus/OpenMetrics metrics from dashboard"
+    echo "  metrics [opts]   Session productivity report (--json, --last N, --save, --share)"
     echo "  dogfood          Show self-development statistics"
     echo "  secrets [cmd]    API key status and validation (status|validate)"
     echo "  reset [target]   Reset session state (all|retries|failed)"
@@ -13833,47 +13833,448 @@ cmd_syslog() {
 
 # Fetch and display Prometheus metrics from dashboard
 cmd_metrics() {
-    local subcommand="${1:-}"
-    local port="${LOKI_DASHBOARD_PORT:-57374}"
-    local host="127.0.0.1"
+    local show_json=false
+    local last_n=0
+    local save_file=false
+    local share_flag=false
 
-    case "$subcommand" in
-        help|--help|-h)
-            echo -e "${BOLD}loki metrics${NC} - Prometheus/OpenMetrics metrics"
-            echo ""
-            echo "Usage: loki metrics [options]"
-            echo ""
-            echo "Fetches metrics from the dashboard API in Prometheus/OpenMetrics format."
-            echo "The dashboard must be running (loki dashboard start or loki serve)."
-            echo ""
-            echo "Options:"
-            echo "  help    Show this help"
-            echo ""
-            echo "Environment:"
-            echo "  LOKI_DASHBOARD_PORT   Dashboard port (default: 57374)"
-            echo ""
-            echo "Examples:"
-            echo "  loki metrics          # Display all metrics"
-            echo "  loki metrics | grep loki_cost_usd   # Filter specific metric"
-            ;;
-        "")
-            # Fetch metrics from dashboard
-            local url="http://${host}:${port}/metrics"
-            local response
-            response=$(curl -sf "$url" 2>/dev/null) || true
-            if [ -z "$response" ]; then
-                echo -e "${RED}Error: Could not connect to dashboard at ${url}${NC}"
-                echo "Make sure the dashboard is running: loki serve"
-                exit 1
-            fi
-            echo "$response"
-            ;;
-        *)
-            echo -e "${RED}Unknown metrics command: $subcommand${NC}"
-            echo "Run 'loki metrics help' for usage."
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --help|-h)
+                echo -e "${BOLD}loki metrics${NC} - Session productivity reporter"
+                echo ""
+                echo "Usage: loki metrics [options]"
+                echo ""
+                echo "Analyzes past Loki Mode session data and generates a productivity"
+                echo "stats report showing agents deployed, iterations completed, files"
+                echo "changed, and estimated time saved."
+                echo ""
+                echo "Options:"
+                echo "  --json               Machine-readable JSON output"
+                echo "  --last N             Analyze only the last N sessions (default: all)"
+                echo "  --save               Write report to METRICS.md in project root"
+                echo "  --share              Upload report as GitHub Gist (via loki share)"
+                echo "  --help, -h           Show this help"
+                echo ""
+                echo "Subcommands:"
+                echo "  prometheus           Fetch Prometheus/OpenMetrics from dashboard"
+                echo ""
+                echo "Examples:"
+                echo "  loki metrics                   # Full productivity report"
+                echo "  loki metrics --json            # Machine-readable output"
+                echo "  loki metrics --last 5          # Last 5 sessions only"
+                echo "  loki metrics --save            # Write METRICS.md"
+                echo "  loki metrics --share           # Share as GitHub Gist"
+                echo "  loki metrics prometheus        # Prometheus metrics from dashboard"
+                exit 0
+                ;;
+            --json) show_json=true; shift ;;
+            --last) last_n="${2:-0}"; shift 2 ;;
+            --last=*) last_n="${1#*=}"; shift ;;
+            --save) save_file=true; shift ;;
+            --share) share_flag=true; shift ;;
+            prometheus)
+                # Legacy Prometheus metrics subcommand
+                shift
+                local port="${LOKI_DASHBOARD_PORT:-57374}"
+                local host="127.0.0.1"
+                local url="http://${host}:${port}/metrics"
+                local response
+                response=$(curl -sf "$url" 2>/dev/null) || true
+                if [ -z "$response" ]; then
+                    echo -e "${RED}Error: Could not connect to dashboard at ${url}${NC}"
+                    echo "Make sure the dashboard is running: loki serve"
+                    exit 1
+                fi
+                echo "$response"
+                exit 0
+                ;;
+            *) echo -e "${RED}Unknown option: $1${NC}"; echo "Run 'loki metrics --help' for usage."; exit 1 ;;
+        esac
+    done
+
+    local loki_dir="${LOKI_DIR:-.loki}"
+
+    if ! command -v python3 &>/dev/null; then
+        echo -e "${RED}python3 is required for metrics generation${NC}"
+        exit 1
+    fi
+
+    local metrics_output
+    metrics_output=$(LOKI_DIR="$loki_dir" \
+        METRICS_JSON="$show_json" \
+        METRICS_LAST_N="$last_n" \
+        METRICS_SAVE="$save_file" \
+        python3 << 'METRICS_SCRIPT'
+import json
+import os
+import sys
+import glob
+import subprocess
+from datetime import datetime
+
+loki_dir = os.environ.get("LOKI_DIR", ".loki")
+show_json = os.environ.get("METRICS_JSON", "false") == "true"
+last_n = int(os.environ.get("METRICS_LAST_N", "0"))
+save_flag = os.environ.get("METRICS_SAVE", "false") == "true"
+
+def load_json(path):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+def fmt_number(n):
+    return f"{n:,}"
+
+def load_queue(path):
+    data = load_json(path)
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict) and "tasks" in data:
+        return data["tasks"]
+    return []
+
+# --- Gather project name ---
+project_name = os.path.basename(os.getcwd())
+
+# --- Session data ---
+sessions_analyzed = 0
+total_iterations = 0
+total_tasks_completed = 0
+total_tasks_failed = 0
+agent_types_seen = set()
+total_duration_seconds = 0
+
+# Count sessions from checkpoints index or autonomy-state
+checkpoint_index = os.path.join(loki_dir, "state", "checkpoints", "index.jsonl")
+session_entries = []
+if os.path.isfile(checkpoint_index):
+    try:
+        with open(checkpoint_index) as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    try:
+                        session_entries.append(json.loads(line))
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+# Orchestrator state
+orch = load_json(os.path.join(loki_dir, "state", "orchestrator.json")) or {}
+current_phase = orch.get("currentPhase", "N/A")
+orch_metrics = orch.get("metrics", {})
+tasks_completed_orch = orch_metrics.get("tasksCompleted", 0)
+tasks_failed_orch = orch_metrics.get("tasksFailed", 0)
+
+# Per-iteration efficiency files
+eff_dir = os.path.join(loki_dir, "metrics", "efficiency")
+iterations = []
+if os.path.isdir(eff_dir):
+    for path in sorted(glob.glob(os.path.join(eff_dir, "iteration-*.json"))):
+        data = load_json(path)
+        if data:
+            iterations.append(data)
+
+# Apply --last N filter
+if last_n > 0 and len(iterations) > last_n:
+    iterations = iterations[-last_n:]
+
+total_iterations = len(iterations) if iterations else max(orch.get("currentIteration", 0), 0)
+
+# Gather agent types from iterations and agents.json
+for it in iterations:
+    model = it.get("model", "")
+    if model:
+        agent_types_seen.add(model)
+    total_duration_seconds += it.get("duration_seconds", 0)
+
+agents_file = os.path.join(loki_dir, "state", "agents.json")
+agents_data = load_json(agents_file)
+if isinstance(agents_data, list):
+    for agent in agents_data:
+        atype = agent.get("agent_type", "")
+        if atype:
+            agent_types_seen.add(atype)
+
+# Queue data for task counts
+completed_tasks = load_queue(os.path.join(loki_dir, "queue", "completed.json"))
+failed_tasks = load_queue(os.path.join(loki_dir, "queue", "failed.json"))
+pending_tasks = load_queue(os.path.join(loki_dir, "queue", "pending.json"))
+in_progress_tasks = load_queue(os.path.join(loki_dir, "queue", "in-progress.json"))
+
+total_tasks_completed = len(completed_tasks) if completed_tasks else tasks_completed_orch
+total_tasks_failed = len(failed_tasks) if failed_tasks else tasks_failed_orch
+total_tasks = total_tasks_completed + total_tasks_failed + len(pending_tasks) + len(in_progress_tasks)
+success_rate = (total_tasks_completed / total_tasks * 100) if total_tasks > 0 else 0.0
+
+# Session count: count unique session directories or fall back to 1 if .loki exists
+sessions_dir = os.path.join(loki_dir, "state", "sessions")
+if os.path.isdir(sessions_dir):
+    sessions_analyzed = len([d for d in os.listdir(sessions_dir) if os.path.isdir(os.path.join(sessions_dir, d))])
+if sessions_analyzed == 0:
+    # Check autonomy-state.json retryCount as proxy for session attempts
+    auto_state = load_json(os.path.join(loki_dir, "autonomy-state.json"))
+    if auto_state:
+        sessions_analyzed = max(1, auto_state.get("retryCount", 1))
+    elif os.path.isdir(loki_dir):
+        sessions_analyzed = 1
+
+# Apply --last N to sessions
+if last_n > 0:
+    sessions_analyzed = min(sessions_analyzed, last_n)
+
+# --- Git stats ---
+lines_added = 0
+lines_removed = 0
+commits_made = 0
+files_changed_git = 0
+tests_written = 0
+
+try:
+    result = subprocess.run(
+        ["git", "log", "--shortstat", "--format="],
+        capture_output=True, text=True, timeout=10
+    )
+    if result.returncode == 0:
+        for line in result.stdout.strip().split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(",")
+            for part in parts:
+                part = part.strip()
+                if "file" in part and "changed" in part:
+                    try:
+                        files_changed_git += int(part.split()[0])
+                    except (ValueError, IndexError):
+                        pass
+                elif "insertion" in part:
+                    try:
+                        lines_added += int(part.split()[0])
+                    except (ValueError, IndexError):
+                        pass
+                elif "deletion" in part:
+                    try:
+                        lines_removed += int(part.split()[0])
+                    except (ValueError, IndexError):
+                        pass
+
+    # Count commits
+    result2 = subprocess.run(
+        ["git", "rev-list", "--count", "HEAD"],
+        capture_output=True, text=True, timeout=10
+    )
+    if result2.returncode == 0:
+        commits_made = int(result2.stdout.strip())
+except Exception:
+    pass
+
+# Estimate tests written from git log (files matching test/spec patterns)
+try:
+    result3 = subprocess.run(
+        ["git", "log", "--diff-filter=A", "--name-only", "--format="],
+        capture_output=True, text=True, timeout=10
+    )
+    if result3.returncode == 0:
+        for fname in result3.stdout.strip().split("\n"):
+            fname = fname.strip().lower()
+            if any(kw in fname for kw in ["test", "spec", ".test.", ".spec.", "_test.", "_spec."]):
+                tests_written += 1
+except Exception:
+    pass
+
+# --- Token/cost data ---
+total_cost = sum(it.get("cost_usd", 0) for it in iterations)
+total_input_tokens = sum(it.get("input_tokens", 0) for it in iterations)
+total_output_tokens = sum(it.get("output_tokens", 0) for it in iterations)
+
+# Also check context tracking for cost data
+ctx_file = os.path.join(loki_dir, "context", "tracking.json")
+ctx = load_json(ctx_file)
+if ctx and total_cost == 0:
+    totals = ctx.get("totals", {})
+    total_cost = totals.get("total_cost_usd", 0)
+    total_input_tokens = totals.get("total_input", 0)
+    total_output_tokens = totals.get("total_output", 0)
+
+# --- Time saved estimate ---
+# Each Loki iteration replaces ~15min of manual work
+time_saved_hours = round(total_iterations * 15 / 60, 2)
+
+# --- Memory stats ---
+episodic_count = 0
+semantic_count = 0
+episodic_dir = os.path.join(loki_dir, "memory", "episodic")
+semantic_dir = os.path.join(loki_dir, "memory", "semantic")
+if os.path.isdir(episodic_dir):
+    for root, dirs, files in os.walk(episodic_dir):
+        episodic_count += len([f for f in files if f.endswith(".json")])
+if os.path.isdir(semantic_dir):
+    for root, dirs, files in os.walk(semantic_dir):
+        semantic_count += len([f for f in files if f.endswith(".json")])
+
+# --- Build output ---
+version = "6.32.0"
+try:
+    version_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "VERSION")
+    # In heredoc context, __file__ is not reliable; try relative
+    for vf in ["VERSION", "../VERSION", os.path.join(loki_dir, "..", "VERSION")]:
+        if os.path.isfile(vf):
+            with open(vf) as f:
+                version = f.read().strip()
+            break
+except Exception:
+    pass
+
+data = {
+    "project": project_name,
+    "sessions_analyzed": sessions_analyzed,
+    "agent_activity": {
+        "total_iterations": total_iterations,
+        "agent_types": len(agent_types_seen),
+        "tasks_completed": total_tasks_completed,
+        "tasks_failed": total_tasks_failed,
+        "success_rate": round(success_rate, 1)
+    },
+    "code_output": {
+        "files_changed": files_changed_git,
+        "lines_added": lines_added,
+        "lines_removed": lines_removed,
+        "commits": commits_made,
+        "tests_written": tests_written
+    },
+    "tokens": {
+        "input": total_input_tokens,
+        "output": total_output_tokens,
+        "total": total_input_tokens + total_output_tokens,
+        "cost_usd": round(total_cost, 2)
+    },
+    "time_saved": {
+        "hours": time_saved_hours,
+        "iterations": total_iterations,
+        "minutes_per_iteration": 15
+    },
+    "memory": {
+        "episodic_entries": episodic_count,
+        "semantic_patterns": semantic_count
+    },
+    "version": version
+}
+
+if show_json:
+    print(json.dumps(data, indent=2))
+else:
+    # ASCII stats card
+    lines = []
+    lines.append("")
+    lines.append("LOKI MODE PRODUCTIVITY REPORT")
+    lines.append("=" * 40)
+    lines.append(f"Project: {project_name}")
+    lines.append(f"Sessions analyzed: {sessions_analyzed}")
+    lines.append("")
+    lines.append("AGENT ACTIVITY")
+    lines.append(f"  Total iterations:    {fmt_number(total_iterations)}")
+    lines.append(f"  Agent types used:    {len(agent_types_seen)}")
+    lines.append(f"  Tasks completed:     {fmt_number(total_tasks_completed)}")
+    if total_tasks_failed > 0:
+        lines.append(f"  Tasks failed:        {fmt_number(total_tasks_failed)}")
+    if total_tasks > 0:
+        lines.append(f"  Success rate:        {success_rate:.1f}%")
+    lines.append("")
+    lines.append("CODE OUTPUT")
+    lines.append(f"  Files changed:       {fmt_number(files_changed_git)}")
+    lines.append(f"  Lines added:         {fmt_number(lines_added)}")
+    lines.append(f"  Lines removed:       {fmt_number(lines_removed)}")
+    lines.append(f"  Commits:             {fmt_number(commits_made)}")
+    lines.append(f"  Tests written:       {fmt_number(tests_written)}")
+    lines.append("")
+    if total_cost > 0 or total_input_tokens > 0:
+        lines.append("TOKEN USAGE")
+        lines.append(f"  Input tokens:        {fmt_number(total_input_tokens)}")
+        lines.append(f"  Output tokens:       {fmt_number(total_output_tokens)}")
+        lines.append(f"  Estimated cost:      ${total_cost:.2f}")
+        lines.append("")
+    lines.append("TIME SAVED")
+    lines.append(f"  Estimated:           {time_saved_hours} hours")
+    lines.append(f"  (based on {fmt_number(total_iterations)} iterations x 15min each)")
+    lines.append("")
+    if episodic_count > 0 or semantic_count > 0:
+        lines.append("MEMORY")
+        lines.append(f"  Episodic entries:    {fmt_number(episodic_count)}")
+        lines.append(f"  Semantic patterns:   {fmt_number(semantic_count)}")
+        lines.append("")
+    lines.append(f"Generated by Loki Mode v{version} | autonomi.dev")
+    lines.append("Share your stats: loki metrics --share")
+    lines.append("")
+
+    output_text = "\n".join(lines)
+    print(output_text)
+
+    # Save to METRICS.md if requested
+    if save_flag:
+        try:
+            with open("METRICS.md", "w") as f:
+                f.write("# Loki Mode Productivity Report\n\n")
+                f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+                f.write("```\n")
+                f.write(output_text.strip())
+                f.write("\n```\n")
+            print("Saved to METRICS.md")
+        except Exception as e:
+            print(f"Error saving METRICS.md: {e}", file=sys.stderr)
+
+METRICS_SCRIPT
+    )
+    local metrics_exit=$?
+
+    if [ $metrics_exit -ne 0 ]; then
+        echo -e "${RED}Failed to generate metrics report${NC}"
+        echo "$metrics_output"
+        exit 1
+    fi
+
+    echo "$metrics_output"
+
+    # Handle --share flag
+    if [ "$share_flag" = true ]; then
+        local tmpfile
+        tmpfile=$(mktemp "/tmp/loki-metrics-XXXXXX.md")
+        echo "$metrics_output" > "$tmpfile"
+
+        if ! command -v gh &>/dev/null; then
+            echo -e "${RED}gh CLI not found -- cannot share${NC}"
+            echo "Install: brew install gh"
+            rm -f "$tmpfile"
             exit 1
-            ;;
-    esac
+        fi
+
+        if ! gh auth status &>/dev/null 2>&1; then
+            echo -e "${RED}GitHub CLI not authenticated${NC}"
+            echo "Run 'gh auth login' to authenticate."
+            rm -f "$tmpfile"
+            exit 1
+        fi
+
+        echo "Uploading metrics report..."
+        local gist_desc="Loki Mode productivity report - ${project_name:-project} ($(date +%Y-%m-%d))"
+        local project_name
+        project_name=$(basename "$(pwd)")
+        local gist_url
+        gist_url=$(gh gist create "$tmpfile" --desc "$gist_desc" --public 2>&1)
+        local gist_exit=$?
+        rm -f "$tmpfile"
+
+        if [ $gist_exit -ne 0 ]; then
+            echo -e "${RED}Failed to create gist${NC}"
+            echo "$gist_url"
+            exit 1
+        fi
+        echo -e "${GREEN}Shared: ${gist_url}${NC}"
+    fi
 }
 
 # Output shell completion scripts
