@@ -8617,6 +8617,8 @@ if __name__ == "__main__":
             fi
         fi
 
+        log_step "Post-iteration: running inter-iteration checks..."
+
         # App Runner: restart on code changes (v5.45.0)
         if [ "${APP_RUNNER_INITIALIZED:-}" = "true" ] && type app_runner_should_restart &>/dev/null; then
             if app_runner_should_restart; then
@@ -8661,10 +8663,12 @@ if __name__ == "__main__":
         create_checkpoint "iteration-${ITERATION_COUNT} complete" "iteration-${ITERATION_COUNT}"
 
         # Quality gates (v6.10.0 - escalation ladder)
+        log_step "Post-iteration: running quality gates..."
         local gate_failures=""
         if [ "${LOKI_HARD_GATES:-true}" = "true" ]; then
             # Static analysis gate
             if [ "${PHASE_STATIC_ANALYSIS:-true}" = "true" ]; then
+                log_info "Quality gate: static analysis..."
                 if enforce_static_analysis; then
                     clear_gate_failure "static_analysis"
                 else
@@ -8676,6 +8680,7 @@ if __name__ == "__main__":
             fi
             # Test coverage gate
             if [ "${PHASE_UNIT_TESTS:-true}" = "true" ]; then
+                log_info "Quality gate: test coverage..."
                 if enforce_test_coverage; then
                     clear_gate_failure "test_coverage"
                 else
@@ -8687,6 +8692,7 @@ if __name__ == "__main__":
             fi
             # Code review gate (upgraded from advisory, with escalation)
             if [ "$PHASE_CODE_REVIEW" = "true" ] && [ "$ITERATION_COUNT" -gt 0 ]; then
+                log_info "Quality gate: code review..."
                 if run_code_review; then
                     clear_gate_failure "code_review"
                 else
@@ -8717,9 +8723,11 @@ if __name__ == "__main__":
             fi
         else
             if [ "$PHASE_CODE_REVIEW" = "true" ] && [ "$ITERATION_COUNT" -gt 0 ]; then
+                log_info "Quality gate: code review (advisory)..."
                 run_code_review || log_warn "Code review found issues - check .loki/quality/reviews/"
             fi
         fi
+        log_info "Quality gates complete."
 
         # Automatic episode capture after every RARV iteration (v6.15.0)
         # Captures RARV phase, git changes, and iteration context automatically
@@ -8745,6 +8753,7 @@ if __name__ == "__main__":
 
             # Completion Council check (v5.25.0) - multi-agent voting on completion
             # Runs before completion promise check since council is more comprehensive
+            log_step "Post-iteration: checking completion council..."
             if type council_should_stop &>/dev/null && council_should_stop; then
                 echo ""
                 log_header "COMPLETION COUNCIL: PROJECT COMPLETE"
@@ -8776,7 +8785,7 @@ if __name__ == "__main__":
             fi
 
             # SUCCESS exit - continue IMMEDIATELY to next iteration (no wait!)
-            log_info "Iteration complete. Continuing to next iteration..."
+            log_step "Starting next iteration..."
             ((retry++))
             continue  # Immediately start next iteration, no exponential backoff
         fi
