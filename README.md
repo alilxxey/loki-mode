@@ -8,8 +8,13 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Agent Types](https://img.shields.io/badge/Agent%20Types-41-blue)]()
 [![Autonomi](https://img.shields.io/badge/Autonomi-autonomi.dev-5B4EEA)](https://www.autonomi.dev/)
+[![Docker Pulls](https://img.shields.io/docker/pulls/asklokesh/loki-mode)](https://hub.docker.com/r/asklokesh/loki-mode)
 
-**Current Version: v6.22.0**
+**Current Version: v6.26.2**
+
+### Traction
+
+**737 stars** | **150 forks** | **10,200+ Docker pulls** | **18,000+ npm downloads** | **571+ commits** | **12 releases in a single day (March 18, 2026)**
 
 ---
 
@@ -133,6 +138,9 @@ See [full architecture documentation](docs/enterprise/architecture.md) for the d
 | **Enterprise** | TLS, OIDC/SSO, RBAC, OTEL, policy engine, audit trails | [Enterprise Guide](docs/enterprise/architecture.md) |
 | **Integrations** | Jira, Slack, Teams, GitHub Actions (Linear: partial) | [Integration Cookbook](docs/enterprise/integration-cookbook.md) |
 | **Deployment** | Helm, Docker Compose, Terraform configs (AWS/Azure/GCP) | [Deployment Guide](deploy/helm/README.md) |
+| **Web App** | Replit-like UI with 10 React components, PRD input, agent dashboard, file browser, memory viewer | [Dashboard Guide](docs/dashboard-guide.md) |
+| **Cost Estimation** | Pre-execution analysis with complexity scoring, token/cost projection | [Memory System](references/memory-system.md) |
+| **Auto-Failover** | Cross-provider failover (Claude -> Codex -> Gemini) when rate limited | [Provider Guide](skills/providers.md) |
 | **SDKs** | Python (`loki-mode-sdk`), TypeScript (`loki-mode-sdk`) | [SDK Guide](docs/enterprise/sdk-guide.md) |
 
 ### Multi-Provider Support
@@ -162,6 +170,13 @@ Claude gets full features (subagents, parallelization, MCP, Task tool). All othe
 | `loki import` | Import GitHub issues as tasks |
 | `loki memory <cmd>` | Memory system CLI (index, timeline, search, consolidate) |
 | `loki enterprise` | Enterprise feature management (tokens, OIDC) |
+| `loki plan [PRD]` | Pre-execution analysis: complexity scoring, cost estimation, iteration prediction |
+| `loki review [--staged\|--diff]` | AI-powered code review with 4 quality gates, severity filtering, CI output |
+| `loki onboard [path]` | Instant project analysis and CLAUDE.md generation (12+ config types, 3 depth levels) |
+| `loki ci` | CI/CD quality gate integration (GitHub Actions, GitLab CI, Jenkins, CircleCI) |
+| `loki test [--file\|--dir\|--changed]` | AI-powered test generation (8 languages, 9 frameworks) |
+| `loki failover [status\|--enable\|--chain]` | Cross-provider auto-failover when primary hits rate limits |
+| `loki web` | Launch the web app (Replit-like UI for visual PRD-to-code workflow) |
 | `loki version` | Show version |
 
 Run `loki --help` for all commands. Full reference: [CLI Reference](wiki/CLI-Reference.md) | Configuration: [config.example.yaml](autonomy/config.example.yaml)
