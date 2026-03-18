@@ -5,9 +5,17 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [6.25.2] - 2026-03-18
+
+### Fixed
+- Added missing `loki web` CLI command -- v6.25.0 shipped the web app but the CLI command to launch it was not included
+- `loki web` serves the built web app, auto-starts the dashboard API, opens browser
+- Subcommands: start (default), stop, status. Options: --port, --no-open, --no-api
 ## [6.26.0] - 2026-03-18
 
 ### Added
+- `loki web` CLI command: serves the web app, auto-starts dashboard API, opens browser
+  - Subcommands: start (default), stop, status. Options: --port, --no-open, --no-api
 - Web App: File Browser with recursive tree view, expand/collapse, file content preview
 - Web App: Memory Viewer with episodic/semantic/skills stat cards, token usage progress bar
 - Web App: Quality Gates Panel with 9-gate status display, progress bar, expandable details
