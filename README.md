@@ -10,11 +10,11 @@
 [![Autonomi](https://img.shields.io/badge/Autonomi-autonomi.dev-5B4EEA)](https://www.autonomi.dev/)
 [![Docker Pulls](https://img.shields.io/docker/pulls/asklokesh/loki-mode)](https://hub.docker.com/r/asklokesh/loki-mode)
 
-**Current Version: v6.26.2**
+**Current Version: v6.27.0**
 
 ### Traction
 
-**737 stars** | **150 forks** | **10,200+ Docker pulls** | **18,000+ npm downloads** | **571+ commits** | **12 releases in a single day (March 18, 2026)**
+**737 stars** | **150 forks** | **10,500+ Docker pulls** | **19,000+ npm downloads** | **588 commits** | **173 npm versions published** | **17 releases in a single day (March 18, 2026)**
 
 ---
 
