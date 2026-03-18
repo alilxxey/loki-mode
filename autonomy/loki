@@ -442,6 +442,7 @@ show_help() {
     echo "  ci [opts]        CI/CD quality gate integration (--pr, --report, --github-comment)"
     echo "  test [opts]      AI-powered test generation (--file, --dir, --changed, --dry-run)"
     echo "  report [opts]    Session report generator (--format text|markdown|html, --output)"
+    echo "  share [opts]     Share session report as GitHub Gist (--private, --format)"
     echo "  version          Show version"
     echo "  help             Show this help"
     echo ""
@@ -9557,6 +9558,9 @@ main() {
         report)
             cmd_report "$@"
             ;;
+        share)
+            cmd_share "$@"
+            ;;
         version|--version|-v)
             cmd_version
             ;;
@@ -17231,6 +17235,120 @@ REPORT_SCRIPT
     else
         echo "$report_output"
     fi
+}
+
+cmd_share() {
+    local format="markdown"
+    local visibility="--public"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --help|-h)
+                echo -e "${BOLD}loki share${NC} - Share session report as a GitHub Gist"
+                echo ""
+                echo "Usage: loki share [options]"
+                echo ""
+                echo "Generates a session report and uploads it as a GitHub Gist,"
+                echo "returning a shareable URL."
+                echo ""
+                echo "Options:"
+                echo "  --private            Create a secret gist (default: public)"
+                echo "  --format <fmt>       Report format: text, markdown, html (default: markdown)"
+                echo "  --help, -h           Show this help"
+                echo ""
+                echo "Examples:"
+                echo "  loki share                         # Public markdown gist"
+                echo "  loki share --private               # Secret gist"
+                echo "  loki share --format html           # Public HTML gist"
+                echo "  loki share --private --format text  # Secret text gist"
+                echo ""
+                echo "Requires: gh CLI (https://cli.github.com)"
+                exit 0
+                ;;
+            --private) visibility=""; shift ;;
+            --format) format="${2:-markdown}"; shift 2 ;;
+            --format=*) format="${1#*=}"; shift ;;
+            *) echo -e "${RED}Unknown option: $1${NC}"; echo "Run 'loki share --help' for usage."; exit 1 ;;
+        esac
+    done
+
+    # Validate format
+    case "$format" in
+        text|markdown|md|html) ;;
+        *) echo -e "${RED}Unknown format: $format${NC}"; echo "Supported: text, markdown, html"; exit 1 ;;
+    esac
+    [ "$format" = "md" ] && format="markdown"
+
+    # Check gh CLI is installed
+    if ! command -v gh &>/dev/null; then
+        echo -e "${RED}gh CLI not found${NC}"
+        echo ""
+        echo "Install the GitHub CLI to use 'loki share':"
+        echo "  brew install gh        # macOS"
+        echo "  sudo apt install gh    # Ubuntu/Debian"
+        echo "  https://cli.github.com # Other platforms"
+        exit 1
+    fi
+
+    # Check gh is authenticated
+    if ! gh auth status &>/dev/null 2>&1; then
+        echo -e "${RED}GitHub CLI not authenticated${NC}"
+        echo ""
+        echo "Run 'gh auth login' to authenticate, then try again."
+        exit 1
+    fi
+
+    # Check .loki directory exists
+    local loki_dir="${LOKI_DIR:-.loki}"
+    if [ ! -d "$loki_dir" ]; then
+        echo -e "${RED}No .loki/ directory found${NC}"
+        echo "Run 'loki start' first to create a session."
+        exit 1
+    fi
+
+    # Determine file extension for gist
+    local ext="md"
+    case "$format" in
+        text) ext="txt" ;;
+        markdown) ext="md" ;;
+        html) ext="html" ;;
+    esac
+
+    # Generate report to temp file
+    local tmpfile
+    tmpfile=$(mktemp "/tmp/loki-share-XXXXXX.$ext")
+
+    echo "Generating session report..."
+    if ! loki report --format "$format" > "$tmpfile" 2>/dev/null; then
+        echo -e "${RED}Failed to generate session report${NC}"
+        rm -f "$tmpfile"
+        exit 1
+    fi
+
+    # Verify report is not empty
+    if [ ! -s "$tmpfile" ]; then
+        echo -e "${RED}Generated report is empty${NC}"
+        rm -f "$tmpfile"
+        exit 1
+    fi
+
+    # Upload as gist
+    echo "Uploading session report..."
+    local gist_desc="Loki Mode session report ($(date +%Y-%m-%d))"
+    local gist_url
+    gist_url=$(gh gist create "$tmpfile" --desc "$gist_desc" $visibility 2>&1)
+    local gist_exit=$?
+
+    # Cleanup temp file
+    rm -f "$tmpfile"
+
+    if [ $gist_exit -ne 0 ]; then
+        echo -e "${RED}Failed to create gist${NC}"
+        echo "$gist_url"
+        exit 1
+    fi
+
+    echo -e "${GREEN}Shared: ${gist_url}${NC}"
 }
 
 main "$@"

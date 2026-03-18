@@ -1,3 +1,15 @@
+## v6.30.0 (2026-03-18)
+
+### New Features
+- `loki share` command: upload session reports as shareable GitHub Gists in one command
+- Supports `--private` flag for secret gists (default: public)
+- Supports `--format text|markdown|html` flag (default: markdown)
+- Graceful fallback when gh CLI is missing or not authenticated
+- Shell completions updated for bash and zsh
+
+### Tests
+- New test suite: tests/test-share-command.sh (8 tests)
+
 ## v6.29.0 (2026-03-18)
 
 ### New Features
