@@ -392,7 +392,7 @@ show_help() {
     echo "  start [PRD]      Start Loki Mode (optionally with PRD file)"
     echo "  quick \"task\"     Quick single-task mode (lightweight, 3 iterations max)"
     echo "  demo             Run interactive demo (~60s simulated session)"
-    echo "  init             Build a PRD interactively or from templates"
+    echo "  init [name]      Project scaffolding with 22 PRD templates"
     echo "  issue <url|num>  [DEPRECATED] Use 'loki run' instead"
     echo "  watch [sec]      Live TUI session monitor (v6.0.0)"
     echo "  export <format>  Export session data: json|markdown|csv|timeline (v6.0.0)"
@@ -6450,268 +6450,412 @@ QPRDEOF
     exec "$RUN_SH" "$quick_prd"
 }
 
-# Interactive PRD builder
+# Project scaffolding (v6.28.0)
 cmd_init() {
     local version=$(get_version)
-    local output_file="./prd.md"
-    local template=""
-    local start_after=false
+    local project_name=""
+    local template_name=""
+    local no_git=false
+    local stdout_mode=false
+    local dry_run=false
+    local list_mode=false
+    local json_mode=false
+
+    # 22 built-in template names (order: simple, standard, complex)
+    local TEMPLATE_NAMES=(
+        simple-todo-app
+        static-landing-page
+        api-only
+        rest-api
+        rest-api-auth
+        cli-tool
+        discord-bot
+        chrome-extension
+        blog-platform
+        full-stack-demo
+        web-scraper
+        data-pipeline
+        dashboard
+        game
+        slack-bot
+        npm-library
+        microservice
+        mobile-app
+        saas-app
+        saas-starter
+        e-commerce
+        ai-chatbot
+    )
+
+    local -A TEMPLATE_LABELS=(
+        [simple-todo-app]="Simple Todo App"
+        [static-landing-page]="Static Landing Page"
+        [api-only]="REST API (No Frontend)"
+        [rest-api]="REST API"
+        [rest-api-auth]="REST API with Auth"
+        [cli-tool]="CLI Tool"
+        [discord-bot]="Discord Bot"
+        [chrome-extension]="Chrome Extension"
+        [blog-platform]="Blog Platform"
+        [full-stack-demo]="Full-Stack Demo"
+        [web-scraper]="Web Scraper"
+        [data-pipeline]="Data Pipeline"
+        [dashboard]="Analytics Dashboard"
+        [game]="Browser Game"
+        [slack-bot]="Slack Bot"
+        [npm-library]="npm Library"
+        [microservice]="Microservice"
+        [mobile-app]="Mobile App"
+        [saas-app]="SaaS Application"
+        [saas-starter]="SaaS Starter Kit"
+        [e-commerce]="E-Commerce Store"
+        [ai-chatbot]="AI Chatbot (RAG)"
+    )
+
+    local template_count=${#TEMPLATE_NAMES[@]}
 
     # Parse arguments
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --output|-o)
-                if [[ -n "${2:-}" ]]; then
-                    output_file="$2"
-                    shift 2
-                else
-                    echo -e "${RED}--output requires a file path${NC}"
-                    exit 1
-                fi
+            --list)
+                list_mode=true
+                shift
+                ;;
+            --json)
+                json_mode=true
+                list_mode=true
+                shift
                 ;;
             --template|-t)
                 if [[ -n "${2:-}" ]]; then
-                    template="$2"
+                    template_name="$2"
                     shift 2
                 else
-                    echo -e "${RED}--template requires a template name${NC}"
+                    echo -e "${RED}--template requires a value${NC}"
                     exit 1
                 fi
                 ;;
-            --start|-s)
-                start_after=true
+            --no-git)
+                no_git=true
                 shift
                 ;;
-            --list-templates)
-                _list_templates
-                exit 0
+            --stdout)
+                stdout_mode=true
+                shift
+                ;;
+            --dry-run)
+                dry_run=true
+                shift
                 ;;
             --help|-h)
-                echo -e "${BOLD}loki init${NC} - Interactive PRD builder"
+                echo -e "${BOLD}loki init${NC} - Project scaffolding with PRD templates"
                 echo ""
-                echo "Usage: loki init [options]"
+                echo "Usage: loki init [project-name] [--template TYPE]"
+                echo ""
+                echo "Creates a new project scaffold with a PRD, config directory, and README."
+                echo "If no project-name is given, scaffolds the current directory."
+                echo ""
+                echo "What it creates:"
+                echo "  prd.md                   PRD from selected template"
+                echo "  .loki/loki.config.json   Project configuration"
+                echo "  README.md                Project README stub"
+                echo "  .gitignore               Git ignore rules (with git init)"
                 echo ""
                 echo "Options:"
-                echo "  --output, -o FILE       Output file (default: ./prd.md)"
-                echo "  --template, -t NAME     Start from a template"
-                echo "  --start, -s             Start loki mode after generating PRD"
-                echo "  --list-templates        List available templates"
+                echo "  --template, -t TYPE     Template name (e.g., saas-app, cli-tool)"
+                echo "  --no-git                Skip git init"
+                echo "  --stdout                Print PRD to stdout instead of writing files"
+                echo "  --list                  List all available templates"
+                echo "  --json                  Machine-readable template list (JSON)"
+                echo "  --dry-run               Show what would be created without doing it"
+                echo "  --help, -h              Show this help"
                 echo ""
                 echo "Examples:"
-                echo "  loki init                         Interactive PRD builder"
-                echo "  loki init -t saas-starter         Start from SaaS template"
-                echo "  loki init -o docs/requirements.md Custom output path"
-                echo "  loki init --start                 Build PRD and start immediately"
+                echo "  loki init my-saas --template saas-app    Create my-saas/ with SaaS PRD"
+                echo "  loki init --template cli-tool            Scaffold current dir with CLI PRD"
+                echo "  loki init my-app                         Create my-app/ (prompts for template)"
+                echo "  loki init --list                         Show all $template_count templates"
+                echo "  loki init --template rest-api --stdout   Print REST API PRD to stdout"
+                echo "  loki init my-app --dry-run               Preview without writing anything"
                 exit 0
                 ;;
-            *)
+            -*)
                 echo -e "${RED}Unknown option: $1${NC}"
+                echo "Run 'loki init --help' for usage."
                 exit 1
+                ;;
+            *)
+                if [[ -z "$project_name" ]]; then
+                    project_name="$1"
+                else
+                    echo -e "${RED}Too many arguments${NC}"
+                    echo "Usage: loki init [project-name] [--template TYPE]"
+                    exit 1
+                fi
+                shift
                 ;;
         esac
     done
 
-    # If template specified, copy it
-    if [ -n "$template" ]; then
-        local template_file=""
-        # Check templates/ directory
-        for dir in "$SKILL_DIR/templates" "$SKILL_DIR/examples"; do
-            if [ -f "$dir/$template.md" ]; then
-                template_file="$dir/$template.md"
-                break
-            elif [ -f "$dir/${template}" ]; then
-                template_file="$dir/${template}"
-                break
-            fi
-        done
-
-        if [ -z "$template_file" ]; then
-            echo -e "${RED}Template not found: $template${NC}"
+    # Handle --list / --json
+    if $list_mode; then
+        if $json_mode; then
+            echo "["
+            local first=true
+            for tname in "${TEMPLATE_NAMES[@]}"; do
+                if $first; then
+                    first=false
+                else
+                    echo ","
+                fi
+                printf '  {"name": "%s", "label": "%s"}' "$tname" "${TEMPLATE_LABELS[$tname]}"
+            done
             echo ""
-            _list_templates
-            exit 1
-        fi
-
-        cp "$template_file" "$output_file"
-        echo -e "${GREEN}Created${NC} $output_file from template: $template"
-        echo -e "${DIM}Edit the file to customize it for your project${NC}"
-
-        if [ "$start_after" = true ]; then
+            echo "]"
+        else
+            echo -e "${BOLD}Available PRD Templates ($template_count)${NC}"
             echo ""
-            echo -e "${CYAN}Starting Loki Mode...${NC}"
-            exec "$0" start "$output_file"
+            echo -e "  ${DIM}Simple:${NC}"
+            local idx=1
+            for tname in "${TEMPLATE_NAMES[@]}"; do
+                if [[ "$tname" == "rest-api" ]]; then
+                    echo -e "  ${DIM}Standard:${NC}"
+                elif [[ "$tname" == "mobile-app" ]]; then
+                    echo -e "  ${DIM}Complex:${NC}"
+                fi
+                printf "  %2d. ${CYAN}%-22s${NC} %s\n" "$idx" "$tname" "${TEMPLATE_LABELS[$tname]}"
+                idx=$((idx + 1))
+            done
+            echo ""
+            echo "Usage: loki init [project-name] --template <name>"
         fi
         exit 0
     fi
 
-    # Interactive mode
-    echo -e "${BOLD}Loki Mode v$version - PRD Builder${NC}"
-    echo ""
-    echo -e "${CYAN}Answer a few questions to generate your PRD.${NC}"
-    echo ""
-
-    # Project name
-    echo -e -n "${BOLD}Project name:${NC} "
-    read -r project_name
-    if [ -z "$project_name" ]; then
-        echo -e "${RED}Project name is required${NC}"
-        exit 1
-    fi
-
-    # Description
-    echo -e -n "${BOLD}One-line description:${NC} "
-    read -r description
-
-    # Project type
-    echo ""
-    echo -e "${BOLD}Project type:${NC}"
-    echo "  1) Web application (full-stack)"
-    echo "  2) REST API (backend only)"
-    echo "  3) CLI tool"
-    echo "  4) Landing page (static)"
-    echo "  5) Mobile app (React Native)"
-    echo "  6) Browser extension"
-    echo "  7) Other"
-    echo -e -n "Choose [1-7]: "
-    read -r type_choice
-
-    local project_type=""
-    local default_stack=""
-    case "$type_choice" in
-        1) project_type="Web Application"; default_stack="Next.js + TypeScript + Prisma + PostgreSQL" ;;
-        2) project_type="REST API"; default_stack="Node.js + Express + TypeScript + SQLite" ;;
-        3) project_type="CLI Tool"; default_stack="Node.js + TypeScript + Commander.js" ;;
-        4) project_type="Landing Page"; default_stack="HTML + CSS + JavaScript (no framework)" ;;
-        5) project_type="Mobile App"; default_stack="React Native + TypeScript + Expo" ;;
-        6) project_type="Browser Extension"; default_stack="Chrome Manifest V3 + TypeScript" ;;
-        7) project_type="Custom"; default_stack="" ;;
-        *) project_type="Web Application"; default_stack="Next.js + TypeScript + Prisma + PostgreSQL" ;;
-    esac
-
-    # Tech stack
-    echo ""
-    if [ -n "$default_stack" ]; then
-        echo -e -n "${BOLD}Tech stack${NC} [${DIM}$default_stack${NC}]: "
-        read -r tech_stack
-        if [ -z "$tech_stack" ]; then
-            tech_stack="$default_stack"
-        fi
-    else
-        echo -e -n "${BOLD}Tech stack:${NC} "
-        read -r tech_stack
-    fi
-
-    # Features
-    echo ""
-    echo -e "${BOLD}Key features${NC} (enter one per line, empty line to finish):"
-    local features=()
-    local feat_num=1
-    while true; do
-        echo -e -n "  ${feat_num}. "
-        read -r feature
-        if [ -z "$feature" ]; then
-            break
-        fi
-        features+=("$feature")
-        feat_num=$((feat_num + 1))
-        if [ $feat_num -gt 10 ]; then
-            echo -e "${DIM}  (max 10 features)${NC}"
-            break
-        fi
-    done
-
-    if [ ${#features[@]} -eq 0 ]; then
-        echo -e "${RED}At least one feature is required${NC}"
-        exit 1
-    fi
-
-    # Out of scope
-    echo ""
-    echo -e "${BOLD}Out of scope${NC} (enter one per line, empty line to finish):"
-    local exclusions=()
-    local exc_num=1
-    while true; do
-        echo -e -n "  ${exc_num}. "
-        read -r exclusion
-        if [ -z "$exclusion" ]; then
-            break
-        fi
-        exclusions+=("$exclusion")
-        exc_num=$((exc_num + 1))
-        if [ $exc_num -gt 10 ]; then
-            break
-        fi
-    done
-
-    # Generate PRD
-    {
-        echo "# PRD: $project_name"
+    # Interactive template picker if no template specified
+    if [[ -z "$template_name" ]]; then
+        echo -e "${BOLD}Loki Mode v$version - Project Scaffolding${NC}"
         echo ""
-        echo "## Overview"
-        echo "$description"
+        echo "Select a PRD template:"
         echo ""
-        echo "## Project Type"
-        echo "$project_type"
-        echo ""
-        echo "## Target Users"
-        echo "Developers and end-users who need $description"
-        echo ""
-        echo "## Features"
-        echo ""
-        echo "### MVP Features"
-        local i=1
-        for feat in "${features[@]}"; do
-            echo "$i. **$(echo "$feat" | awk '{print toupper(substr($0,1,1)) substr($0,2)}')** - $feat"
-            i=$((i + 1))
+        echo -e "  ${DIM}Simple:${NC}"
+        local idx=1
+        for tname in "${TEMPLATE_NAMES[@]}"; do
+            if [[ "$tname" == "rest-api" ]]; then
+                echo -e "  ${DIM}Standard:${NC}"
+            elif [[ "$tname" == "mobile-app" ]]; then
+                echo -e "  ${DIM}Complex:${NC}"
+            fi
+            printf "  %2d. %-22s %s\n" "$idx" "$tname" "${TEMPLATE_LABELS[$tname]}"
+            idx=$((idx + 1))
         done
         echo ""
-        echo "## Tech Stack"
-        echo "- $tech_stack"
+        echo -e -n "${BOLD}Choose [1-$template_count]:${NC} "
+        read -r choice
+
+        if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "$template_count" ]; then
+            echo -e "${RED}Invalid choice. Enter a number between 1 and $template_count.${NC}"
+            exit 1
+        fi
+
+        template_name="${TEMPLATE_NAMES[$((choice - 1))]}"
         echo ""
-        echo "## Requirements"
-        echo "- All features functional and tested"
-        echo "- Clean, well-structured code"
-        echo "- Error handling with user feedback"
-        echo "- Input validation where applicable"
+        echo -e "Selected: ${CYAN}$template_name${NC} (${TEMPLATE_LABELS[$template_name]})"
+    fi
+
+    # Resolve template file
+    local template_file=""
+    for dir in "$SKILL_DIR/templates" "$SKILL_DIR/examples"; do
+        if [[ -f "$dir/${template_name}.md" ]]; then
+            template_file="$dir/${template_name}.md"
+            break
+        fi
+    done
+
+    if [[ -z "$template_file" ]]; then
+        echo -e "${RED}Unknown template: $template_name${NC}"
         echo ""
-        echo "## Testing"
-        echo "- Unit tests for core functionality"
-        echo "- Integration tests for API endpoints (if applicable)"
-        echo "- Manual testing checklist"
+        echo "Available templates:"
+        for tname in "${TEMPLATE_NAMES[@]}"; do
+            echo "  $tname"
+        done
         echo ""
-        echo "## Out of Scope"
-        if [ ${#exclusions[@]} -gt 0 ]; then
-            for exc in "${exclusions[@]}"; do
-                echo "- $exc"
-            done
-        else
-            echo "- Authentication (unless specified in features)"
-            echo "- Cloud deployment"
-            echo "- Performance optimization"
+        echo "Run 'loki init --list' for details."
+        exit 1
+    fi
+
+    # Read template content
+    local prd_content
+    prd_content=$(cat "$template_file")
+
+    # --stdout mode: just print PRD and exit
+    if $stdout_mode; then
+        echo "$prd_content"
+        exit 0
+    fi
+
+    # Determine target directory
+    local target_dir
+    if [[ -n "$project_name" ]]; then
+        target_dir="$(pwd)/$project_name"
+    else
+        target_dir="$(pwd)"
+    fi
+
+    # Build config JSON
+    local config_json
+    config_json=$(cat <<ENDJSON
+{
+  "version": "$version",
+  "template": "$template_name",
+  "created": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "provider": "claude",
+  "complexity": "auto",
+  "quality_gates": true,
+  "parallel_mode": false,
+  "dashboard": true
+}
+ENDJSON
+)
+
+    # Build README content
+    local display_name="${project_name:-$(basename "$target_dir")}"
+    local readme_content
+    readme_content=$(cat <<ENDREADME
+# $display_name
+
+Built with [Loki Mode](https://www.autonomi.dev/) using the \`$template_name\` template.
+
+## Getting Started
+
+\`\`\`bash
+# Review the PRD
+cat prd.md
+
+# Launch autonomous development
+claude --dangerously-skip-permissions
+# Then: "Loki Mode with PRD at prd.md"
+
+# Or via CLI
+loki start prd.md
+\`\`\`
+
+## Project Structure
+
+This project was scaffolded by \`loki init\`. Key files:
+
+- \`prd.md\` - Product Requirements Document
+- \`.loki/loki.config.json\` - Loki Mode configuration
+ENDREADME
+)
+
+    # Build gitignore content
+    local gitignore_content
+    gitignore_content=$(cat <<'ENDGITIGNORE'
+# Dependencies
+node_modules/
+venv/
+__pycache__/
+
+# Build output
+dist/
+build/
+*.egg-info/
+
+# Loki Mode runtime state (keep .loki/loki.config.json)
+.loki/state/
+.loki/memory/episodic/
+.loki/metrics/
+.loki/queue/
+.loki/sessions/
+.loki/logs/
+
+# Environment
+.env
+.env.local
+
+# OS
+.DS_Store
+Thumbs.db
+ENDGITIGNORE
+)
+
+    # --dry-run mode: show what would be created
+    if $dry_run; then
+        echo -e "${BOLD}Dry run: loki init${NC}"
+        echo ""
+        if [[ -n "$project_name" ]]; then
+            echo -e "  ${GREEN}CREATE${NC} $target_dir/"
+        fi
+        echo -e "  ${GREEN}CREATE${NC} $target_dir/prd.md (${TEMPLATE_LABELS[$template_name]} template)"
+        echo -e "  ${GREEN}CREATE${NC} $target_dir/.loki/"
+        echo -e "  ${GREEN}CREATE${NC} $target_dir/.loki/loki.config.json"
+        echo -e "  ${GREEN}CREATE${NC} $target_dir/README.md"
+        if ! $no_git; then
+            if [[ -n "$project_name" ]] || ! git rev-parse --git-dir &>/dev/null; then
+                echo -e "  ${GREEN}CREATE${NC} $target_dir/.gitignore"
+                echo -e "  ${GREEN}RUN${NC}    git init"
+            fi
         fi
         echo ""
-        echo "## Success Criteria"
-        echo "- All MVP features working"
-        echo "- Tests passing"
-        echo "- No console errors"
-        echo "- Code review passes"
-        echo ""
-        echo "---"
-        echo ""
-        echo "**Generated by:** loki init v$(get_version)"
-    } > "$output_file"
+        echo "Run without --dry-run to create these files."
+        exit 0
+    fi
 
-    echo ""
-    echo -e "${GREEN}PRD generated:${NC} $output_file"
-    echo ""
+    # Create project directory if project name given
+    if [[ -n "$project_name" ]]; then
+        if [[ -d "$target_dir" ]]; then
+            echo -e "${RED}Directory already exists: $target_dir${NC}"
+            exit 1
+        fi
+        mkdir -p "$target_dir"
+    fi
 
-    if [ "$start_after" = true ]; then
-        echo -e "${CYAN}Starting Loki Mode...${NC}"
-        exec "$0" start "$output_file"
+    # Create .loki config directory
+    mkdir -p "$target_dir/.loki"
+
+    # Write files
+    echo "$prd_content" > "$target_dir/prd.md"
+    echo "$config_json" > "$target_dir/.loki/loki.config.json"
+
+    # Only write README if it does not already exist
+    if [[ ! -f "$target_dir/README.md" ]]; then
+        echo "$readme_content" > "$target_dir/README.md"
+    fi
+
+    # Git init (unless --no-git or already in a git repo)
+    local did_git_init=false
+    if ! $no_git; then
+        if [[ -n "$project_name" ]] || ! git rev-parse --git-dir &>/dev/null; then
+            echo "$gitignore_content" > "$target_dir/.gitignore"
+            (cd "$target_dir" && git init -q)
+            did_git_init=true
+        fi
+    fi
+
+    # Print summary
+    echo ""
+    echo -e "${GREEN}Project scaffolded:${NC} $target_dir"
+    echo ""
+    echo "  Files created:"
+    echo -e "    prd.md                   ${DIM}${TEMPLATE_LABELS[$template_name]} template${NC}"
+    echo -e "    .loki/loki.config.json   ${DIM}project configuration${NC}"
+    if [[ ! -f "$target_dir/README.md" ]] || [[ -n "$project_name" ]]; then
+        echo -e "    README.md                ${DIM}project readme${NC}"
+    fi
+    if $did_git_init; then
+        echo -e "    .gitignore               ${DIM}git ignore rules${NC}"
+        echo -e "    ${DIM}git repo initialized${NC}"
+    fi
+    echo ""
+    echo "Next steps:"
+    if [[ -n "$project_name" ]]; then
+        echo -e "  1. ${BOLD}cd $project_name${NC}"
+        echo -e "  2. Review and edit: ${BOLD}prd.md${NC}"
+        echo -e "  3. Run: ${BOLD}loki start prd.md${NC}"
     else
-        echo "Next steps:"
-        echo -e "  1. Review and edit: ${BOLD}$output_file${NC}"
-        echo -e "  2. Start Loki Mode: ${BOLD}loki start $output_file${NC}"
+        echo -e "  1. Review and edit: ${BOLD}prd.md${NC}"
+        echo -e "  2. Run: ${BOLD}loki start prd.md${NC}"
     fi
 }
 
@@ -6744,34 +6888,9 @@ cmd_dogfood() {
     bash "$stats_script" $json_flag
 }
 
-# List available templates
+# List available templates (legacy helper, kept for backward compat)
 _list_templates() {
-    echo -e "${BOLD}Available Templates${NC}"
-    echo ""
-    local found=false
-    declare -A seen_names
-    for dir in "$SKILL_DIR/templates" "$SKILL_DIR/examples"; do
-        if [ -d "$dir" ]; then
-            for f in "$dir"/*.md; do
-                if [ -f "$f" ] && [ "$(basename "$f")" != "README.md" ]; then
-                    local name=$(basename "$f" .md)
-                    # Skip duplicates (templates/ takes priority over examples/)
-                    if [[ -n "${seen_names[$name]:-}" ]]; then
-                        continue
-                    fi
-                    seen_names[$name]=1
-                    local title=$(head -1 "$f" | sed -E 's/^#+ *//')
-                    echo -e "  ${CYAN}$name${NC} - $title"
-                    found=true
-                fi
-            done
-        fi
-    done
-    if [ "$found" = false ]; then
-        echo "  No templates found"
-    fi
-    echo ""
-    echo "Usage: loki init --template <name>"
+    cmd_init --list
 }
 
 # Watchdog: process health monitoring

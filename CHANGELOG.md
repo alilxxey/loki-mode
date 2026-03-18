@@ -1,3 +1,11 @@
+## v6.28.0 (2026-03-18)
+
+### New Features
+- `loki init` project scaffolding: creates project directory, prd.md from template, .loki/ config, README.md, and git init
+- Expanded template gallery from 13 to 22 templates (added ai-chatbot, api-only, blog-platform, e-commerce, full-stack-demo, rest-api-auth, saas-starter, simple-todo-app, static-landing-page)
+- New flags: --template/-t TYPE, --no-git, --stdout, --dry-run
+- Template categories: Simple, Standard, Complex
+
 ## [6.27.2] - 2026-03-18
 
 ### Fixed
