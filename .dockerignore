@@ -32,6 +32,7 @@ blog/
 # Source-only directories (not needed in Docker image)
 dashboard-ui/
 tests/
+!tests/docker/
 wiki/
 wiki-repo/
 demo/

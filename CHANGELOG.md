@@ -1,3 +1,9 @@
+## [6.27.2] - 2026-03-18
+
+### Fixed
+- Purple Lab: tighten CORS from wildcard (*) to localhost only (127.0.0.1:57375 and localhost:57375)
+- Added full Docker Compose E2E test harness (tests/docker/, docker-compose.test.yml) -- 20/20 tests pass
+
 ## [6.27.1] - 2026-03-18
 
 ### Fixed

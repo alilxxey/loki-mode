@@ -46,7 +46,7 @@ app = FastAPI(title="Purple Lab", docs_url=None, redoc_url=None)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://127.0.0.1:57375", "http://localhost:57375"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
