@@ -1,4 +1,5 @@
-const API_BASE = '/api';
+const API_BASE = 'http://127.0.0.1:57375/api';
+export const WS_URL = 'ws://127.0.0.1:57375/ws';
 
 async function fetchJSON<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
@@ -9,30 +10,61 @@ async function fetchJSON<T>(path: string, options?: RequestInit): Promise<T> {
     },
   });
   if (!res.ok) {
-    throw new Error(`API error ${res.status}: ${res.statusText}`);
+    const body = await res.text().catch(() => '');
+    throw new Error(`API error ${res.status}: ${res.statusText}${body ? ` - ${body}` : ''}`);
   }
   return res.json();
 }
 
+export interface StartSessionRequest {
+  prd: string;
+  provider: string;
+  projectDir?: string;
+}
+
+export interface StartSessionResponse {
+  started: boolean;
+  pid: number;
+  projectDir: string;
+  provider: string;
+}
+
 export const api = {
-  getStatus: () => fetchJSON<import('../types/api').StatusResponse>('/status'),
-  getAgents: () => fetchJSON<import('../types/api').Agent[]>('/agents'),
-  getLogs: (lines = 200) => fetchJSON<import('../types/api').LogEntry[]>(`/logs?lines=${lines}`),
-  getMemorySummary: () => fetchJSON<import('../types/api').MemorySummary>('/memory/summary'),
-  getChecklist: () => fetchJSON<import('../types/api').ChecklistSummary>('/checklist/summary'),
-  getFiles: () => fetchJSON<import('../types/api').FileNode[]>('/files'),
-  getFileContent: (path: string) => fetchJSON<{ content: string }>(`/files/content?path=${encodeURIComponent(path)}`),
+  // Session management
+  startSession: (req: StartSessionRequest) =>
+    fetchJSON<StartSessionResponse>('/session/start', {
+      method: 'POST',
+      body: JSON.stringify(req),
+    }),
+
+  stopSession: () =>
+    fetchJSON<{ stopped: boolean; message: string }>('/session/stop', {
+      method: 'POST',
+    }),
+
+  getStatus: () => fetchJSON<import('../types/api').StatusResponse>('/session/status'),
+  getAgents: () => fetchJSON<import('../types/api').Agent[]>('/session/agents'),
+  getLogs: (lines = 200) => fetchJSON<import('../types/api').LogEntry[]>(`/session/logs?lines=${lines}`),
+  getMemorySummary: () => fetchJSON<import('../types/api').MemorySummary>('/session/memory'),
+  getChecklist: () => fetchJSON<import('../types/api').ChecklistSummary>('/session/checklist'),
+  getFiles: () => fetchJSON<import('../types/api').FileNode[]>('/session/files'),
+  getFileContent: (path: string) =>
+    fetchJSON<{ content: string }>(`/session/files/content?path=${encodeURIComponent(path)}`),
+
+  // Templates
+  getTemplates: () => fetchJSON<{ name: string; filename: string }[]>('/templates'),
+  getTemplateContent: (filename: string) =>
+    fetchJSON<{ name: string; content: string }>(`/templates/${encodeURIComponent(filename)}`),
 };
 
-export class DashboardWebSocket {
+export class PurpleLabWebSocket {
   private ws: WebSocket | null = null;
   private listeners: Map<string, Set<(data: unknown) => void>> = new Map();
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private url: string;
 
   constructor(url?: string) {
-    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    this.url = url || `${wsProtocol}//${window.location.host}/ws`;
+    this.url = url || WS_URL;
   }
 
   connect(): void {

@@ -5,6 +5,20 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [6.27.0] - 2026-03-18
+
+### Changed
+- Separated Purple Lab (web-app/) from Loki Dashboard (dashboard/) -- they are now fully independent products
+- Dashboard server (port 57374) no longer serves web-app files; only serves dashboard-ui/dist/ and dashboard/static/
+- Purple Lab server (port 57375) runs standalone via web-app/server.py with no dashboard dependency
+- `loki web` starts web-app/server.py directly (not dashboard/server.py)
+- PRD Input is the landing hero -- full-width on first load, dashboard panels shown only after session starts
+- Start Build actually POSTs to /api/session/start and launches a real loki subprocess
+- Stop button wired to /api/session/stop
+- Branding updated to Purple Lab throughout (title, header, copy)
+- Fixed asyncio.iscoroutinefunction deprecation in server.py
+- Validated: security review APPROVED, E2E tests 9/9 PASS, path traversal blocked
+
 ## [6.26.6] - 2026-03-18
 
 ### Fixed

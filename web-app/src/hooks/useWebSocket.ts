@@ -1,12 +1,12 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { DashboardWebSocket } from '../api/client';
+import { PurpleLabWebSocket } from '../api/client';
 
 export function useWebSocket() {
   const [connected, setConnected] = useState(false);
-  const wsRef = useRef<DashboardWebSocket | null>(null);
+  const wsRef = useRef<PurpleLabWebSocket | null>(null);
 
   useEffect(() => {
-    const ws = new DashboardWebSocket();
+    const ws = new PurpleLabWebSocket();
     wsRef.current = ws;
 
     ws.on('connected', () => setConnected(true));

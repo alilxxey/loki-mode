@@ -12,6 +12,7 @@ export interface StatusResponse {
   uptime: number;
   version: string;
   pid: string;
+  projectDir?: string;
 }
 
 export interface Agent {

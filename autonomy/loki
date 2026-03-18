@@ -2907,9 +2907,13 @@ cmd_dashboard_open() {
 }
 
 # Web app management
-# The web app is served directly by the dashboard FastAPI server (port 57374).
-# No separate web server process is needed -- the dashboard mounts web-app/dist/
-# as static files and handles SPA catch-all routing.
+# Purple Lab -- standalone product web UI for Loki Mode.
+# Runs on port 57375 (separate from dashboard at 57374).
+# Backend: web-app/server.py (FastAPI), Frontend: web-app/dist/
+
+PURPLE_LAB_DEFAULT_PORT=57375
+PURPLE_LAB_DEFAULT_HOST="127.0.0.1"
+PURPLE_LAB_PID_FILE="${LOKI_DIR}/purple-lab/purple-lab.pid"
 
 cmd_web() {
     local subcommand="${1:-start}"
@@ -2936,30 +2940,32 @@ cmd_web() {
 }
 
 cmd_web_help() {
-    echo -e "${BOLD}Loki Mode Web App${NC}"
+    echo -e "${BOLD}Purple Lab -- Loki Mode Web UI${NC}"
     echo ""
     echo "Usage: loki web [command] [options]"
     echo ""
     echo "Commands:"
-    echo "  start    Start the web app (default)"
-    echo "  stop     Stop the dashboard server (alias for 'loki dashboard stop')"
-    echo "  status   Show dashboard server status"
+    echo "  start    Start Purple Lab (default)"
+    echo "  stop     Stop Purple Lab server"
+    echo "  status   Show Purple Lab server status"
     echo "  help     Show this help"
     echo ""
     echo "Options (for start):"
     echo "  --no-open      Don't open browser automatically"
+    echo "  --port PORT    Use custom port (default: ${PURPLE_LAB_DEFAULT_PORT})"
     echo ""
-    echo "The web app is served by the dashboard API at localhost:${DASHBOARD_DEFAULT_PORT}."
-    echo "Both API endpoints and static files are served from the same origin."
+    echo "Purple Lab is the product UI where you input PRDs and watch agents build."
+    echo "It runs its own backend (web-app/server.py) on port ${PURPLE_LAB_DEFAULT_PORT}."
     echo ""
     echo "Examples:"
-    echo "  loki web                  Start dashboard and open web app in browser"
-    echo "  loki web --no-open        Start dashboard without opening browser"
-    echo "  loki web stop             Stop the dashboard server"
+    echo "  loki web                  Start Purple Lab and open in browser"
+    echo "  loki web --no-open        Start without opening browser"
+    echo "  loki web stop             Stop the Purple Lab server"
 }
 
 cmd_web_start() {
     local open_browser=true
+    local port="${PURPLE_LAB_DEFAULT_PORT}"
 
     # Parse arguments
     while [[ $# -gt 0 ]]; do
@@ -2967,6 +2973,10 @@ cmd_web_start() {
             --no-open)
                 open_browser=false
                 shift
+                ;;
+            --port)
+                port="$2"
+                shift 2
                 ;;
             --help|-h)
                 cmd_web_help
@@ -2991,27 +3001,82 @@ cmd_web_start() {
         exit 1
     fi
 
-    # Ensure dashboard server is running (it serves both API and web app)
-    local api_running=false
-    if [ -f "$DASHBOARD_PID_FILE" ]; then
-        local api_pid
-        api_pid=$(cat "$DASHBOARD_PID_FILE" 2>/dev/null)
-        if [ -n "$api_pid" ] && kill -0 "$api_pid" 2>/dev/null; then
-            api_running=true
+    # Check that server.py exists
+    local server_py="${SKILL_DIR}/web-app/server.py"
+    if [ ! -f "$server_py" ]; then
+        echo -e "${RED}Error: Purple Lab server not found at $server_py${NC}"
+        exit 1
+    fi
+
+    # Ensure Python venv with FastAPI is available
+    if ! ensure_dashboard_venv; then
+        echo -e "${RED}Error: Failed to set up Python environment${NC}"
+        exit 1
+    fi
+
+    # Check if already running
+    mkdir -p "${LOKI_DIR}/purple-lab"
+    if [ -f "$PURPLE_LAB_PID_FILE" ]; then
+        local existing_pid
+        existing_pid=$(cat "$PURPLE_LAB_PID_FILE" 2>/dev/null)
+        if [ -n "$existing_pid" ] && kill -0 "$existing_pid" 2>/dev/null; then
+            echo -e "${GREEN}Purple Lab already running (PID: $existing_pid)${NC}"
+            local url="http://${PURPLE_LAB_DEFAULT_HOST}:${port}"
+            echo -e "Open: ${CYAN}$url${NC}"
+            if [ "$open_browser" = true ]; then
+                if command -v open &> /dev/null; then
+                    open "$url"
+                elif command -v xdg-open &> /dev/null; then
+                    xdg-open "$url"
+                fi
+            fi
+            return 0
         fi
     fi
 
-    if [ "$api_running" = false ]; then
-        echo -e "${CYAN}Starting dashboard server...${NC}"
-        cmd_dashboard_start
-        echo ""
+    # Check if port is already in use
+    if lsof -i:"$port" -sTCP:LISTEN &> /dev/null; then
+        echo -e "${RED}Error: Port $port already in use${NC}"
+        echo "Use --port to specify a different port, or stop the existing process."
+        exit 1
     fi
 
-    local url="http://127.0.0.1:${DASHBOARD_DEFAULT_PORT}"
+    # Start the server
+    local log_dir="${LOKI_DIR}/purple-lab/logs"
+    mkdir -p "$log_dir"
+    local log_file="$log_dir/purple-lab.log"
 
-    echo -e "${GREEN}Web app available at: $url${NC}"
-    echo ""
-    echo -e "Stop with: ${CYAN}loki web stop${NC} or ${CYAN}loki dashboard stop${NC}"
+    echo -e "${CYAN}Starting Purple Lab...${NC}"
+
+    PURPLE_LAB_PORT="$port" PURPLE_LAB_HOST="${PURPLE_LAB_DEFAULT_HOST}" \
+    LOKI_DIR="$LOKI_DIR" LOKI_SKILL_DIR="$SKILL_DIR" PYTHONPATH="$SKILL_DIR" \
+    nohup "$DASHBOARD_PYTHON" "$server_py" > "$log_file" 2>&1 &
+    local pid=$!
+
+    echo "$pid" > "$PURPLE_LAB_PID_FILE"
+    echo "$port" > "${LOKI_DIR}/purple-lab/port"
+
+    # Wait for server to be ready
+    local retries=0
+    while [ $retries -lt 15 ]; do
+        if curl -s "http://${PURPLE_LAB_DEFAULT_HOST}:${port}/api/session/status" > /dev/null 2>&1; then
+            break
+        fi
+        sleep 0.5
+        retries=$((retries + 1))
+    done
+
+    if ! kill -0 "$pid" 2>/dev/null; then
+        echo -e "${RED}Error: Purple Lab failed to start${NC}"
+        echo "Check logs at: $log_file"
+        rm -f "$PURPLE_LAB_PID_FILE"
+        exit 1
+    fi
+
+    local url="http://${PURPLE_LAB_DEFAULT_HOST}:${port}"
+    echo -e "${GREEN}Purple Lab running at: $url${NC} (PID: $pid)"
+    echo -e "Logs: $log_file"
+    echo -e "Stop with: ${CYAN}loki web stop${NC}"
 
     # Open browser
     if [ "$open_browser" = true ]; then
@@ -3029,13 +3094,45 @@ cmd_web_start() {
 }
 
 cmd_web_stop() {
-    # Web app is served by the dashboard -- stopping dashboard stops the web app
-    cmd_dashboard_stop
+    if [ ! -f "$PURPLE_LAB_PID_FILE" ]; then
+        echo "Purple Lab is not running."
+        return 0
+    fi
+
+    local pid
+    pid=$(cat "$PURPLE_LAB_PID_FILE" 2>/dev/null)
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+        kill "$pid" 2>/dev/null
+        sleep 1
+        if kill -0 "$pid" 2>/dev/null; then
+            kill -9 "$pid" 2>/dev/null
+        fi
+        echo -e "${GREEN}Purple Lab stopped (PID: $pid)${NC}"
+    else
+        echo "Purple Lab was not running."
+    fi
+    rm -f "$PURPLE_LAB_PID_FILE"
 }
 
 cmd_web_status() {
-    # Web app is served by the dashboard -- show dashboard status
-    cmd_dashboard_status
+    if [ ! -f "$PURPLE_LAB_PID_FILE" ]; then
+        echo "Purple Lab is not running."
+        return 0
+    fi
+
+    local pid
+    pid=$(cat "$PURPLE_LAB_PID_FILE" 2>/dev/null)
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+        local port
+        port=$(cat "${LOKI_DIR}/purple-lab/port" 2>/dev/null || echo "$PURPLE_LAB_DEFAULT_PORT")
+        echo -e "${GREEN}Purple Lab is running${NC}"
+        echo "  PID:  $pid"
+        echo "  URL:  http://${PURPLE_LAB_DEFAULT_HOST}:${port}"
+        echo "  Logs: ${LOKI_DIR}/purple-lab/logs/purple-lab.log"
+    else
+        echo "Purple Lab is not running (stale PID file)."
+        rm -f "$PURPLE_LAB_PID_FILE"
+    fi
 }
 
 # Import GitHub issues
