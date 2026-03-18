@@ -4793,8 +4793,12 @@ def start_migration_phase(migration_id: str, request_body: dict):
 async def serve_spa_catchall(full_path: str):
     """Serve static files or fall back to index.html for SPA routing."""
     if STATIC_DIR:
+        static_root = os.path.realpath(STATIC_DIR)
         # Try to serve the exact file first (e.g. /vite.svg, /manifest.json)
-        candidate = os.path.join(STATIC_DIR, full_path)
+        # Use realpath to prevent path traversal attacks
+        candidate = os.path.realpath(os.path.join(STATIC_DIR, full_path))
+        if not candidate.startswith(static_root + os.sep) and candidate != static_root:
+            return Response(status_code=404)
         if os.path.isfile(candidate):
             return FileResponse(candidate)
         # Fall back to index.html for client-side routes

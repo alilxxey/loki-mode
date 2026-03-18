@@ -308,7 +308,7 @@ export class LokiQualityGates extends LokiElement {
     if (this._loading && gates.length === 0) {
       content = '<div class="loading">Loading quality gates...</div>';
     } else if (gates.length === 0) {
-      content = '<div class="empty-state">Quality gates will activate during code review phases. Gates are evaluated after each RARV iteration.</div>';
+      content = '<div class="empty-state"><strong>No gate results yet.</strong> Quality gates run automatically between RARV iterations during an active session. Start a session with <code>loki start ./prd.md</code> to see results here. You can also run gates manually with <code>loki review</code>.</div>';
     } else {
       const cards = gates.map(gate => {
         const status = (gate.status || 'pending').toLowerCase();

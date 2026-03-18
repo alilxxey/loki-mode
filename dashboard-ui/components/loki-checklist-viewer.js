@@ -557,8 +557,8 @@ export class LokiChecklistViewer extends LokiElement {
   _renderEmpty() {
     return `
       <div class="empty-state">
-        <p>Checklist not initialized</p>
-        <p class="hint">The PRD checklist will be created during the first iteration when a PRD is provided.</p>
+        <p><strong>No checklist data yet.</strong></p>
+        <p class="hint">The PRD checklist is generated during the first iteration. Start a session with <code>loki start ./prd.md</code> -- groups and items will appear here as the session progresses and can be expanded for details.</p>
       </div>
     `;
   }
