@@ -316,7 +316,8 @@ async def start_session(req: StartRequest) -> JSONResponse:
                 text=True,
                 cwd=project_dir,
                 env={**os.environ, "LOKI_DIR": os.path.join(project_dir, ".loki")},
-                start_new_session=True,  # create new process group for clean kill
+                **({"start_new_session": True} if sys.platform != "win32"
+                   else {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}),
             )
         except FileNotFoundError:
             return JSONResponse(
@@ -371,23 +372,37 @@ async def stop_session() -> JSONResponse:
         await session.cleanup()
 
         # 3. Kill the process group (catches child processes too)
-        try:
-            pgid = os.getpgid(proc.pid)
-            os.killpg(pgid, signal.SIGTERM)
-        except (ProcessLookupError, PermissionError, OSError):
-            # Fallback: kill the process directly
+        if sys.platform != "win32":
             try:
-                proc.terminate()
+                pgid = os.getpgid(proc.pid)
+                os.killpg(pgid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError, OSError):
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+        else:
+            try:
+                subprocess.call(["taskkill", "/F", "/T", "/PID", str(proc.pid)])
             except Exception:
-                pass
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
 
         try:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
-            try:
-                pgid = os.getpgid(proc.pid)
-                os.killpg(pgid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError, OSError):
+            if sys.platform != "win32":
+                try:
+                    pgid = os.getpgid(proc.pid)
+                    os.killpg(pgid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError, OSError):
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+            else:
                 try:
                     proc.kill()
                 except Exception:
@@ -1032,7 +1047,9 @@ async def onboard_session(req: OnboardRequest) -> JSONResponse:
     except (ValueError, OSError):
         return JSONResponse(status_code=400, content={"error": "Invalid path"})
     home = Path.home().resolve()
-    if not str(target).startswith(str(home)):
+    try:
+        target.relative_to(home)
+    except ValueError:
         return JSONResponse(status_code=400, content={"error": "Path must be within your home directory"})
     if not target.exists():
         return JSONResponse(status_code=400, content={"error": "Path does not exist"})

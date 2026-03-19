@@ -153,11 +153,15 @@ resolve_model_for_tier() {
 
 # Tier-aware invocation
 # Codex CLI uses CODEX_MODEL_REASONING_EFFORT env var for effort control
+# LOKI_CODEX_REASONING_EFFORT is the canonical namespaced env var (v6.37.1+)
+# CODEX_MODEL_REASONING_EFFORT is supported for backward compatibility (deprecated)
 provider_invoke_with_tier() {
     local tier="$1"
     local prompt="$2"
     shift 2
     local effort
     effort=$(resolve_model_for_tier "$tier")
-    CODEX_MODEL_REASONING_EFFORT="$effort" codex exec --full-auto "$prompt" "$@"
+    LOKI_CODEX_REASONING_EFFORT="$effort" \
+    CODEX_MODEL_REASONING_EFFORT="$effort" \
+    codex exec --full-auto "$prompt" "$@"
 }

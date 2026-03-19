@@ -59,8 +59,12 @@ export function PRDInput({ onSubmit, running, error, provider: providerProp, onP
       });
   }, []);
 
-  // On mount: check for PRD prefill from CLI --prd flag
+  // On mount: restore draft from localStorage, then check for PRD prefill from CLI
   useEffect(() => {
+    const draft = localStorage.getItem('loki-prd-draft');
+    if (draft) {
+      setPrd(draft);
+    }
     api.getPrdPrefill()
       .then(({ content }) => {
         if (content) {
@@ -71,6 +75,26 @@ export function PRDInput({ onSubmit, running, error, provider: providerProp, onP
         // No prefill available -- ignore
       });
   }, []);
+
+  // Auto-save PRD draft to localStorage on change
+  useEffect(() => {
+    if (prd.trim()) {
+      localStorage.setItem('loki-prd-draft', prd);
+    } else {
+      localStorage.removeItem('loki-prd-draft');
+    }
+  }, [prd]);
+
+  // Warn on page close if PRD has unsaved content
+  useEffect(() => {
+    const handler = (e: BeforeUnloadEvent) => {
+      if (prd.trim()) {
+        e.preventDefault();
+      }
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [prd]);
 
   const handleTemplateSelect = useCallback(async (filename: string, name: string) => {
     setSelectedTemplate(name);

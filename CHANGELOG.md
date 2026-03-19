@@ -5,6 +5,15 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [6.37.1] - 2026-03-19
+
+### Fixed
+- Security: macOS /tmp symlink bypassed onboard path traversal check -- now uses Path.relative_to() with resolved paths (#137)
+- Windows: start_new_session and os.killpg are Unix-only -- added platform-guarded process group handling (#124)
+- Terminal: log lines lost when switching from WebSocket to HTTP polling -- now merges with dedup instead of replacing (#122)
+- PRD editor: no unsaved content warning on page close -- added beforeunload handler and localStorage auto-save (#123)
+- Codex: CODEX_MODEL_REASONING_EFFORT renamed to LOKI_CODEX_REASONING_EFFORT with backward compat (#139)
+
 ## [6.37.0] - 2026-03-19
 
 ### Changed

@@ -49,17 +49,24 @@ export function TerminalOutput({ logs, loading, subscribe }: TerminalOutputProps
     return unsub;
   }, [subscribe]);
 
-  // Merge polled logs with WS lines (WS lines take priority when available)
-  const displayLogs: LogEntry[] = wsLines.length > 0
-    ? wsLines.map(l => {
-        let level = 'info';
-        const lower = l.message.toLowerCase();
-        if (lower.includes('error') || lower.includes('fail')) level = 'error';
-        else if (lower.includes('warn')) level = 'warning';
-        else if (lower.includes('debug')) level = 'debug';
-        return { timestamp: l.timestamp, level, message: l.message, source: 'ws' };
-      })
-    : (logs || []);
+  // Merge polled HTTP logs with WS lines (dedup by message content, preserve order)
+  const displayLogs: LogEntry[] = (() => {
+    const wsEntries: LogEntry[] = wsLines.map(l => {
+      let level = 'info';
+      const lower = l.message.toLowerCase();
+      if (lower.includes('error') || lower.includes('fail')) level = 'error';
+      else if (lower.includes('warn')) level = 'warning';
+      else if (lower.includes('debug')) level = 'debug';
+      return { timestamp: l.timestamp, level, message: l.message, source: 'ws' };
+    });
+    const httpEntries = logs || [];
+    if (wsEntries.length === 0) return httpEntries;
+    if (httpEntries.length === 0) return wsEntries;
+    // Merge: keep all HTTP lines not already present in WS lines, then append WS lines
+    const wsMessages = new Set(wsEntries.map(e => e.message));
+    const uniqueHttp = httpEntries.filter(e => !wsMessages.has(e.message));
+    return [...uniqueHttp, ...wsEntries];
+  })();
 
   // Auto-scroll to bottom when new logs arrive (only when not locked)
   useEffect(() => {

@@ -8872,7 +8872,8 @@ if __name__ == "__main__":
                 # Uses positional prompt after exec subcommand
                 # Note: Effort is set via env var, not CLI flag
                 # Uses dynamic tier from RARV phase (tier_param already set above)
-                { CODEX_MODEL_REASONING_EFFORT="$tier_param" \
+                { LOKI_CODEX_REASONING_EFFORT="$tier_param" \
+                CODEX_MODEL_REASONING_EFFORT="$tier_param" \
                 codex exec --full-auto \
                     "$prompt" 2>&1 | tee -a "$log_file" "$agent_log"; \
                 } && exit_code=0 || exit_code=$?
