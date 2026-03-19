@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Purple Lab: plan endpoint subprocess is explicitly killed on timeout to prevent orphaned processes (#116)
 - Purple Lab: WebSocket state push sends only incremental log deltas (new lines since last push) instead of full buffer every 2 seconds (#118)
 - Purple Lab: WebSocket idle connections time out after two consecutive missed pings (120s), freeing server resources (#102)
+- Dashboard UI: log stream fetch and standalone requests include CORS credentials for remote/authenticated deployments (#107)
+- Dashboard UI: session control buttons (pause/resume/stop) wait for API response before updating state, preventing false success display (#106)
 
 ## [6.37.2] - 2026-03-19
 
