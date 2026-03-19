@@ -85,13 +85,35 @@ if (results.some(r => !r.ok)) {
   console.log(`  loki setup-skill`);
 }
 
-// PATH check: warn if npm global bin is not in PATH
+// PATH check: warn if npm global bin is not in PATH, and auto-fix on macOS Homebrew
 try {
   const { execSync } = require('child_process');
   const npmBin = execSync('npm bin -g 2>/dev/null || npm prefix -g', { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
   const npmBinDir = npmBin.endsWith('/bin') ? npmBin : npmBin + '/bin';
   const pathDirs = (process.env.PATH || '').split(':');
   const lokiBinInPath = pathDirs.some(d => d === npmBinDir || d === npmBin);
+
+  // On macOS with Homebrew Node, npm global bin path changes on every Node version upgrade.
+  // Auto-create stable symlinks in /opt/homebrew/bin/ so `loki` always works.
+  if (os.platform() === 'darwin') {
+    const stableDir = '/opt/homebrew/bin';
+    if (fs.existsSync(stableDir)) {
+      for (const bin of ['loki', 'loki-mode']) {
+        const src = path.join(npmBinDir, bin);
+        const dest = path.join(stableDir, bin);
+        try {
+          if (fs.existsSync(src)) {
+            // Remove stale symlink or existing file
+            try { fs.unlinkSync(dest); } catch {}
+            fs.symlinkSync(src, dest);
+          }
+        } catch {
+          // Silently skip if no permission (non-root)
+        }
+      }
+    }
+  }
+
   if (!lokiBinInPath) {
     console.log('');
     console.log('[IMPORTANT] The `loki` command may not be in your PATH.');
