@@ -1,11 +1,14 @@
 import { StatusResponse } from '../types/api';
+import { ProviderPanel } from './ProviderPanel';
 
 interface HeaderProps {
   status: StatusResponse | null;
   wsConnected: boolean;
+  onProviderChange?: (provider: string) => void;
+  selectedProvider?: string;
 }
 
-export function Header({ status, wsConnected }: HeaderProps) {
+export function Header({ status, wsConnected, onProviderChange, selectedProvider }: HeaderProps) {
   return (
     <header className="sticky top-0 z-50 glass border-b border-white/20">
       <div className="max-w-[1920px] mx-auto px-6 h-14 flex items-center justify-between">
@@ -54,12 +57,12 @@ export function Header({ status, wsConnected }: HeaderProps) {
             </div>
           )}
 
-          {/* Provider badge */}
-          {status?.provider && status.running && (
-            <span className="text-xs font-mono font-semibold px-2.5 py-1 rounded-full bg-accent-product/10 text-accent-product">
-              {status.provider}
-            </span>
-          )}
+          {/* Provider panel -- single source of truth for provider selection */}
+          <ProviderPanel
+            currentProvider={selectedProvider || status?.provider}
+            isRunning={status?.running ?? false}
+            onProviderChange={onProviderChange}
+          />
         </div>
       </div>
     </header>

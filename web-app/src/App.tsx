@@ -12,6 +12,9 @@ import { TerminalOutput } from './components/TerminalOutput';
 import { QualityGatesPanel } from './components/QualityGatesPanel';
 import { FileBrowser } from './components/FileBrowser';
 import { MemoryViewer } from './components/MemoryViewer';
+import { ReportPanel } from './components/ReportPanel';
+import { MetricsPanel } from './components/MetricsPanel';
+import { SessionHistory } from './components/SessionHistory';
 import type { StatusResponse, Agent, LogEntry } from './types/api';
 
 export default function App() {
@@ -19,6 +22,11 @@ export default function App() {
   const [isRunning, setIsRunning] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [currentPrd, setCurrentPrd] = useState<string | null>(null);
+  const [wasRunning, setWasRunning] = useState(false);
+  const [showReport, setShowReport] = useState(false);
+  const [showMetrics, setShowMetrics] = useState(false);
+  const [activeTab, setActiveTab] = useState<'terminal' | 'metrics'>('terminal');
+  const [selectedProvider, setSelectedProvider] = useState('claude');
 
   // Primary state -- populated by WebSocket state_update pushes
   const [wsStatus, setWsStatus] = useState<StatusResponse | null>(null);
@@ -48,6 +56,13 @@ export default function App() {
     }
   }, [httpStatus, wsStatus]);
 
+  // Track wasRunning to show report/metrics after session ends
+  useEffect(() => {
+    if (isRunning) {
+      setWasRunning(true);
+    }
+  }, [isRunning]);
+
   // Rarely-changing data: memory, checklist, files -- slow HTTP polls (30s)
   // These are not pushed over WebSocket since they change infrequently
   const fetchMemory = useCallback(() => api.getMemorySummary(), []);
@@ -65,10 +80,13 @@ export default function App() {
   const agentsLoading = wsAgents === null;
   const logsLoading = wsLogs === null;
 
-  const handleStartBuild = useCallback(async (prd: string, provider: string, projectDir?: string) => {
+  const handleStartBuild = useCallback(async (prd: string, provider: string, projectDir?: string, mode?: string) => {
     setStartError(null);
+    setWasRunning(false);
+    setShowReport(false);
+    setActiveTab('terminal');
     try {
-      await api.startSession({ prd, provider, projectDir });
+      await api.startSession({ prd, provider, projectDir, mode });
       setCurrentPrd(prd);
     } catch (e) {
       setStartError(e instanceof Error ? e.message : 'Failed to start session');
@@ -84,6 +102,10 @@ export default function App() {
     } catch {
       // ignore stop errors
     }
+  }, []);
+
+  const handleProviderChange = useCallback((provider: string) => {
+    setSelectedProvider(provider);
   }, []);
 
   const handlePause = useCallback(async () => {
@@ -114,7 +136,7 @@ export default function App() {
       {/* Background pattern */}
       <div className="pattern-circles" />
 
-      <Header status={status} wsConnected={connected} />
+      <Header status={status} wsConnected={connected} onProviderChange={handleProviderChange} selectedProvider={selectedProvider} />
 
       <main className="max-w-[1920px] mx-auto px-6 py-6 relative z-10">
         {!isRunning ? (
@@ -137,7 +159,40 @@ export default function App() {
                 onSubmit={handleStartBuild}
                 running={isRunning}
                 error={startError}
+                provider={selectedProvider}
+                onProviderChange={handleProviderChange}
               />
+            </div>
+
+            {/* Post-build: report and metrics */}
+            {wasRunning && !isRunning && (
+              <div className="w-full max-w-3xl mt-4 flex flex-col gap-4">
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={() => setShowReport(!showReport)}
+                    className="px-4 py-2 rounded-xl text-sm font-semibold border border-accent-product/30 text-accent-product hover:bg-accent-product/5 transition-all"
+                  >
+                    {showReport ? 'Hide Report Panel' : 'Report'}
+                  </button>
+                  <button
+                    onClick={() => setShowMetrics(!showMetrics)}
+                    className="px-4 py-2 rounded-xl text-sm font-semibold border border-white/30 text-slate hover:text-charcoal hover:bg-white/30 transition-all"
+                  >
+                    {showMetrics ? 'Hide Metrics' : 'View Metrics'}
+                  </button>
+                </div>
+                <ReportPanel visible={showReport} />
+                <MetricsPanel visible={showMetrics} />
+              </div>
+            )}
+
+            {/* Session history */}
+            <div className="w-full max-w-3xl mt-4">
+              <SessionHistory onLoadSession={(item) => {
+                // No-op: session reload from history is view-only for now
+                // (project files are on disk; user can navigate to them manually)
+                void item;
+              }} />
             </div>
 
             {/* Connection status hint */}
@@ -174,9 +229,35 @@ export default function App() {
                 />
               </div>
 
-              {/* Center column: Terminal Output */}
-              <div className="col-span-5 flex flex-col">
-                <TerminalOutput logs={logs} loading={logsLoading} subscribe={subscribe} />
+              {/* Center column: Terminal Output + Metrics tab */}
+              <div className="col-span-5 flex flex-col gap-0">
+                <div className="flex items-center gap-1 mb-2">
+                  <button
+                    onClick={() => setActiveTab('terminal')}
+                    className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all ${
+                      activeTab === 'terminal'
+                        ? 'bg-accent-product text-white'
+                        : 'text-slate hover:text-charcoal hover:bg-white/30'
+                    }`}
+                  >
+                    Terminal
+                  </button>
+                  <button
+                    onClick={() => setActiveTab('metrics')}
+                    className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all ${
+                      activeTab === 'metrics'
+                        ? 'bg-accent-product text-white'
+                        : 'text-slate hover:text-charcoal hover:bg-white/30'
+                    }`}
+                  >
+                    Metrics
+                  </button>
+                </div>
+                {activeTab === 'terminal' ? (
+                  <TerminalOutput logs={logs} loading={logsLoading} subscribe={subscribe} />
+                ) : (
+                  <MetricsPanel visible={true} />
+                )}
               </div>
 
               {/* Right column: Agents + Quality Gates */}

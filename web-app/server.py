@@ -91,11 +91,29 @@ class StartRequest(BaseModel):
     prd: str
     provider: str = "claude"
     projectDir: Optional[str] = None
+    mode: Optional[str] = None  # "quick" for quick mode
 
 
 class StopResponse(BaseModel):
     stopped: bool
     message: str
+
+
+class PlanRequest(BaseModel):
+    prd: str
+    provider: str = "claude"
+
+
+class ReportRequest(BaseModel):
+    format: str = "markdown"  # "html" | "markdown"
+
+
+class ProviderSetRequest(BaseModel):
+    provider: str
+
+
+class OnboardRequest(BaseModel):
+    path: str
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -203,6 +221,8 @@ def _build_file_tree(root: Path, max_depth: int = 4, _depth: int = 0) -> list[di
 @app.post("/api/session/start")
 async def start_session(req: StartRequest) -> JSONResponse:
     """Start a new loki session with the given PRD."""
+    if len(req.prd.encode()) > _MAX_PRD_BYTES:
+        return JSONResponse(status_code=400, content={"error": "PRD exceeds 1 MB limit"})
     if session.running:
         return JSONResponse(
             status_code=409,
@@ -221,12 +241,21 @@ async def start_session(req: StartRequest) -> JSONResponse:
         f.write(req.prd)
 
     # Build the loki start command
-    cmd = [
-        str(LOKI_CLI),
-        "start",
-        "--provider", req.provider,
-        prd_path,
-    ]
+    if req.mode == "quick":
+        # Extract first non-blank line as the task description
+        first_line = next((l.strip() for l in req.prd.splitlines() if l.strip()), req.prd[:200])
+        cmd = [
+            str(LOKI_CLI),
+            "quick",
+            first_line,
+        ]
+    else:
+        cmd = [
+            str(LOKI_CLI),
+            "start",
+            "--provider", req.provider,
+            prd_path,
+        ]
 
     try:
         proc = subprocess.Popen(
@@ -532,6 +561,313 @@ async def get_template_content(filename: str) -> JSONResponse:
         return JSONResponse(status_code=500, content={"error": "Cannot read template"})
 
     return JSONResponse(content={"name": filename, "content": content})
+
+
+# ---------------------------------------------------------------------------
+# New GTM endpoints: plan, report, share, provider, metrics, history, onboard
+# ---------------------------------------------------------------------------
+
+def _find_loki_cli() -> Optional[str]:
+    """Locate the loki CLI binary reliably."""
+    import shutil
+    # 1. Known project-local path
+    if LOKI_CLI.exists():
+        return str(LOKI_CLI)
+    # 2. shutil.which on PATH
+    found = shutil.which("loki")
+    if found:
+        return found
+    return None
+
+
+def _run_loki_cmd(args: list, cwd: Optional[str] = None, timeout: int = 60) -> tuple[int, str]:
+    """Run a loki CLI command and return (returncode, combined output).
+
+    Uses list form -- never shell=True with user input.
+    """
+    loki = _find_loki_cli()
+    if loki is None:
+        return (1, "loki CLI not found")
+    full_cmd = [loki] + args
+    try:
+        result = subprocess.run(
+            full_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            text=True,
+            cwd=cwd or session.project_dir or str(Path.home()),
+            timeout=timeout,
+            env={**os.environ},
+        )
+        return (result.returncode, result.stdout or "")
+    except subprocess.TimeoutExpired:
+        return (1, "Command timed out")
+    except Exception as e:
+        return (1, str(e))
+
+
+_MAX_PRD_BYTES = 1_048_576  # 1 MB
+
+
+@app.post("/api/session/plan")
+async def plan_session(req: PlanRequest) -> JSONResponse:
+    """Run loki plan dry-run analysis and return structured result."""
+    if len(req.prd.encode()) > _MAX_PRD_BYTES:
+        return JSONResponse(status_code=400, content={"error": "PRD exceeds 1 MB limit"})
+    import tempfile
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
+        f.write(req.prd)
+        prd_tmp = f.name
+    try:
+        rc, output = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: _run_loki_cmd(["plan", prd_tmp], timeout=90)
+        )
+    finally:
+        try:
+            os.unlink(prd_tmp)
+        except OSError:
+            pass
+
+    # Parse output for structured fields
+    complexity = "standard"
+    cost_estimate = "unknown"
+    iterations = 5
+    phases: list[str] = []
+
+    for line in output.splitlines():
+        lower = line.lower()
+        if "complexity" in lower:
+            for val in ("simple", "standard", "complex", "expert"):
+                if val in lower:
+                    complexity = val
+                    break
+        if "cost" in lower and ("$" in line or "usd" in lower):
+            import re
+            m = re.search(r"\$[\d.,]+", line)
+            if m:
+                cost_estimate = m.group(0)
+        if "iteration" in lower:
+            import re
+            m = re.search(r"(\d+)", line)
+            if m:
+                iterations = int(m.group(1))
+        # Detect phase lines
+        for phase in ("planning", "implementation", "testing", "review", "deployment"):
+            if phase in lower and phase not in phases:
+                phases.append(phase)
+
+    return JSONResponse(content={
+        "complexity": complexity,
+        "cost_estimate": cost_estimate,
+        "iterations": iterations,
+        "phases": phases if phases else ["planning", "implementation", "testing"],
+        "output_text": output,
+        "returncode": rc,
+    })
+
+
+@app.post("/api/session/report")
+async def generate_report(req: ReportRequest) -> JSONResponse:
+    """Run loki report and return content."""
+    fmt = req.format if req.format in ("html", "markdown") else "markdown"
+    rc, output = await asyncio.get_event_loop().run_in_executor(
+        None, lambda: _run_loki_cmd(["report", "--format", fmt], timeout=60)
+    )
+    return JSONResponse(content={
+        "content": output,
+        "format": fmt,
+        "returncode": rc,
+    })
+
+
+@app.post("/api/session/share")
+async def share_session() -> JSONResponse:
+    """Run loki share and return Gist URL."""
+    rc, output = await asyncio.get_event_loop().run_in_executor(
+        None, lambda: _run_loki_cmd(["share"], timeout=60)
+    )
+    # Try to extract URL from output
+    import re
+    url_match = re.search(r"https://gist\.github\.com/\S+", output)
+    url = url_match.group(0) if url_match else ""
+    return JSONResponse(content={
+        "url": url,
+        "output": output,
+        "returncode": rc,
+    })
+
+
+@app.get("/api/provider/current")
+async def get_provider() -> JSONResponse:
+    """Return current provider and model from session state or config."""
+    provider = session.provider or os.environ.get("LOKI_PROVIDER", "claude")
+    # Try to read from config
+    config_file = Path.home() / ".loki" / "config.json"
+    model = ""
+    if config_file.exists():
+        try:
+            with open(config_file) as f:
+                cfg = json.load(f)
+            provider = cfg.get("provider", provider)
+            model = cfg.get("model", model)
+        except (json.JSONDecodeError, OSError):
+            pass
+    return JSONResponse(content={"provider": provider, "model": model})
+
+
+@app.post("/api/provider/set")
+async def set_provider(req: ProviderSetRequest) -> JSONResponse:
+    """Set the default provider for future sessions."""
+    allowed = {"claude", "codex", "gemini"}
+    if req.provider not in allowed:
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"Invalid provider. Must be one of: {', '.join(sorted(allowed))}"},
+        )
+    # Persist to config
+    config_dir = Path.home() / ".loki"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    config_file = config_dir / "config.json"
+    cfg: dict = {}
+    if config_file.exists():
+        try:
+            with open(config_file) as f:
+                cfg = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            cfg = {}
+    cfg["provider"] = req.provider
+    with open(config_file, "w") as f:
+        json.dump(cfg, f, indent=2)
+    # Update session state if not running
+    if not session.running:
+        session.provider = req.provider
+    return JSONResponse(content={"provider": req.provider, "set": True})
+
+
+@app.get("/api/session/metrics")
+async def get_metrics() -> JSONResponse:
+    """Run loki metrics --json and return parsed output."""
+    rc, output = await asyncio.get_event_loop().run_in_executor(
+        None, lambda: _run_loki_cmd(["metrics", "--json"], timeout=30)
+    )
+    # Try JSON parse
+    try:
+        data = json.loads(output)
+        return JSONResponse(content=data)
+    except (json.JSONDecodeError, ValueError):
+        pass
+    # Fallback: parse key metrics from text output
+    import re
+    metrics: dict = {
+        "iterations": 0,
+        "quality_gate_pass_rate": 0.0,
+        "time_elapsed": "",
+        "tokens_used": 0,
+        "output_text": output,
+    }
+    for line in output.splitlines():
+        if "iteration" in line.lower():
+            m = re.search(r"(\d+)", line)
+            if m:
+                metrics["iterations"] = int(m.group(1))
+        if "pass rate" in line.lower() or "pass_rate" in line.lower():
+            m = re.search(r"([\d.]+)%?", line)
+            if m:
+                metrics["quality_gate_pass_rate"] = float(m.group(1))
+        if "token" in line.lower():
+            m = re.search(r"(\d+)", line)
+            if m:
+                metrics["tokens_used"] = int(m.group(1))
+    return JSONResponse(content=metrics)
+
+
+@app.get("/api/sessions/history")
+async def get_sessions_history() -> JSONResponse:
+    """Return list of past loki sessions from ~/.loki-sessions/ or ~/.loki/sessions/."""
+    history: list[dict] = []
+    search_dirs = [
+        Path.home() / ".loki-sessions",
+        Path.home() / ".loki" / "sessions",
+        Path.home() / "purple-lab-projects",
+    ]
+    for base_dir in search_dirs:
+        if not base_dir.is_dir():
+            continue
+        for entry in sorted(base_dir.iterdir(), reverse=True)[:20]:
+            if not entry.is_dir():
+                continue
+            session_info: dict = {
+                "id": entry.name,
+                "path": str(entry),
+                "date": "",
+                "prd_snippet": "",
+                "status": "unknown",
+            }
+            # Read timestamp from directory mtime
+            try:
+                mtime = entry.stat().st_mtime
+                session_info["date"] = time.strftime("%Y-%m-%d %H:%M", time.localtime(mtime))
+            except OSError:
+                pass
+            # Try to read PRD
+            for prd_name in ("PRD.md", "prd.md", ".loki/prd.md"):
+                prd_file = entry / prd_name
+                if prd_file.exists():
+                    try:
+                        text = prd_file.read_text(errors="replace")
+                        lines = [l.strip() for l in text.splitlines() if l.strip()]
+                        session_info["prd_snippet"] = lines[0][:120] if lines else ""
+                    except OSError:
+                        pass
+                    break
+            # Try to read status
+            state_file = entry / ".loki" / "state" / "session.json"
+            if state_file.exists():
+                try:
+                    with open(state_file) as f:
+                        st = json.load(f)
+                    session_info["status"] = st.get("phase", "unknown")
+                except (json.JSONDecodeError, OSError):
+                    pass
+            history.append(session_info)
+        if history:
+            break  # Use first directory that has entries
+    return JSONResponse(content=history)
+
+
+@app.post("/api/session/onboard")
+async def onboard_session(req: OnboardRequest) -> JSONResponse:
+    """Run loki onboard on a path and return CLAUDE.md content."""
+    # Path traversal protection: must be absolute, exist, and within home directory
+    try:
+        target = Path(req.path).resolve()
+    except (ValueError, OSError):
+        return JSONResponse(status_code=400, content={"error": "Invalid path"})
+    home = Path.home().resolve()
+    if not str(target).startswith(str(home)):
+        return JSONResponse(status_code=400, content={"error": "Path must be within your home directory"})
+    if not target.exists():
+        return JSONResponse(status_code=400, content={"error": "Path does not exist"})
+    if not target.is_dir():
+        return JSONResponse(status_code=400, content={"error": "Path must be a directory"})
+
+    rc, output = await asyncio.get_event_loop().run_in_executor(
+        None, lambda: _run_loki_cmd(["onboard", str(target)], cwd=str(target), timeout=120)
+    )
+    # Try to read generated CLAUDE.md
+    claude_md = target / "CLAUDE.md"
+    claude_content = ""
+    if claude_md.exists():
+        try:
+            claude_content = claude_md.read_text(errors="replace")
+        except OSError:
+            pass
+    return JSONResponse(content={
+        "output": output,
+        "claude_md": claude_content,
+        "returncode": rc,
+    })
 
 
 # ---------------------------------------------------------------------------

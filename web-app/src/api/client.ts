@@ -20,6 +20,56 @@ export interface StartSessionRequest {
   prd: string;
   provider: string;
   projectDir?: string;
+  mode?: string; // "quick" for quick mode
+}
+
+export interface PlanResult {
+  complexity: string;
+  cost_estimate: string;
+  iterations: number;
+  phases: string[];
+  output_text: string;
+  returncode: number;
+}
+
+export interface ReportResult {
+  content: string;
+  format: string;
+  returncode: number;
+}
+
+export interface ShareResult {
+  url: string;
+  output: string;
+  returncode: number;
+}
+
+export interface ProviderInfo {
+  provider: string;
+  model: string;
+}
+
+export interface MetricsResult {
+  iterations: number;
+  quality_gate_pass_rate: number;
+  time_elapsed: string;
+  tokens_used: number;
+  output_text?: string;
+  [key: string]: unknown;
+}
+
+export interface SessionHistoryItem {
+  id: string;
+  path: string;
+  date: string;
+  prd_snippet: string;
+  status: string;
+}
+
+export interface OnboardResult {
+  output: string;
+  claude_md: string;
+  returncode: number;
 }
 
 export interface StartSessionResponse {
@@ -68,6 +118,45 @@ export const api = {
   getTemplates: () => fetchJSON<{ name: string; filename: string }[]>('/templates'),
   getTemplateContent: (filename: string) =>
     fetchJSON<{ name: string; content: string }>(`/templates/${encodeURIComponent(filename)}`),
+
+  // Plan (pre-build estimate)
+  planSession: (prd: string, provider: string) =>
+    fetchJSON<PlanResult>('/session/plan', {
+      method: 'POST',
+      body: JSON.stringify({ prd, provider }),
+    }),
+
+  // Report (post-build)
+  generateReport: (format: 'html' | 'markdown' = 'markdown') =>
+    fetchJSON<ReportResult>('/session/report', {
+      method: 'POST',
+      body: JSON.stringify({ format }),
+    }),
+
+  // Share (GitHub Gist)
+  shareSession: () =>
+    fetchJSON<ShareResult>('/session/share', { method: 'POST' }),
+
+  // Provider
+  getCurrentProvider: () => fetchJSON<ProviderInfo>('/provider/current'),
+  setProvider: (provider: string) =>
+    fetchJSON<{ provider: string; set: boolean }>('/provider/set', {
+      method: 'POST',
+      body: JSON.stringify({ provider }),
+    }),
+
+  // Metrics
+  getMetrics: () => fetchJSON<MetricsResult>('/session/metrics'),
+
+  // Session history
+  getSessionsHistory: () => fetchJSON<SessionHistoryItem[]>('/sessions/history'),
+
+  // Onboard
+  onboardRepo: (path: string) =>
+    fetchJSON<OnboardResult>('/session/onboard', {
+      method: 'POST',
+      body: JSON.stringify({ path }),
+    }),
 };
 
 export class PurpleLabWebSocket {

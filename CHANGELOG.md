@@ -1,3 +1,19 @@
+## [6.35.0] - 2026-03-18
+
+### Added - Purple Lab CLI Feature Integration Complete
+- loki plan: Pre-build estimate panel -- shows complexity, cost, iterations, time before confirming start
+- loki report: Post-build report generation -- HTML/Markdown shareable reports with full session analysis
+- loki share: One-click GitHub Gist sharing from report panel
+- Provider panel: Provider switching in UI (Claude, Codex, Gemini) with state unified in Header
+- loki metrics: Session metrics tab/button showing iterations, quality gates, tokens, time saved
+- Quick mode: Toggle for lightweight 3-iteration builds (vs full RARV cycle)
+- Session history: Browse past builds when idle, organized by date with PRD snippet and status
+- loki onboard: In-app repository analysis (generates CLAUDE.md from existing code)
+- Security: Path traversal protection on onboard endpoint, 1MB PRD size cap on plan/start
+- Product: Provider selector unified to single source of truth (Header), all buttons labeled intuitively
+- Testing: All 8 features validated via 3-round UAT (Security, Product, Integration reviewers)
+- All 23 existing E2E tests still pass (docker compose, local pytest)
+
 ## [6.34.0] - 2026-03-18
 
 ### Added - Purple Lab GTM Feature Complete
