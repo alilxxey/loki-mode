@@ -5,6 +5,15 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [6.36.5] - 2026-03-19
+
+### Fixed
+- Memory: `EpisodeCluster.to_dict()` now uses `getattr()` instead of `.get()` for EpisodeTrace dataclass instances in `memory/consolidation.py` (#134)
+- MCP: module-level `_state_manager` and `_learning_collector` singletons are now cleaned up via `cleanup_mcp_singletons()` registered with `atexit`, preventing file handle leaks on server restart (#130)
+- State: `VersionVector.concurrent_with()` now returns True for identical vectors, matching causality semantics where equal vectors represent independent events with the same knowledge (#129)
+- Memory: numpy and sentence-transformers import failures now emit `logging.warning()` in `memory/retrieval.py` and `memory/engine.py` so users know why vector search is degraded (#125)
+- Dashboard: `require_scope()` dependency returns `True` instead of `None` when auth is disabled, preventing FastAPI from treating the None return as a valid passthrough for `/api/control/*` endpoints (#87)
+
 ## [6.36.4] - 2026-03-19
 
 ### Fixed
