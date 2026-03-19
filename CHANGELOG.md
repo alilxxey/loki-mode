@@ -5,6 +5,19 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [6.36.3] - 2026-03-19
+
+### Fixed
+- Orchestrator reliability: initialize `file_count` before use to prevent unbound variable errors in run.sh (#66)
+- Orchestrator reliability: add guards in `load_ledger_context` to handle missing or malformed ledger files gracefully (#62)
+- Orchestrator reliability: PRD conflict resolution no longer overwrites user-specified PRD when a session already exists (#60)
+- CLI safety: `require_jq` now returns exit code 1 on failure instead of silently continuing, preventing cascading errors in dependent commands (#57)
+- CLI safety: `cmd_init` checks for an active session before initializing and exits cleanly if one exists (#70)
+- CLI safety: `--ship` and `--pr` flags now validate git prerequisites (clean working tree, remote set) before proceeding (#69)
+- Critical CLI fix: JSON validation runs before merge signal extraction to prevent crashes on malformed provider output (#56)
+- Critical CLI fix: `handle_pause` return value is now captured and propagated correctly, preventing silent pause failures (#58)
+- Critical CLI fix: `--provider` flag validation rejects unknown provider names with a clear error message instead of falling through to undefined behavior (#82)
+
 ## [6.36.2] - 2026-03-19
 
 ### Fixed
