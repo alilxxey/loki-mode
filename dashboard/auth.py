@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import json
 import os
 import secrets
@@ -103,6 +104,9 @@ def _save_tokens(tokens: dict) -> None:
     TOKEN_FILE.touch(mode=0o600, exist_ok=True)
     with open(TOKEN_FILE, "w") as f:
         json.dump(tokens, f, indent=2, default=str)
+    # Enforce 0600 on every write, not just creation -- touch(mode=) only
+    # applies when the file is new, so an external chmod would persist.
+    os.chmod(TOKEN_FILE, 0o600)
 
 
 def _hash_token(token: str, salt: str = None) -> tuple[str, str]:
@@ -123,7 +127,7 @@ def _hash_token(token: str, salt: str = None) -> tuple[str, str]:
 
 def _constant_time_compare(a: str, b: str) -> bool:
     """Constant-time string comparison to prevent timing attacks."""
-    return secrets.compare_digest(a.encode(), b.encode())
+    return hmac.compare_digest(a.encode(), b.encode())
 
 
 def resolve_scopes(role_or_scopes) -> list[str]:
@@ -342,30 +346,35 @@ def validate_token(raw_token: str) -> Optional[dict]:
 
     tokens = _load_tokens()
 
-    # Find matching token (using constant-time comparison to prevent timing attacks)
+    # Iterate ALL tokens to prevent timing side-channel that leaks token count.
+    # Do not short-circuit on match -- always hash and compare every entry.
+    matched_token: Optional[dict] = None
     for token in tokens["tokens"].values():
         stored_salt = token.get("salt", "")
         token_hash, _ = _hash_token(raw_token, salt=stored_salt)
         if _constant_time_compare(token["hash"], token_hash):
-            # Check if revoked
-            if token.get("revoked"):
+            matched_token = token
+
+    if matched_token is not None:
+        # Check if revoked
+        if matched_token.get("revoked"):
+            return None
+
+        # Check expiration
+        if matched_token.get("expires_at"):
+            expires = datetime.fromisoformat(matched_token["expires_at"])
+            if datetime.now(timezone.utc) > expires:
                 return None
 
-            # Check expiration
-            if token.get("expires_at"):
-                expires = datetime.fromisoformat(token["expires_at"])
-                if datetime.now(timezone.utc) > expires:
-                    return None
+        # Update last used
+        matched_token["last_used"] = datetime.now(timezone.utc).isoformat()
+        _save_tokens(tokens)
 
-            # Update last used
-            token["last_used"] = datetime.now(timezone.utc).isoformat()
-            _save_tokens(tokens)
-
-            return {
-                "id": token["id"],
-                "name": token["name"],
-                "scopes": token["scopes"],
-            }
+        return {
+            "id": matched_token["id"],
+            "name": matched_token["name"],
+            "scopes": matched_token["scopes"],
+        }
 
     return None
 

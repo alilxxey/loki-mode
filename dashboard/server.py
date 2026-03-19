@@ -1284,20 +1284,23 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             "data": {"message": "Connected to Loki Dashboard"},
         })
 
-        # Keep connection alive and handle incoming messages
+        # Keep connection alive and handle incoming messages.
+        # Close idle connections after ~60s of no response to pings.
+        missed_pongs = 0
         while True:
             try:
                 data = await asyncio.wait_for(
                     websocket.receive_text(),
-                    timeout=30.0  # Ping every 30 seconds
+                    timeout=30.0  # Ping every 30 seconds of silence
                 )
-                # Handle incoming messages (e.g., subscriptions)
+                missed_pongs = 0  # any message resets idle counter
                 try:
                     message = json.loads(data)
                     if message.get("type") == "ping":
                         await manager.send_personal(websocket, {"type": "pong"})
+                    elif message.get("type") == "pong":
+                        pass  # client responded to our ping
                     elif message.get("type") == "subscribe":
-                        # Could implement channel subscriptions here
                         await manager.send_personal(websocket, {
                             "type": "subscribed",
                             "data": message.get("data", {}),
@@ -1305,8 +1308,15 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 except json.JSONDecodeError as e:
                     logger.debug(f"WebSocket received invalid JSON: {e}")
             except asyncio.TimeoutError:
-                # Send keepalive ping
-                await manager.send_personal(websocket, {"type": "ping"})
+                missed_pongs += 1
+                if missed_pongs >= 2:
+                    # Two consecutive pings with no reply -- close idle connection
+                    logger.info("Closing idle WebSocket (no pong response)")
+                    break
+                try:
+                    await manager.send_personal(websocket, {"type": "ping"})
+                except Exception:
+                    break
 
     except WebSocketDisconnect:
         manager.disconnect(websocket)
@@ -1608,7 +1618,7 @@ class AuditQueryParams(BaseModel):
     offset: int = 0
 
 
-@app.get("/api/enterprise/audit")
+@app.get("/api/enterprise/audit", dependencies=[Depends(auth.require_scope("audit"))])
 async def query_audit_logs(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
@@ -1640,7 +1650,7 @@ async def query_audit_logs(
     )
 
 
-@app.get("/api/enterprise/audit/summary")
+@app.get("/api/enterprise/audit/summary", dependencies=[Depends(auth.require_scope("audit"))])
 async def get_audit_summary(days: int = 7):
     """Get audit activity summary."""
     if not audit.is_audit_enabled():

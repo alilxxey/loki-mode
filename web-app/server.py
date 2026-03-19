@@ -685,25 +685,29 @@ def _run_loki_cmd(args: list, cwd: Optional[str] = None, timeout: int = 60) -> t
     """Run a loki CLI command and return (returncode, combined output).
 
     Uses list form -- never shell=True with user input.
+    On timeout, the subprocess is explicitly killed to avoid orphaned processes.
     """
     loki = _find_loki_cli()
     if loki is None:
         return (1, "loki CLI not found")
     full_cmd = [loki] + args
     try:
-        result = subprocess.run(
+        proc = subprocess.Popen(
             full_cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
             text=True,
             cwd=cwd or session.project_dir or str(Path.home()),
-            timeout=timeout,
             env={**os.environ},
         )
-        return (result.returncode, result.stdout or "")
-    except subprocess.TimeoutExpired:
-        return (1, "Command timed out")
+        try:
+            stdout, _ = proc.communicate(timeout=timeout)
+            return (proc.returncode, stdout or "")
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            return (1, "Command timed out")
     except Exception as e:
         return (1, str(e))
 
@@ -1154,7 +1158,10 @@ async def _push_state_to_client(ws: WebSocket) -> None:
     """Background task: push state snapshots to a single WebSocket client.
 
     Pushes every 2s when a session is running, every 30s when idle.
+    Sends only incremental log deltas (new lines since last push) instead
+    of the full log buffer each time.
     """
+    last_log_index = max(len(session.log_lines) - 100, 0)  # backfill handled on connect
     while True:
         is_running = (
             session.process is not None
@@ -1214,10 +1221,12 @@ async def _push_state_to_client(ws: WebSocket) -> None:
             except (json.JSONDecodeError, OSError):
                 pass
 
-        # Build logs payload (last 50 lines)
-        recent = session.log_lines[-50:] if session.log_lines else []
+        # Build incremental logs payload (only new lines since last push)
+        current_len = len(session.log_lines)
+        new_lines = session.log_lines[last_log_index:current_len] if current_len > last_log_index else []
+        last_log_index = current_len
         logs_payload = []
-        for line in recent:
+        for line in new_lines:
             level = "info"
             lower = line.lower()
             if "error" in lower or "fail" in lower:
@@ -1271,17 +1280,30 @@ async def websocket_endpoint(ws: WebSocket) -> None:
     # Start server-push state task for this connection
     push_task = asyncio.create_task(_push_state_to_client(ws))
 
+    missed_pongs = 0
     try:
         while True:
-            # Keep connection alive; handle client messages if needed
-            data = await ws.receive_text()
-            # Could handle commands here (e.g., stop session)
             try:
-                msg = json.loads(data)
-                if msg.get("type") == "ping":
-                    await ws.send_text(json.dumps({"type": "pong"}))
-            except json.JSONDecodeError:
-                pass
+                data = await asyncio.wait_for(ws.receive_text(), timeout=60.0)
+                missed_pongs = 0  # any message resets idle counter
+                try:
+                    msg = json.loads(data)
+                    if msg.get("type") == "ping":
+                        await ws.send_text(json.dumps({"type": "pong"}))
+                    elif msg.get("type") == "pong":
+                        pass  # client responded to our ping
+                except json.JSONDecodeError:
+                    pass
+            except asyncio.TimeoutError:
+                # No message for 60s -- send a ping
+                missed_pongs += 1
+                if missed_pongs >= 2:
+                    # Two consecutive pings with no reply -- close idle connection
+                    break
+                try:
+                    await ws.send_text(json.dumps({"type": "ping"}))
+                except Exception:
+                    break
     except WebSocketDisconnect:
         pass
     finally:

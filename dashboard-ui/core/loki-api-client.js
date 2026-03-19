@@ -428,6 +428,14 @@ export class LokiApiClient extends EventTarget {
    * Handle incoming WebSocket message
    */
   _handleMessage(message) {
+    // Respond to server pings to keep connection alive
+    if (message.type === 'ping') {
+      if (this._ws && this._ws.readyState === WebSocket.OPEN) {
+        this._ws.send(JSON.stringify({ type: 'pong' }));
+      }
+      return;
+    }
+
     const eventMap = {
       'connected': ApiEvents.CONNECTED,
       'status_update': ApiEvents.STATUS_UPDATE,
@@ -468,6 +476,7 @@ export class LokiApiClient extends EventTarget {
       const response = await fetch(url, {
         ...options,
         signal: controller.signal,
+        credentials: 'include',
         headers: {
           'Content-Type': 'application/json',
           ...options.headers,
@@ -1077,7 +1086,7 @@ export class LokiApiClient extends EventTarget {
    */
   async getPrdObservations() {
     // Server returns PlainTextResponse, not JSON
-    const response = await fetch(`${this.baseUrl}/api/prd-observations`);
+    const response = await fetch(`${this.baseUrl}/api/prd-observations`, { credentials: 'include' });
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}`);
     }

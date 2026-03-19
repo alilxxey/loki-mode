@@ -5,6 +5,16 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [6.37.3] - 2026-03-19
+
+### Fixed
+- Dashboard: token validation now iterates all tokens before returning match, preventing timing side-channel that leaked token count (#98)
+- Dashboard: token file permissions enforced on every write via explicit `os.chmod(0o600)`, not just on file creation (#97)
+- Dashboard: audit query endpoints now require `audit` scope via `require_scope` dependency (#104)
+- Purple Lab: plan endpoint subprocess is explicitly killed on timeout to prevent orphaned processes (#116)
+- Purple Lab: WebSocket state push sends only incremental log deltas (new lines since last push) instead of full buffer every 2 seconds (#118)
+- Purple Lab: WebSocket idle connections time out after two consecutive missed pings (120s), freeing server resources (#102)
+
 ## [6.37.2] - 2026-03-19
 
 ### Fixed

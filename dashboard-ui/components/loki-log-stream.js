@@ -142,7 +142,7 @@ export class LokiLogStream extends LokiElement {
 
     const poll = async () => {
       try {
-        const response = await fetch(`${logFile}?t=${Date.now()}`);
+        const response = await fetch(`${logFile}?t=${Date.now()}`, { credentials: 'include' });
         if (!response.ok) return;
 
         const text = await response.text();
