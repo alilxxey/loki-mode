@@ -2,6 +2,11 @@ import type { StatusResponse } from '../types/api';
 
 interface ControlBarProps {
   status: StatusResponse | null;
+  prdSummary?: string | null;
+  onStop?: () => void;
+  onPause?: () => void;
+  onResume?: () => void;
+  isPaused?: boolean;
 }
 
 function formatUptime(seconds: number): string {
@@ -19,10 +24,11 @@ function getModelTier(phase: string): string {
   return 'Sonnet';
 }
 
-export function ControlBar({ status }: ControlBarProps) {
+export function ControlBar({ status, prdSummary, onStop, onPause, onResume, isPaused }: ControlBarProps) {
   if (!status) return null;
 
   const tier = getModelTier(status.phase || '');
+  const paused = isPaused ?? status.paused ?? false;
 
   return (
     <div className="glass px-5 py-3 flex items-center gap-6 text-sm">
@@ -80,6 +86,19 @@ export function ControlBar({ status }: ControlBarProps) {
         )}
       </div>
 
+      {/* PRD summary pill */}
+      {prdSummary && (
+        <>
+          <div className="w-px h-5 bg-surface" />
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="text-xs text-slate uppercase tracking-wider font-medium flex-shrink-0">Building</span>
+            <span className="text-xs font-mono text-charcoal truncate max-w-[220px]" title={prdSummary}>
+              {prdSummary.length > 60 ? prdSummary.slice(0, 60) + '...' : prdSummary}
+            </span>
+          </div>
+        </>
+      )}
+
       <div className="flex-1" />
 
       {/* Uptime */}
@@ -87,6 +106,26 @@ export function ControlBar({ status }: ControlBarProps) {
         <span className="font-mono text-xs text-slate">
           {formatUptime(status.uptime)}
         </span>
+      )}
+
+      {/* Pause / Resume button */}
+      {(onPause || onResume) && (
+        <button
+          onClick={paused ? onResume : onPause}
+          className="px-4 py-1.5 rounded-xl text-xs font-semibold border border-warning/30 text-warning hover:bg-warning/10 transition-colors"
+        >
+          {paused ? 'Resume' : 'Pause'}
+        </button>
+      )}
+
+      {/* Stop button */}
+      {onStop && (
+        <button
+          onClick={onStop}
+          className="px-4 py-1.5 rounded-xl text-xs font-semibold bg-danger/10 text-danger border border-danger/20 hover:bg-danger/20 transition-colors"
+        >
+          Stop
+        </button>
       )}
     </div>
   );

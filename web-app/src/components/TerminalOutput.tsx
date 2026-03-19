@@ -30,7 +30,8 @@ function formatTimestamp(ts: string): string {
 
 export function TerminalOutput({ logs, loading, subscribe }: TerminalOutputProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const autoScrollRef = useRef(true);
+  // scrollLocked = true means user scrolled up, auto-scroll is OFF
+  const [scrollLocked, setScrollLocked] = useState(false);
   const [wsLines, setWsLines] = useState<{ message: string; timestamp: string }[]>([]);
 
   // Subscribe to WebSocket log events for real-time streaming
@@ -60,18 +61,27 @@ export function TerminalOutput({ logs, loading, subscribe }: TerminalOutputProps
       })
     : (logs || []);
 
-  // Auto-scroll to bottom when new logs arrive
+  // Auto-scroll to bottom when new logs arrive (only when not locked)
   useEffect(() => {
-    if (autoScrollRef.current && containerRef.current) {
+    if (!scrollLocked && containerRef.current) {
       containerRef.current.scrollTop = containerRef.current.scrollHeight;
     }
-  }, [displayLogs]);
+  }, [displayLogs, scrollLocked]);
 
-  // Detect if user scrolled up (pause auto-scroll)
+  // Detect if user scrolled up -- engage scroll lock
   const handleScroll = () => {
     if (!containerRef.current) return;
     const { scrollTop, scrollHeight, clientHeight } = containerRef.current;
-    autoScrollRef.current = scrollHeight - scrollTop - clientHeight < 50;
+    const nearBottom = scrollHeight - scrollTop - clientHeight < 50;
+    setScrollLocked(!nearBottom);
+  };
+
+  const scrollToBottom = () => {
+    setScrollLocked(false);
+    containerRef.current?.scrollTo({
+      top: containerRef.current.scrollHeight,
+      behavior: 'smooth',
+    });
   };
 
   return (
@@ -84,18 +94,24 @@ export function TerminalOutput({ logs, loading, subscribe }: TerminalOutputProps
           <span className="font-mono text-xs text-slate">
             {displayLogs.length} lines
           </span>
-          {!autoScrollRef.current && (
+          {/* Scroll lock toggle */}
+          <button
+            onClick={scrollLocked ? scrollToBottom : () => setScrollLocked(true)}
+            className={`text-xs font-medium px-2.5 py-1 rounded-lg border transition-colors ${
+              scrollLocked
+                ? 'border-warning/40 text-warning bg-warning/5 hover:bg-warning/10'
+                : 'border-primary/20 text-primary hover:bg-primary/5'
+            }`}
+            title={scrollLocked ? 'Scroll locked -- click to resume auto-scroll' : 'Auto-scrolling -- click to lock'}
+          >
+            {scrollLocked ? 'Locked' : 'Live'}
+          </button>
+          {scrollLocked && (
             <button
-              onClick={() => {
-                autoScrollRef.current = true;
-                containerRef.current?.scrollTo({
-                  top: containerRef.current.scrollHeight,
-                  behavior: 'smooth',
-                });
-              }}
+              onClick={scrollToBottom}
               className="text-xs text-primary hover:text-primary-light transition-colors font-medium"
             >
-              Scroll to bottom
+              Jump to bottom
             </button>
           )}
         </div>

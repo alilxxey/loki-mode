@@ -2,7 +2,7 @@ import { useState, useCallback, useEffect } from 'react';
 import { api } from '../api/client';
 
 interface PRDInputProps {
-  onSubmit: (prd: string, provider: string) => Promise<void>;
+  onSubmit: (prd: string, provider: string, projectDir?: string) => Promise<void>;
   running: boolean;
   error?: string | null;
 }
@@ -16,6 +16,7 @@ export function PRDInput({ onSubmit, running, error }: PRDInputProps) {
   const [prd, setPrd] = useState('');
   const [selectedTemplate, setSelectedTemplate] = useState('');
   const [provider, setProvider] = useState('claude');
+  const [projectDir, setProjectDir] = useState('');
   const [showTemplates, setShowTemplates] = useState(false);
   const [templates, setTemplates] = useState<TemplateItem[]>([]);
   const [submitting, setSubmitting] = useState(false);
@@ -44,6 +45,19 @@ export function PRDInput({ onSubmit, running, error }: PRDInputProps) {
       });
   }, []);
 
+  // On mount: check for PRD prefill from CLI --prd flag
+  useEffect(() => {
+    api.getPrdPrefill()
+      .then(({ content }) => {
+        if (content) {
+          setPrd(content);
+        }
+      })
+      .catch(() => {
+        // No prefill available -- ignore
+      });
+  }, []);
+
   const handleTemplateSelect = useCallback(async (filename: string, name: string) => {
     setSelectedTemplate(name);
     setShowTemplates(false);
@@ -59,7 +73,7 @@ export function PRDInput({ onSubmit, running, error }: PRDInputProps) {
     if (!prd.trim() || running || submitting) return;
     setSubmitting(true);
     try {
-      await onSubmit(prd, provider);
+      await onSubmit(prd, provider, projectDir.trim() || undefined);
     } finally {
       setSubmitting(false);
     }
@@ -108,6 +122,24 @@ export function PRDInput({ onSubmit, running, error }: PRDInputProps) {
         className="flex-1 min-h-[280px] w-full bg-white/40 rounded-xl border border-white/30 px-4 py-3 text-sm font-mono text-charcoal placeholder:text-primary-wash resize-none focus:outline-none focus:ring-2 focus:ring-accent-product/20 focus:border-accent-product/30 transition-all"
         spellCheck={false}
       />
+
+      {/* Project directory field */}
+      <div className="mt-3">
+        <label className="block text-xs text-slate font-medium mb-1 uppercase tracking-wider">
+          Project Directory
+        </label>
+        <input
+          type="text"
+          value={projectDir}
+          onChange={(e) => setProjectDir(e.target.value)}
+          placeholder="Leave blank to auto-create, or type a path (e.g. /Users/you/my-project)"
+          className="w-full bg-white/40 rounded-xl border border-white/30 px-4 py-2 text-sm font-mono text-charcoal placeholder:text-primary-wash/70 focus:outline-none focus:ring-2 focus:ring-accent-product/20 focus:border-accent-product/30 transition-all"
+          spellCheck={false}
+        />
+        <p className="text-[10px] text-slate mt-1">
+          Type a path or leave blank to auto-create under ~/purple-lab-projects/
+        </p>
+      </div>
 
       {/* Error display */}
       {error && (

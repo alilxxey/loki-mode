@@ -467,6 +467,43 @@ async def get_checklist() -> JSONResponse:
     })
 
 
+@app.get("/api/session/prd-prefill")
+async def get_prd_prefill() -> JSONResponse:
+    """Return PRD content from PURPLE_LAB_PRD env var (set by CLI --prd flag)."""
+    content = os.environ.get("PURPLE_LAB_PRD")
+    return JSONResponse(content={"content": content})
+
+
+@app.post("/api/session/pause")
+async def pause_session() -> JSONResponse:
+    """Pause the current loki session by sending SIGUSR1."""
+    if not session.running or session.process is None:
+        return JSONResponse(content={"paused": False, "message": "No session running"})
+    try:
+        os.kill(session.process.pid, signal.SIGUSR1)
+    except ProcessLookupError:
+        return JSONResponse(content={"paused": False, "message": "Process not found"})
+    except Exception as e:
+        return JSONResponse(content={"paused": False, "message": str(e)})
+    await _broadcast({"type": "session_paused", "data": {}})
+    return JSONResponse(content={"paused": True})
+
+
+@app.post("/api/session/resume")
+async def resume_session() -> JSONResponse:
+    """Resume the current loki session by sending SIGUSR2."""
+    if not session.running or session.process is None:
+        return JSONResponse(content={"resumed": False, "message": "No session running"})
+    try:
+        os.kill(session.process.pid, signal.SIGUSR2)
+    except ProcessLookupError:
+        return JSONResponse(content={"resumed": False, "message": "Process not found"})
+    except Exception as e:
+        return JSONResponse(content={"resumed": False, "message": str(e)})
+    await _broadcast({"type": "session_resumed", "data": {}})
+    return JSONResponse(content={"resumed": True})
+
+
 @app.get("/api/templates")
 async def get_templates() -> JSONResponse:
     """List available PRD templates."""

@@ -1,3 +1,15 @@
+## [6.34.0] - 2026-03-18
+
+### Added - Purple Lab GTM Feature Complete
+- ControlBar: Stop, Pause, and Resume buttons now visible during active sessions (previously read-only status bar)
+- PRDInput: Optional project directory field -- type a path or leave blank to auto-create under ~/purple-lab-projects/
+- FileBrowser: File content viewer -- click any file in the tree to view it inline with syntax highlighting
+- Terminal: Scroll lock toggle (Live/Locked) -- auto-scrolls to latest output when Live, freezes when Locked so you can read
+- Running state: PRD summary banner shows first 60 chars of what is being built
+- CLI: loki web --prd path/to/prd.md pre-fills the PRD textarea from a file
+- Server: GET /api/session/prd-prefill, POST /api/session/pause, POST /api/session/resume endpoints
+- 23 E2E tests pass (docker compose -f docker-compose.test.yml up --abort-on-container-exit)
+
 ## v6.33.1 (2026-03-18)
 
 ### Bug Fixes

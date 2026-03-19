@@ -2969,6 +2969,7 @@ cmd_web_help() {
 cmd_web_start() {
     local open_browser=true
     local port="${PURPLE_LAB_DEFAULT_PORT}"
+    local prd_file=""
 
     # Parse arguments
     while [[ $# -gt 0 ]]; do
@@ -2979,6 +2980,10 @@ cmd_web_start() {
                 ;;
             --port)
                 port="$2"
+                shift 2
+                ;;
+            --prd)
+                prd_file="$2"
                 shift 2
                 ;;
             --help|-h)
@@ -2992,6 +2997,16 @@ cmd_web_start() {
                 ;;
         esac
     done
+
+    # Validate --prd file if provided
+    if [ -n "$prd_file" ]; then
+        if [ ! -f "$prd_file" ]; then
+            echo -e "${RED}Error: PRD file not found: $prd_file${NC}"
+            exit 1
+        fi
+        export PURPLE_LAB_PRD
+        PURPLE_LAB_PRD=$(cat "$prd_file")
+    fi
 
     # Check that web-app dist exists
     local web_dist="${SKILL_DIR}/web-app/dist"

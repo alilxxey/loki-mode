@@ -17,6 +17,8 @@ import type { StatusResponse, Agent, LogEntry } from './types/api';
 export default function App() {
   const [startError, setStartError] = useState<string | null>(null);
   const [isRunning, setIsRunning] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
+  const [currentPrd, setCurrentPrd] = useState<string | null>(null);
 
   // Primary state -- populated by WebSocket state_update pushes
   const [wsStatus, setWsStatus] = useState<StatusResponse | null>(null);
@@ -29,6 +31,7 @@ export default function App() {
     setWsAgents(update.agents);
     setWsLogs(update.logs);
     setIsRunning(update.status.running ?? false);
+    setIsPaused(update.status.paused ?? false);
   }, []);
 
   const { connected, subscribe } = useWebSocket(handleStateUpdate);
@@ -41,6 +44,7 @@ export default function App() {
   useEffect(() => {
     if (wsStatus === null && httpStatus !== null) {
       setIsRunning(httpStatus.running ?? false);
+      setIsPaused(httpStatus.paused ?? false);
     }
   }, [httpStatus, wsStatus]);
 
@@ -61,10 +65,11 @@ export default function App() {
   const agentsLoading = wsAgents === null;
   const logsLoading = wsLogs === null;
 
-  const handleStartBuild = useCallback(async (prd: string, provider: string) => {
+  const handleStartBuild = useCallback(async (prd: string, provider: string, projectDir?: string) => {
     setStartError(null);
     try {
-      await api.startSession({ prd, provider });
+      await api.startSession({ prd, provider, projectDir });
+      setCurrentPrd(prd);
     } catch (e) {
       setStartError(e instanceof Error ? e.message : 'Failed to start session');
     }
@@ -73,10 +78,36 @@ export default function App() {
   const handleStopBuild = useCallback(async () => {
     try {
       await api.stopSession();
+      setIsRunning(false);
+      setIsPaused(false);
+      setCurrentPrd(null);
     } catch {
       // ignore stop errors
     }
   }, []);
+
+  const handlePause = useCallback(async () => {
+    try {
+      await api.pauseSession();
+      setIsPaused(true);
+    } catch {
+      // pause not supported or failed -- ignore
+    }
+  }, []);
+
+  const handleResume = useCallback(async () => {
+    try {
+      await api.resumeSession();
+      setIsPaused(false);
+    } catch {
+      // resume not supported or failed -- ignore
+    }
+  }, []);
+
+  // Derive a PRD summary from the first non-blank line
+  const prdSummary = currentPrd
+    ? currentPrd.replace(/^#+\s*/gm, '').split('\n').find(l => l.trim().length > 0) || null
+    : null;
 
   return (
     <div className="min-h-screen bg-background relative">
@@ -118,22 +149,19 @@ export default function App() {
         ) : (
           /* ========== RUNNING STATE: Monitoring panels ========== */
           <>
-            {/* Status bar */}
-            <ControlBar status={status} />
+            {/* Status bar with stop/pause/resume buttons */}
+            <ControlBar
+              status={status}
+              prdSummary={prdSummary}
+              onStop={handleStopBuild}
+              onPause={handlePause}
+              onResume={handleResume}
+              isPaused={isPaused}
+            />
 
             {/* Stats overview */}
             <div className="mt-4">
               <StatusOverview status={status} />
-            </div>
-
-            {/* Stop button */}
-            <div className="mt-4 flex justify-end">
-              <button
-                onClick={handleStopBuild}
-                className="px-5 py-2 rounded-xl text-sm font-semibold bg-danger/10 text-danger border border-danger/20 hover:bg-danger/20 transition-colors"
-              >
-                Stop Session
-              </button>
             </div>
 
             {/* Main layout: 3-column grid */}

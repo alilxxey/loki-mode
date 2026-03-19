@@ -417,3 +417,59 @@ def test_20_concurrent_requests():
     assert len(errors) == 0, f"Errors in concurrent requests: {errors}"
     assert len(results) == 10, f"Expected 10 results, got {len(results)}"
     _print_result("Concurrent requests", True, f"10/10 succeeded")
+
+
+# ---------------------------------------------------------------------------
+# Test 21: PRD prefill endpoint (env not set)
+# ---------------------------------------------------------------------------
+
+def test_21_prd_prefill_no_env():
+    """GET /api/session/prd-prefill returns {content: null} when env not set."""
+    r = requests.get(f"{BASE_URL}/api/session/prd-prefill")
+    assert r.status_code == 200, f"Expected 200, got {r.status_code}: {r.text}"
+    data = r.json()
+    assert "content" in data, f"Expected 'content' key, got: {data}"
+    # In the Docker test environment, PURPLE_LAB_PRD should not be set
+    # so content should be null (None in Python)
+    assert data["content"] is None, (
+        f"Expected content=null when PURPLE_LAB_PRD env is not set, got: {data['content']!r}"
+    )
+    _print_result("PRD prefill (no env)", True, f"content=null as expected")
+
+
+# ---------------------------------------------------------------------------
+# Test 22: Stop endpoint is idempotent and responsive
+# ---------------------------------------------------------------------------
+
+def test_22_stop_endpoint_idempotent():
+    """POST /api/session/stop returns 200 even when no session is running."""
+    # Make sure nothing is running
+    requests.post(f"{BASE_URL}/api/session/stop")
+    time.sleep(0.3)
+
+    r = requests.post(f"{BASE_URL}/api/session/stop")
+    assert r.status_code == 200, f"Expected 200, got {r.status_code}: {r.text}"
+    data = r.json()
+    assert "stopped" in data, f"Expected 'stopped' key, got: {data}"
+    _print_result("Stop idempotent", True, f"stopped={data['stopped']}, message={data.get('message', '')}")
+
+
+# ---------------------------------------------------------------------------
+# Test 23: Pause/resume endpoints return valid JSON
+# ---------------------------------------------------------------------------
+
+def test_23_pause_resume_endpoints():
+    """POST /api/session/pause and /api/session/resume return valid JSON."""
+    # Test pause (no session running -- should return paused=false or similar)
+    r_pause = requests.post(f"{BASE_URL}/api/session/pause")
+    assert r_pause.status_code == 200, f"Expected 200 from pause, got {r_pause.status_code}: {r_pause.text}"
+    data_pause = r_pause.json()
+    assert "paused" in data_pause, f"Expected 'paused' key, got: {data_pause}"
+
+    r_resume = requests.post(f"{BASE_URL}/api/session/resume")
+    assert r_resume.status_code == 200, f"Expected 200 from resume, got {r_resume.status_code}: {r_resume.text}"
+    data_resume = r_resume.json()
+    assert "resumed" in data_resume, f"Expected 'resumed' key, got: {data_resume}"
+
+    _print_result("Pause/resume endpoints", True,
+                  f"pause={data_pause}, resume={data_resume}")

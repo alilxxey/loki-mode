@@ -42,6 +42,19 @@ export const api = {
       method: 'POST',
     }),
 
+  pauseSession: () =>
+    fetchJSON<{ paused: boolean; message?: string }>('/session/pause', {
+      method: 'POST',
+    }),
+
+  resumeSession: () =>
+    fetchJSON<{ resumed: boolean; message?: string }>('/session/resume', {
+      method: 'POST',
+    }),
+
+  getPrdPrefill: () =>
+    fetchJSON<{ content: string | null }>('/session/prd-prefill'),
+
   getStatus: () => fetchJSON<import('../types/api').StatusResponse>('/session/status'),
   getAgents: () => fetchJSON<import('../types/api').Agent[]>('/session/agents'),
   getLogs: (lines = 200) => fetchJSON<import('../types/api').LogEntry[]>(`/session/logs?lines=${lines}`),
