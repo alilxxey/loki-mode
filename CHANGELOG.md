@@ -5,6 +5,19 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [6.36.6] - 2026-03-19
+
+### Fixed
+- CI: `loki ci --pr --github-comment --format github` no longer fails with `unbound variable: report_timestamp_` -- trailing underscore typo fixed in `autonomy/loki` line 16742 (#145)
+
+### Changed
+- License transitioned from MIT to Business Source License 1.1 (BSL 1.1)
+- Free for personal, internal, academic, and non-commercial use
+- Commercial use that competes with Loki Mode requires a separate license from Autonomi, Inc.
+- Each version automatically converts to Apache License 2.0 four years after release (Change Date: March 19, 2030)
+- Updated license references across all distribution channels: package.json, vscode-extension, Python SDK (pyproject.toml), TypeScript SDK, README badge and section
+- Added LICENSE-CHANGE-NOTICE.md explaining what changed and what is/isn't affected
+
 ## [6.36.5] - 2026-03-19
 
 ### Fixed

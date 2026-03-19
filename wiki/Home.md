@@ -98,7 +98,7 @@ Loki Mode is an enterprise-grade autonomous AI development orchestrator that:
 
 ## Version History
 
-Current Version: **6.36.5**
+Current Version: **6.36.6**
 
 See [[Changelog]] for detailed release notes.
 
