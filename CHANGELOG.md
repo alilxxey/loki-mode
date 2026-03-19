@@ -8,9 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.37.7] - 2026-03-19
 
 ### Fixed
-- Dashboard: pause/resume API now verifies loki process is alive via PID file before signaling; response includes `process_verified` field (#94)
-- Dashboard: task list status normalization consistent across all three sources (state.json, queue/*.json, queue/*.md); `inProgress` always maps to `in_progress` (#89)
-- CLI: closed stale issues for features already implemented: heredoc types_file via env var (#64), telemetry persistent opt-out via ~/.loki/config (#77), zsh completions via completions/_loki (#80), cmd_voice delegates to voice.sh module (#85)
+- CLI: agent list/info Python heredoc passes types_file via env var instead of shell interpolation (#64)
+- CLI: telemetry stop/start commands for persistent opt-out across sessions via ~/.loki/config (#77)
+- CLI: completions updated with telemetry and agent subcommands for both bash and zsh (#80)
+- CLI: cmd_voice replaced with stub pointing to tracking issue (#85)
+- Dashboard: pause/resume API returns 503 when loki process is not running or does not respond within 5s (#94)
+- Orchestrator: run.sh respects persistent TELEMETRY_DISABLED from ~/.loki/config on startup (#77)
 
 ## [6.37.6] - 2026-03-19
 
