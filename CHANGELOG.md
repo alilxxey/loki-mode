@@ -8,8 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [6.36.1] - 2026-03-19
 
 ### Fixed
-- Session history now shows real status (not "Unknown") for past builds
-- Past builds in session history are clickable and open the PRD/files/logs viewer
+- Session history now shows real status (not "Unknown") for past builds -- infers completed/started/in_progress/empty from project contents when session.json is absent
+- Past builds in session history are clickable and open a read-only viewer with PRD preview, file tree, and session logs
+- Cluster lifecycle hooks now expand `$LOKI_CLUSTER_*` env var references in hook commands -- previously `shell=False` passed literal `$LOKI_CLUSTER_NAME` to `echo` instead of the value (test-platform-infra.sh Test 7)
 - Remove null byte from CHANGELOG.md that was causing GitHub to render it as binary
 
 ## [6.36.0] - 2026-03-19
