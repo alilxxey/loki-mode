@@ -5,6 +5,12 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [6.36.4] - 2026-03-19
+
+### Fixed
+- Purple Lab: CORS origins are now configurable via `PURPLE_LAB_CORS_ORIGINS` env var (comma-separated list), enabling remote and Docker deployments that were previously blocked by hardcoded localhost-only origins (#135)
+- Purple Lab: path traversal protection now uses `Path.relative_to()` instead of `str.startswith()`, preventing the prefix-collision edge case where `/tmp/proj` would incorrectly match `/tmp/projother`; symlink chains that escape the project base are also rejected (#115)
+
 ## [6.36.3] - 2026-03-19
 
 ### Fixed
