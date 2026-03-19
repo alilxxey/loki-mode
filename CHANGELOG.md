@@ -1,3 +1,10 @@
+# Changelog
+
+All notable changes to Loki Mode will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
 ## [6.35.1] - 2026-03-19
 
 ### Fixed
@@ -35,13 +42,13 @@
 
 ## [6.33.1] - 2026-03-18
 
-### Bug Fixes
+### Fixed
 - Fix `loki metrics` version display (was hardcoded to v6.32.0 instead of reading runtime version)
 - Pass `LOKI_SKILL_DIR` env var to metrics Python heredoc for proper version detection
 
 ## [6.33.0] - 2026-03-18
 
-### New Features
+### Added
 - `loki watch [prd-path]` command: auto-rerun on PRD file changes
   - Monitors a PRD file and automatically re-runs `loki start` when the file is saved
   - Enables a tight edit-PRD-see-results development loop
@@ -66,7 +73,7 @@
 
 ## [6.32.0] - 2026-03-18
 
-### New Features
+### Added
 - `loki metrics` command: session productivity reporter that analyzes past Loki Mode sessions
   - Reads `.loki/` session data (orchestrator state, queue, efficiency metrics, memory)
   - Aggregates stats: iterations completed, agents deployed, tasks completed, success rate
@@ -85,7 +92,7 @@
 
 ## [6.31.0] - 2026-03-18
 
-### New Features
+### Added
 - `loki explain [path]` command: analyze any codebase and generate a plain-English architectural explanation
   - Executive summary, architecture overview, technology stack, key patterns, getting started, and contributor guide
   - Auto-detects language, framework, build system, test framework, CI/CD, and architecture patterns
@@ -119,7 +126,7 @@
 
 ## [6.30.0] - 2026-03-18
 
-### New Features
+### Added
 - `loki share` command: upload session reports as shareable GitHub Gists in one command
 - Supports `--private` flag for secret gists (default: public)
 - Supports `--format text|markdown|html` flag (default: markdown)
@@ -131,7 +138,7 @@
 
 ## [6.29.0] - 2026-03-18
 
-### New Features
+### Added
 - BMAD story priority ordering by MVP/phase label: stories from MVP epics are queued first, then Phase 2, then Phase 3
 - Auto-write-back to sprint-status.yml and epics.md checkboxes when stories are completed
 - New CLI flags: --write-back, --completed-story, --completed-stories-file for bmad-adapter.py
@@ -144,7 +151,7 @@
 
 ## [6.28.0] - 2026-03-18
 
-### New Features
+### Added
 - `loki init` project scaffolding: creates project directory, prd.md from template, .loki/ config, README.md, and git init
 - Expanded template gallery from 13 to 22 templates (added ai-chatbot, api-only, blog-platform, e-commerce, full-stack-demo, rest-api-auth, saas-starter, simple-todo-app, static-landing-page)
 - New flags: --template/-t TYPE, --no-git, --stdout, --dry-run
@@ -161,13 +168,6 @@
 ### Fixed
 - Purple Lab (loki web): web-app/server.py was missing from npm package -- loki web failed with "server not found" error on any npm install
 - Added web-app/server.py to package.json files array
-
-# Changelog
-
-All notable changes to Loki Mode will be documented in this file.
-
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [6.27.0] - 2026-03-18
 
@@ -199,15 +199,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - npm package actually includes web-app/dist/ now -- replaced `**/dist/` npmignore pattern (which blocked all dist dirs including web-app) with specific exclusions for dashboard-ui/dist/ and vscode-extension/dist/ only
+
 ## [6.26.4] - 2026-03-18
 
 ### Fixed
 - npm package now actually includes web-app/dist/ -- .npmignore had `**/dist/` which excluded it despite package.json files array including it
+
 ## [6.26.3] - 2026-03-18
 
 ### Fixed
 - Security: path traversal vulnerability in SPA catch-all route -- now uses realpath() + containment check (found by review council)
 - Dashboard empty states: quality gates and PRD checklist panels now show clear actionable messages instead of appearing broken when no session has run
+
 ## [6.26.2] - 2026-03-18
 
 ### Fixed
@@ -222,12 +225,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added web-app/dist/ to npm package files so the web app is included in global installs
 - Web app SPA catch-all route serves index.html for client-side routing
 
-## [6.25.2] - 2026-03-18
-
-### Fixed
-- Added missing `loki web` CLI command -- v6.25.0 shipped the web app but the CLI command to launch it was not included
-- `loki web` serves the built web app, auto-starts the dashboard API, opens browser
-- Subcommands: start (default), stop, status. Options: --port, --no-open, --no-api
 ## [6.26.0] - 2026-03-18
 
 ### Added
@@ -239,6 +236,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - API client: `/api/files` and `/api/files/content` endpoints for file tree browsing
 - App layout: 4-section dashboard with bottom row for File Browser and Memory Viewer
 - Production build: 223KB JS (68KB gzipped) + 16KB CSS (4KB gzipped) -- 10 components total
+
+## [6.25.2] - 2026-03-18
+
+### Fixed
+- Added missing `loki web` CLI command -- v6.25.0 shipped the web app but the CLI command to launch it was not included
+- `loki web` serves the built web app, auto-starts the dashboard API, opens browser
+- Subcommands: start (default), stop, status. Options: --port, --no-open, --no-api
 
 ## [6.25.1] - 2026-03-18
 
@@ -398,67 +402,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dashboard: quality gates and RARV timeline components now wired into standalone dashboard pages
 - Dashboard bundle: 6 previously unexported components now registered and available (quality-gates, rarv-timeline, run-manager, audit-viewer, api-keys, tenant-switcher)
 
-## [6.15.1] - BMAD Adapter Path Resolution and Sprint-Status Integration
+## [6.15.1] - 2026-03-17
 
 ### Fixed
 - BMAD adapter path resolution broken for global npm installs -- resolve_script_path now used instead of dirname "$0" fallback which resolved to bin/ symlink directory
 - BMAD sprint-status.yml now read and parsed -- completed/done stories are skipped when populating the task queue, preventing re-implementation of already-completed work
 
-## [6.15.0] - SQLite Memory Backend and MCP Memory Tools
+## [6.15.0] - 2026-03-17
 
-### Features
+### Added
 - **SQLite + FTS5 memory storage**: New primary storage backend with full-text search. Factory auto-selects SQLite when available, falls back to JSON storage. Located in `memory/sqlite_storage.py`.
 - **Auto RARV capture**: Cleaned up duplicate `store_episode_trace` calls in the autonomous loop for cleaner episode recording.
 - **3 MCP memory tools**: Added `mem_search`, `mem_timeline`, and `mem_get` tools to `mcp/server.py` for programmatic memory access.
 - **Dashboard memory endpoints**: New `/api/memory/search` and `/api/memory/stats` endpoints plus 5 existing endpoints upgraded to use SQLite backend.
 
-## [6.14.0] - Standalone Quality Review
+## [6.14.0] - 2026-03-17
 
-### Features
+### Added
 - **`loki review <dir>` command**: Standalone quality gate runner for any project directory. Runs 6 gates: project-type detection, lint, tests, security, dependencies, and structure. Supports `--json` and `--verbose` flags. No AI provider needed. Works as a CI/CD step.
 - **GitHub Action (`review`)**: New reusable action at `.github/actions/review/action.yml` -- enables `loki review` in any GitHub Actions workflow.
 
-## [6.13.1] - PRD Template Quality Fixes
+## [6.13.1] - 2026-03-17
 
-### Bug Fixes
+### Fixed
 - **simple-todo-app.md**: Added project structure, database schema, API endpoints, testing section, and success criteria to pass quality audit
 - **api-only.md**: Added project structure, data model, expanded testing section, and added success criteria
 - **e-commerce.md**: Removed undocumented 'reviews' from features (no schema/API supported it)
 - **full-stack-demo.md**: Expanded project structure, made tests required instead of optional, added acceptance criteria
 
-## [6.13.0] - Real Demo Execution
+## [6.13.0] - 2026-03-17
 
-### Features
+### Added
 - **`loki demo` rewrite**: Replaced simulated/fake demo with real execution that runs `loki start` on a bundled template. Supports `--dir`, `--provider`, `--dry-run` flags. Shows project summary and offers to open result in browser.
 
-## [6.12.5] - Remote Control Autonomous Permissions
+## [6.12.5] - 2026-03-07
 
-### Bug Fixes
+### Fixed
 - **`loki remote` bypass permissions**: Added `--permission-mode bypassPermissions` to `claude remote-control` invocations so spawned remote sessions can actually use Read, Write, and Bash tools. Without this, Loki Mode was blocked from operating in remote sessions.
 
-## [6.12.4] - Remote Control Trust Fix (Direct Config Write)
+## [6.12.4] - 2026-03-07
 
-### Bug Fixes
+### Fixed
 - **`loki remote` auto-trust via config**: Previous approach (piping `/exit` to `claude`) could not interact with the TUI trust dialog. Now writes `hasTrustDialogAccepted: true` directly to `~/.claude.json` projects config, which is the actual trust storage used by Claude Code. Uses `os.path.realpath()` to handle macOS symlinks (`/tmp` -> `/private/tmp`).
 
-## [6.12.3] - Remote Control Zero-Friction Trust
+## [6.12.3] - 2026-03-07
 
-### Bug Fixes
+### Fixed
 - **`loki remote` zero-friction trust**: Auto-trust workspace by piping `/exit` to `claude` instead of requiring manual interaction. Fully automatic recovery from untrusted workspace errors.
 
-## [6.12.2] - Remote Control Trust Fix (set -e)
+## [6.12.2] - 2026-03-07
 
-### Bug Fixes
+### Fixed
 - **`loki remote` trust auto-recovery**: Fixed `set -euo pipefail` causing script to exit before auto-recovery could trigger on workspace trust errors. Now uses `|| rc_exit=$?` pattern to capture exit code safely.
 
-## [6.12.1] - Remote Control Trust Auto-Recovery
+## [6.12.1] - 2026-03-07
 
-### Bug Fixes
+### Fixed
 - **`loki remote` trust auto-recovery**: On workspace trust failure, automatically opens interactive Claude for trust acceptance, then retries remote-control seamlessly
 
-## [6.12.0] - OpenSpec Bridge + Remote Control Improvements
+## [6.12.0] - 2026-03-07
 
-### New Features
+### Added
 - **OpenSpec Bridge** (`loki start --openspec PATH`): Spec-driven development input pathway
   - Reads OpenSpec change directories (proposal.md, specs/, tasks.md, design.md)
   - Normalizes to Loki-native formats (PRD, task queue, delta context)
@@ -469,7 +473,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Warning on all-completed task lists
   - Delta context injection in agent prompts
 
-### Bug Fixes
+### Fixed
 - **`loki remote` auto-trust**: Automatically trusts workspace via `claude -p` before launching remote-control, eliminating manual trust step
 - **OpenSpec adapter parser**: Fixed "Previously" annotation extraction for inline format, fixed "Deprecated" reason extraction for narrative descriptions
 - **CLI adapter invocation**: Fixed adapter running with --validate only (never generating output files)
@@ -480,19 +484,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `tests/test_openspec_adapter.py` -- 28 unit tests
 - `examples/openspec/` -- 6 test fixtures
 
-## [6.11.3] - Remote Control Auto-Trust with Auto-Recovery
+## [6.11.3] - 2026-03-07
 
-### Bug Fixes
+### Fixed
 - **`loki remote` auto-recovery**: When workspace isn't trusted, automatically opens interactive Claude Code for trust acceptance, then retries remote-control -- zero manual steps needed
 
 ## [6.11.1] - 2026-03-07
 
-### Bug Fixes
+### Fixed
 - **`loki remote` workspace trust error**: Replaced `exec` with normal invocation so troubleshooting guidance is shown when `claude remote-control` fails (e.g., untrusted workspace, not logged in)
 
 ## [6.11.0] - 2026-03-07
 
-### New Features
+### Added
 - **OpenSpec Bridge** (`loki start --openspec PATH`): New input pathway for spec-driven development
   - Reads OpenSpec change directories (proposal.md, specs/, tasks.md, design.md)
   - Normalizes to Loki-native formats (PRD, task queue, delta context)
@@ -507,7 +511,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `tests/test_openspec_adapter.py` - 28 unit tests for adapter
 - `examples/openspec/` - 6 test fixtures (simple, standard, complex, brownfield, partial, malformed)
 
-### Improvements
+### Changed
 - Mutual exclusivity check for `--openspec` and `--bmad-project` flags
 - Warning when all OpenSpec tasks are already completed
 - Delta context injection in agent prompts (ADDED/MODIFIED/REMOVED awareness)
@@ -956,7 +960,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - App Runner: status parameter JSON-escaped in _write_app_state
 - Build: analytics added to bare-key keyboard shortcut sections array
 
-### Improved
+### Changed
 - Docker Hub documentation rewritten with accurate defaults and complete reference
 
 ## [5.56.1] - 2026-02-24
@@ -2912,7 +2916,7 @@ Consolidated fixes from 5 parallel Opus review agents analyzing all v5.14.0 chan
 - Linux: Whisper API and local Whisper (TTS via espeak/festival)
 - Windows: Not yet supported
 
-#### Features
+#### Added
 - Guided PRD creation with voice prompts
 - Text-to-speech feedback during dictation
 - Secure temp file handling with automatic cleanup
@@ -2990,7 +2994,7 @@ Consolidated fixes from 5 parallel Opus review agents analyzing all v5.14.0 chan
 - `loki notify webhook <message>` - Send to webhook only
 - `loki notify status` - Show configured channels
 
-#### Features
+#### Added
 - Non-blocking (curl runs in background)
 - Fails silently (won't break session if webhook fails)
 - Color-coded messages by event type
@@ -3087,7 +3091,7 @@ Full-featured web dashboard for multi-project task management.
 - `--repo OWNER/REPO` - Specify repository
 - `--number NUM` - Specify issue number
 
-#### Features
+#### Added
 - Parse issue URL, `owner/repo#num`, or issue number formats
 - Extract acceptance criteria from checkboxes
 - Detect priority and type from labels
@@ -3149,7 +3153,7 @@ Cross-project learnings automatically extract patterns, mistakes, and successes 
 
 **Bug fix: New sessions were failing immediately due to persisted retry count.**
 
-#### Bug Fixes
+#### Fixed
 - **Retry count reset**: New sessions now automatically reset retry count when previous session ended in failure (status: failed, max_retries_exceeded, max_iterations_reached)
 - **New `loki reset` command**: Added command to manually reset session state
   - `loki reset` - Reset all state (autonomy + failed queue)
@@ -3176,7 +3180,7 @@ The `autonomy-state.json` persisted `retryCount: 50` from a failed session. New 
 
 ## [5.8.5] - 2026-02-01
 
-### Improved - CLI UX
+### Changed - CLI UX
 
 **Patch release: Improved CLI user experience based on feedback.**
 
@@ -3248,7 +3252,7 @@ Provider: claude (full features)
 
 **Patch release: Fix misleading API status when session not running.**
 
-#### Bug Fixes
+#### Fixed
 - **API status fix**: Return 'idle' instead of stale 'failed'/'completed' when no process is running
 - **Added lastSessionResult field**: Debug info showing what the last session's exit status was
 - **Version sync**: Fixed root package.json version sync with VS Code extension
@@ -4215,7 +4219,7 @@ cd ~/git/your-project
 - **Command Injection Vulnerability**: Fixed command injection vulnerability in `scripts/vibe-sync-watcher.sh:90` by replacing `find -exec md5sum` with safe `find -print0 | xargs -0 md5sum` pattern
 - **File Permissions**: Ensured safe file handling in polling mode
 
-#### Bug Fixes
+#### Fixed
 - **AttributeError in Export Script**: Fixed `scripts/export-to-vibe-kanban.sh:115` to handle both dict and string payloads using `isinstance()` check
 - **Race Condition**: Changed `inotifywait -e modify` to `-e close_write` in watcher script to wait for complete file writes before triggering export
 - **Error Handling**: Added error checks at all 4 locations where export script is called in watcher, displaying warnings on failure
@@ -4263,7 +4267,7 @@ cd ~/git/your-project
 | [Microsoft OptiMind](https://ai.azure.com/catalog/models/microsoft-optimind-sft) | Problem classification, domain expert hints, ensemble solution generation |
 | [k8s-valkey-operator](https://github.com/smoketurner/k8s-valkey-operator) | Formal state machines, idempotent operations, Kubernetes reconciliation patterns |
 
-#### Improvements Made
+#### Changed Made
 
 1. **Velocity-Quality Feedback Loop (CRITICAL)** (New Section)
    - Documented the arXiv finding: 3.28x complexity OR 4.94x warnings cancels ALL velocity gains
@@ -4308,7 +4312,7 @@ The arXiv research provides empirical evidence for why Loki Mode's quality gates
 | [Claude Code Best Practices](https://www.anthropic.com/engineering/claude-code-best-practices) | Explore-Plan-Code, thinking modes, TDD |
 | [Enterprise AI Transformation](https://claude.com/blog/driving-ai-transformation-with-claude) | Bottleneck targeting, quality focus |
 
-#### Improvements Made
+#### Changed Made
 
 1. **Simplicity First Principle** (Essential Patterns)
    - Added: "Start simple. Only escalate complexity when simpler approaches fail."
@@ -4843,7 +4847,7 @@ Loki Mode already implements patterns from state-of-the-art research. Key papers
 
 **13 cutting-edge resources analyzed and integrated:**
 
-#### New Features
+#### Added
 
 1. **Prompt Repetition for Haiku Agents** (arXiv 2512.14982v1)
    - Automatic 2x prompt repetition for Haiku on structured tasks
@@ -6620,7 +6624,7 @@ Instead of "degrade gracefully through compression", Loki Mode now uses "reset c
   - `loki-mode-X.X.X.zip` / `.skill` - For Claude.ai (SKILL.md at root)
   - `loki-mode-claude-code-X.X.X.zip` - For Claude Code (loki-mode/ folder)
 
-### Improved
+### Changed
 - **Installation Instructions** - Separate instructions for Claude.ai vs Claude Code
 - **SKILL.md** - Already has required YAML frontmatter with `name` and `description`
 
@@ -6631,12 +6635,12 @@ Instead of "degrade gracefully through compression", Loki Mode now uses "reset c
   - Users can extract directly to skills directory without renaming
   - Only includes essential skill files (no .git or .github folders)
 
-### Improved
+### Changed
 - **Installation Instructions** - Updated README with clearer extraction steps
 
 ## [2.0.1] - 2025-12-27
 
-### Improved
+### Changed
 - **Installation Documentation** - Comprehensive installation guide:
   - Explains which file is the actual skill (`SKILL.md`)
   - Shows skill file structure and required files
