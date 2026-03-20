@@ -16,6 +16,11 @@ export default defineConfig({
         target: 'http://localhost:57375',
         changeOrigin: true,
       },
+      '/proxy': {
+        target: 'http://localhost:57375',
+        changeOrigin: true,
+        ws: true,
+      },
       '/ws': {
         target: 'ws://localhost:57375',
         ws: true,

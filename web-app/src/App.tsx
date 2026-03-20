@@ -1,36 +1,52 @@
 import { lazy, Suspense } from 'react';
 import { Routes, Route } from 'react-router-dom';
 import { AppShell } from './components/layout/AppShell';
+import { AuthProvider } from './hooks/useAuth';
+import { ProtectedRoute } from './components/auth/ProtectedRoute';
+import { Skeleton } from './components/ui/Skeleton';
 
 const HomePage = lazy(() => import('./pages/HomePage'));
 const ProjectPage = lazy(() => import('./pages/ProjectPage'));
 const ProjectsPage = lazy(() => import('./pages/ProjectsPage'));
 const TemplatesPage = lazy(() => import('./pages/TemplatesPage'));
 const SettingsPage = lazy(() => import('./pages/SettingsPage'));
+const LoginPage = lazy(() => import('./pages/LoginPage'));
+const NotFoundPage = lazy(() => import('./pages/NotFoundPage'));
 
 function LoadingFallback() {
   return (
-    <div className="h-screen bg-[#FAF9F6] flex items-center justify-center text-[#6B6960] text-sm">
-      Loading...
+    <div className="h-screen bg-[#FAF9F6] flex flex-col items-center justify-center gap-3">
+      <Skeleton variant="block" width="200px" height="24px" />
+      <Skeleton variant="text" width="140px" height="12px" className="opacity-50" />
     </div>
   );
 }
 
 export default function App() {
   return (
-    <Routes>
-      {/* Full-screen IDE -- no sidebar */}
-      <Route path="/project/:sessionId" element={
-        <Suspense fallback={<LoadingFallback />}><ProjectPage /></Suspense>
-      } />
+    <AuthProvider>
+      <Routes>
+        {/* Login page -- no shell, no onboarding overlay */}
+        <Route path="/login" element={
+          <Suspense fallback={<LoadingFallback />}><LoginPage /></Suspense>
+        } />
 
-      {/* Platform shell -- sidebar navigation */}
-      <Route element={<AppShell />}>
-        <Route path="/" element={<Suspense fallback={<LoadingFallback />}><HomePage /></Suspense>} />
-        <Route path="/projects" element={<Suspense fallback={<LoadingFallback />}><ProjectsPage /></Suspense>} />
-        <Route path="/templates" element={<Suspense fallback={<LoadingFallback />}><TemplatesPage /></Suspense>} />
-        <Route path="/settings" element={<Suspense fallback={<LoadingFallback />}><SettingsPage /></Suspense>} />
-      </Route>
-    </Routes>
+        {/* Full-screen IDE -- no sidebar */}
+        <Route path="/project/:sessionId" element={
+          <ProtectedRoute>
+            <Suspense fallback={<LoadingFallback />}><ProjectPage /></Suspense>
+          </ProtectedRoute>
+        } />
+
+        {/* Platform shell -- sidebar navigation */}
+        <Route element={<ProtectedRoute><AppShell /></ProtectedRoute>}>
+          <Route path="/" element={<Suspense fallback={<LoadingFallback />}><HomePage /></Suspense>} />
+          <Route path="/projects" element={<Suspense fallback={<LoadingFallback />}><ProjectsPage /></Suspense>} />
+          <Route path="/templates" element={<Suspense fallback={<LoadingFallback />}><TemplatesPage /></Suspense>} />
+          <Route path="/settings" element={<Suspense fallback={<LoadingFallback />}><SettingsPage /></Suspense>} />
+          <Route path="*" element={<Suspense fallback={<LoadingFallback />}><NotFoundPage /></Suspense>} />
+        </Route>
+      </Routes>
+    </AuthProvider>
   );
 }

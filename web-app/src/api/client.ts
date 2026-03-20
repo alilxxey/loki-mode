@@ -6,11 +6,26 @@ const API_BASE = import.meta.env.VITE_API_BASE
 export const WS_URL = import.meta.env.VITE_WS_URL
   || `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`;
 
+function getAuthHeaders(): Record<string, string> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+  try {
+    const token = localStorage.getItem('pl_auth_token');
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+  } catch {
+    // localStorage unavailable
+  }
+  return headers;
+}
+
 async function fetchJSON<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     ...options,
     headers: {
-      'Content-Type': 'application/json',
+      ...getAuthHeaders(),
       ...options?.headers,
     },
   });
@@ -231,6 +246,17 @@ export const api = {
       `/sessions/${encodeURIComponent(sessionId)}/chat/${encodeURIComponent(taskId)}`,
     ),
 
+  // SSE stream URL for real-time chat output
+  chatStreamUrl: (sessionId: string, taskId: string) =>
+    `${API_BASE}/sessions/${encodeURIComponent(sessionId)}/chat/${encodeURIComponent(taskId)}/stream`,
+
+  // Cancel a running chat task
+  chatCancel: (sessionId: string, taskId: string) =>
+    fetchJSON<{ cancelled: boolean; reason?: string }>(
+      `/sessions/${encodeURIComponent(sessionId)}/chat/${encodeURIComponent(taskId)}/cancel`,
+      { method: 'POST' },
+    ),
+
   // Preview info (smart project type detection)
   getPreviewInfo: (sessionId: string) =>
     fetchJSON<{
@@ -241,6 +267,39 @@ export const api = {
       port: number | null;
       description: string;
     }>(`/sessions/${encodeURIComponent(sessionId)}/preview-info`),
+
+  // Dev server management
+  devserver: {
+    start: (sessionId: string, command?: string) =>
+      fetchJSON<{
+        status: string;
+        port?: number;
+        command?: string;
+        pid?: number;
+        url?: string;
+        message?: string;
+        output?: string[];
+      }>(`/sessions/${encodeURIComponent(sessionId)}/devserver/start`, {
+        method: 'POST',
+        body: JSON.stringify({ command: command || null }),
+      }),
+    stop: (sessionId: string) =>
+      fetchJSON<{ stopped: boolean; message: string }>(
+        `/sessions/${encodeURIComponent(sessionId)}/devserver/stop`,
+        { method: 'POST' },
+      ),
+    status: (sessionId: string) =>
+      fetchJSON<{
+        running: boolean;
+        status: string;
+        port: number | null;
+        command: string | null;
+        pid: number | null;
+        url: string | null;
+        framework: string | null;
+        output: string[];
+      }>(`/sessions/${encodeURIComponent(sessionId)}/devserver/status`),
+  },
 
   // Secrets
   getSecrets: () =>
@@ -255,6 +314,28 @@ export const api = {
   deleteSecret: (key: string) =>
     fetchJSON<{ deleted: boolean; key: string }>(`/secrets/${encodeURIComponent(key)}`, {
       method: 'DELETE',
+    }),
+
+  // Auth endpoints
+  getMe: () =>
+    fetchJSON<{ authenticated: boolean; local_mode?: boolean; sub?: string; email?: string; name?: string; avatar?: string }>('/auth/me'),
+
+  getGitHubAuthUrl: () =>
+    fetchJSON<{ url: string }>('/auth/github/url'),
+
+  getGoogleAuthUrl: () =>
+    fetchJSON<{ url: string }>('/auth/google/url'),
+
+  githubCallback: (code: string, state: string) =>
+    fetchJSON<{ token: string; user: { email: string; name: string; avatar_url: string } }>('/auth/github/callback', {
+      method: 'POST',
+      body: JSON.stringify({ code, state }),
+    }),
+
+  googleCallback: (code: string, state: string, redirectUri?: string) =>
+    fetchJSON<{ token: string; user: { email: string; name: string; avatar_url: string } }>('/auth/google/callback', {
+      method: 'POST',
+      body: JSON.stringify({ code, state, redirect_uri: redirectUri || `${window.location.origin}${window.location.pathname}` }),
     }),
 };
 

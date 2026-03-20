@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { NavLink } from 'react-router-dom';
+import { useState, useEffect, useRef } from 'react';
+import { NavLink, useLocation } from 'react-router-dom';
 import {
   Home,
   FolderKanban,
@@ -8,7 +8,13 @@ import {
   BookOpen,
   PanelLeftClose,
   PanelLeft,
+  LogOut,
+  Monitor,
+  ChevronUp,
+  Menu,
+  X,
 } from 'lucide-react';
+import { useAuth } from '../../hooks/useAuth';
 
 export interface SidebarProps {
   wsConnected: boolean;
@@ -33,7 +39,23 @@ const secondaryNav: NavItem[] = [
   { to: '/settings', label: 'Settings', icon: Settings2 },
 ];
 
+function useIsMobile() {
+  const [isMobile, setIsMobile] = useState(
+    typeof window !== 'undefined' ? window.innerWidth < 768 : false
+  );
+  useEffect(() => {
+    const handler = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener('resize', handler);
+    return () => window.removeEventListener('resize', handler);
+  }, []);
+  return isMobile;
+}
+
 export function Sidebar({ wsConnected, version }: SidebarProps) {
+  const isMobile = useIsMobile();
+  const location = useLocation();
+  const [mobileOpen, setMobileOpen] = useState(false);
+
   const [collapsed, setCollapsed] = useState(() => {
     try {
       return localStorage.getItem(LS_KEY) === '1';
@@ -50,10 +72,19 @@ export function Sidebar({ wsConnected, version }: SidebarProps) {
     }
   }, [collapsed]);
 
+  // Close mobile sidebar on navigation
+  useEffect(() => {
+    if (isMobile) setMobileOpen(false);
+  }, [location.pathname, isMobile]);
+
+  // On mobile: collapsed to icons only, expandable via hamburger
+  const showLabels = isMobile ? mobileOpen : !collapsed;
+  const sidebarWidth = showLabels ? 240 : 64;
+
   const linkClasses = (isActive: boolean) =>
     [
       'flex items-center gap-3 px-3 py-2 text-sm transition-colors rounded-[5px]',
-      collapsed && 'justify-center',
+      !showLabels && 'justify-center',
       isActive
         ? 'bg-[#553DE9]/8 text-[#553DE9] font-medium border-l-2 border-[#553DE9]'
         : 'text-[#36342E] hover:bg-[#F8F4F0]',
@@ -61,14 +92,14 @@ export function Sidebar({ wsConnected, version }: SidebarProps) {
       .filter(Boolean)
       .join(' ');
 
-  return (
+  const sidebarContent = (
     <aside
       className="flex flex-col h-full border-r border-[#ECEAE3] bg-white transition-[width] duration-200"
-      style={{ width: collapsed ? 64 : 240, minWidth: collapsed ? 64 : 240 }}
+      style={{ width: sidebarWidth, minWidth: sidebarWidth }}
     >
       {/* Logo */}
       <div className="flex items-center justify-between px-4 h-14 border-b border-[#ECEAE3]">
-        {!collapsed && (
+        {showLabels && (
           <div className="flex flex-col">
             <span className="font-heading text-lg font-bold leading-tight text-[#36342E]">
               Purple Lab
@@ -76,15 +107,27 @@ export function Sidebar({ wsConnected, version }: SidebarProps) {
             <span className="text-xs text-[#6B6960]">Powered by Loki</span>
           </div>
         )}
-        <button
-          type="button"
-          aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-          title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-          onClick={() => setCollapsed(!collapsed)}
-          className="inline-flex items-center justify-center w-7 h-7 rounded-[3px] text-[#939084] hover:bg-[#F8F4F0] transition-colors"
-        >
-          {collapsed ? <PanelLeft size={16} /> : <PanelLeftClose size={16} />}
-        </button>
+        {isMobile ? (
+          <button
+            type="button"
+            aria-label={mobileOpen ? 'Close menu' : 'Open menu'}
+            title={mobileOpen ? 'Close menu' : 'Open menu'}
+            onClick={() => setMobileOpen(!mobileOpen)}
+            className="inline-flex items-center justify-center w-7 h-7 rounded-[3px] text-[#939084] hover:bg-[#F8F4F0] transition-colors"
+          >
+            {mobileOpen ? <X size={16} /> : <Menu size={16} />}
+          </button>
+        ) : (
+          <button
+            type="button"
+            aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            onClick={() => setCollapsed(!collapsed)}
+            className="inline-flex items-center justify-center w-7 h-7 rounded-[3px] text-[#939084] hover:bg-[#F8F4F0] transition-colors"
+          >
+            {collapsed ? <PanelLeft size={16} /> : <PanelLeftClose size={16} />}
+          </button>
+        )}
       </div>
 
       {/* Main navigation */}
@@ -95,10 +138,10 @@ export function Sidebar({ wsConnected, version }: SidebarProps) {
             to={item.to}
             end={item.to === '/'}
             className={({ isActive }) => linkClasses(isActive)}
-            title={collapsed ? item.label : undefined}
+            title={!showLabels ? item.label : undefined}
           >
             <item.icon size={18} />
-            {!collapsed && <span>{item.label}</span>}
+            {showLabels && <span>{item.label}</span>}
           </NavLink>
         ))}
 
@@ -110,21 +153,23 @@ export function Sidebar({ wsConnected, version }: SidebarProps) {
             key={item.to}
             to={item.to}
             className={({ isActive }) => linkClasses(isActive)}
-            title={collapsed ? item.label : undefined}
+            title={!showLabels ? item.label : undefined}
           >
             <item.icon size={18} />
-            {!collapsed && <span>{item.label}</span>}
+            {showLabels && <span>{item.label}</span>}
           </NavLink>
         ))}
       </nav>
 
       {/* Bottom section */}
       <div className="px-3 py-3 border-t border-[#ECEAE3] flex flex-col gap-2">
+        <UserSection collapsed={!showLabels} />
+
         {/* Connection status */}
         <div
           className={[
             'flex items-center gap-2 text-xs',
-            collapsed && 'justify-center',
+            !showLabels && 'justify-center',
           ]
             .filter(Boolean)
             .join(' ')}
@@ -134,7 +179,7 @@ export function Sidebar({ wsConnected, version }: SidebarProps) {
               wsConnected ? 'bg-[#1FC5A8]' : 'bg-[#C45B5B]'
             }`}
           />
-          {!collapsed && (
+          {showLabels && (
             <span className="text-[#6B6960]">
               {wsConnected ? 'Connected' : 'Disconnected'}
             </span>
@@ -142,7 +187,7 @@ export function Sidebar({ wsConnected, version }: SidebarProps) {
         </div>
 
         {/* Version */}
-        {!collapsed && version && (
+        {showLabels && version && (
           <span className="text-xs text-[#6B6960]">v{version}</span>
         )}
 
@@ -153,16 +198,145 @@ export function Sidebar({ wsConnected, version }: SidebarProps) {
           rel="noopener noreferrer"
           className={[
             'flex items-center gap-2 text-xs text-[#6B6960] hover:text-[#36342E] transition-colors',
-            collapsed && 'justify-center',
+            !showLabels && 'justify-center',
           ]
             .filter(Boolean)
             .join(' ')}
-          title={collapsed ? 'Documentation' : undefined}
+          title={!showLabels ? 'Documentation' : undefined}
         >
           <BookOpen size={14} />
-          {!collapsed && <span>Docs</span>}
+          {showLabels && <span>Docs</span>}
         </a>
       </div>
     </aside>
+  );
+
+  // On mobile with overlay open, show backdrop
+  if (isMobile && mobileOpen) {
+    return (
+      <>
+        <div
+          className="fixed inset-0 z-40 bg-ink/20"
+          onClick={() => setMobileOpen(false)}
+        />
+        <div className="fixed inset-y-0 left-0 z-50">
+          {sidebarContent}
+        </div>
+      </>
+    );
+  }
+
+  return sidebarContent;
+}
+
+// ---------------------------------------------------------------------------
+// UserSection -- shows authenticated user or "Local Mode" label
+// ---------------------------------------------------------------------------
+
+function UserSection({ collapsed }: { collapsed: boolean }) {
+  const { user, logout, isLocalMode } = useAuth();
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  // Close menu on outside click
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuOpen(false);
+      }
+    }
+    if (menuOpen) {
+      document.addEventListener('mousedown', handleClick);
+      return () => document.removeEventListener('mousedown', handleClick);
+    }
+  }, [menuOpen]);
+
+  // Local mode indicator
+  if (isLocalMode || !user) {
+    return (
+      <div
+        className={[
+          'flex items-center gap-2 text-xs',
+          collapsed && 'justify-center',
+        ]
+          .filter(Boolean)
+          .join(' ')}
+        title={collapsed ? 'Local Mode' : undefined}
+      >
+        <Monitor size={14} className="text-[#939084] flex-shrink-0" />
+        {!collapsed && (
+          <span className="text-[#939084]">Local Mode</span>
+        )}
+      </div>
+    );
+  }
+
+  // Authenticated user
+  return (
+    <div className="relative" ref={menuRef}>
+      <button
+        type="button"
+        onClick={() => setMenuOpen(!menuOpen)}
+        className={[
+          'flex items-center gap-2 w-full text-left text-xs rounded-[3px] py-1 px-1 hover:bg-[#F8F4F0] transition-colors',
+          collapsed && 'justify-center',
+        ]
+          .filter(Boolean)
+          .join(' ')}
+        title={collapsed ? user.name || user.email : undefined}
+      >
+        {user.avatar_url ? (
+          <img
+            src={user.avatar_url}
+            alt=""
+            className="w-5 h-5 rounded-full flex-shrink-0"
+          />
+        ) : (
+          <div className="w-5 h-5 rounded-full bg-[#553DE9] flex items-center justify-center text-white text-[10px] font-bold flex-shrink-0">
+            {(user.name || user.email || '?')[0].toUpperCase()}
+          </div>
+        )}
+        {!collapsed && (
+          <>
+            <span className="text-[#36342E] truncate flex-1">
+              {user.name || user.email}
+            </span>
+            <ChevronUp
+              size={12}
+              className={`text-[#939084] transition-transform ${menuOpen ? '' : 'rotate-180'}`}
+            />
+          </>
+        )}
+      </button>
+
+      {/* Dropdown menu */}
+      {menuOpen && (
+        <div className="absolute bottom-full left-0 mb-1 w-48 bg-white border border-[#ECEAE3] rounded-lg shadow-lg py-1 z-50">
+          <div className="px-3 py-2 border-b border-[#ECEAE3]">
+            <p className="text-xs font-medium text-[#36342E] truncate">{user.name}</p>
+            <p className="text-xs text-[#939084] truncate">{user.email}</p>
+          </div>
+          <NavLink
+            to="/settings"
+            onClick={() => setMenuOpen(false)}
+            className="flex items-center gap-2 px-3 py-2 text-xs text-[#36342E] hover:bg-[#F8F4F0] transition-colors"
+          >
+            <Settings2 size={14} />
+            Settings
+          </NavLink>
+          <button
+            type="button"
+            onClick={() => {
+              setMenuOpen(false);
+              logout();
+            }}
+            className="flex items-center gap-2 px-3 py-2 text-xs text-[#C45B5B] hover:bg-[#F8F4F0] transition-colors w-full text-left"
+          >
+            <LogOut size={14} />
+            Sign out
+          </button>
+        </div>
+      )}
+    </div>
   );
 }

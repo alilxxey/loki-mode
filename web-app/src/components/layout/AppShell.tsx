@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Outlet } from 'react-router-dom';
 import { Sidebar } from './Sidebar';
+import { OnboardingOverlay } from '../OnboardingOverlay';
 import { api } from '../../api/client';
 import { useWebSocket } from '../../hooks/useWebSocket';
 
@@ -17,6 +18,7 @@ export function AppShell() {
 
   return (
     <div className="flex h-screen bg-[#FAF9F6]">
+      <OnboardingOverlay />
       <a
         href="#main-content"
         className="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:top-2 focus:left-2 focus:px-4 focus:py-2 focus:bg-white focus:text-[#553DE9] focus:rounded-[3px] focus:shadow-card"

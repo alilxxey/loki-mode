@@ -5,6 +5,35 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [6.50.0] - 2026-03-20 - Purple Lab v2: Production IDE Platform
+
+### Added
+- Real interactive terminal (pexpect PTY + xterm.js) with multi-tab support
+- Dev server manager with auto-detection for 8+ frameworks (Vite, Next.js, Django, Flask, Express, Go, Rust)
+- HTTP/WebSocket proxy for live preview with HMR support
+- SSE streaming for AI chat (20x faster than polling)
+- File watcher with 200ms debounce and auto-refresh
+- PostgreSQL database models (User, Project, Session, Secret, AuditLog)
+- JWT + OAuth authentication (GitHub, Google) with CSRF protection
+- Local mode: full functionality without database or auth
+- Docker Compose for full-stack deployment
+- Kubernetes manifests (Deployment, Service, Ingress, HPA, StatefulSet, NetworkPolicy, PDB)
+- 74 new tests (26 E2E + 35 unit + 13 integration)
+- Skeleton loading components, error boundaries, empty states
+- Keyboard shortcuts (Cmd+S/P/B/?) with help modal
+- 4-step onboarding overlay for new users
+- 404 page, mobile responsive sidebar
+
+### Fixed
+- Terminal tab no longer destroys state on tab switch (CSS visibility)
+- PTY reuse on reconnect prevents orphaned processes
+- OAuth callback flow with proper code exchange
+- Auth middleware correctly blocks when DB configured but auth module missing
+- Dev server crash detection in both starting and running states
+- Streaming chat immutable state updates (React anti-pattern fixed)
+- File watcher clears notification on file switch
+- Session stop now cleans up all resources (PTY, dev server, file watcher)
+
 ## [6.45.1] - 2026-03-20
 
 ### Fixed

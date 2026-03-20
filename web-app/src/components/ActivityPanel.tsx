@@ -1,6 +1,7 @@
 import { useState } from 'react';
-import { Terminal, Bot, ShieldCheck, MessageSquare, Check, X, Clock } from 'lucide-react';
+import { Terminal, ScrollText, Bot, ShieldCheck, MessageSquare, Check, X, Clock, Users } from 'lucide-react';
 import { TerminalOutput } from './TerminalOutput';
+import { TerminalEmulator } from './TerminalEmulator';
 import { AIChatPanel } from './AIChatPanel';
 import type { LogEntry, Agent, ChecklistSummary } from '../types/api';
 
@@ -14,7 +15,7 @@ interface ActivityPanelProps {
   buildMode?: 'quick' | 'standard' | 'max';
 }
 
-type TabId = 'build' | 'agents' | 'quality' | 'chat';
+type TabId = 'terminal' | 'build' | 'agents' | 'quality' | 'chat';
 
 interface TabDef {
   id: TabId;
@@ -23,7 +24,8 @@ interface TabDef {
 }
 
 const TABS: TabDef[] = [
-  { id: 'build', label: 'Build Log', icon: Terminal },
+  { id: 'terminal', label: 'Terminal', icon: Terminal },
+  { id: 'build', label: 'Build Log', icon: ScrollText },
   { id: 'agents', label: 'Agents', icon: Bot },
   { id: 'quality', label: 'Quality', icon: ShieldCheck },
   { id: 'chat', label: 'AI Chat', icon: MessageSquare },
@@ -42,7 +44,13 @@ function GateIcon({ status }: { status: string }) {
 
 function AgentsTab({ agents }: { agents: Agent[] | null }) {
   if (!agents || agents.length === 0) {
-    return <div className="p-4 text-xs text-muted">No agents running.</div>;
+    return (
+      <div className="flex flex-col items-center justify-center p-6 text-center h-full">
+        <Users size={24} className="text-muted/30 mb-2" />
+        <p className="text-xs text-muted font-medium">No agents active</p>
+        <p className="text-[11px] text-muted/70 mt-0.5">Agents will appear here during builds.</p>
+      </div>
+    );
   }
   return (
     <div className="p-2 space-y-1 overflow-y-auto terminal-scroll">
@@ -73,7 +81,13 @@ function AgentsTab({ agents }: { agents: Agent[] | null }) {
 
 function QualityTab({ checklist }: { checklist: ChecklistSummary | null }) {
   if (!checklist || !checklist.items || checklist.items.length === 0) {
-    return <div className="p-4 text-xs text-muted">No quality gate data available.</div>;
+    return (
+      <div className="flex flex-col items-center justify-center p-6 text-center h-full">
+        <ShieldCheck size={24} className="text-muted/30 mb-2" />
+        <p className="text-xs text-muted font-medium">No quality gate data</p>
+        <p className="text-[11px] text-muted/70 mt-0.5">Quality gates will appear during builds.</p>
+      </div>
+    );
   }
   return (
     <div className="p-2 space-y-1 overflow-y-auto terminal-scroll">
@@ -110,7 +124,7 @@ export function ActivityPanel({
   subscribe,
   buildMode,
 }: ActivityPanelProps) {
-  const [activeTab, setActiveTab] = useState<TabId>('build');
+  const [activeTab, setActiveTab] = useState<TabId>('terminal');
 
   return (
     <div className="h-full flex flex-col bg-card">
@@ -142,7 +156,14 @@ export function ActivityPanel({
       </div>
 
       {/* Tab content */}
-      <div role="tabpanel" aria-label={TABS.find(t => t.id === activeTab)?.label} className="flex-1 min-h-0 overflow-hidden">
+      <div role="tabpanel" aria-label={TABS.find(t => t.id === activeTab)?.label} className="flex-1 min-h-0 overflow-hidden relative">
+        {/* Terminal is always mounted but hidden via CSS to preserve PTY session across tab switches */}
+        <div
+          className="absolute inset-0"
+          style={{ visibility: activeTab === 'terminal' ? 'visible' : 'hidden', zIndex: activeTab === 'terminal' ? 1 : 0 }}
+        >
+          <TerminalEmulator sessionId={sessionId} isActive={activeTab === 'terminal'} />
+        </div>
         {activeTab === 'build' && (
           <TerminalOutput logs={logs} loading={logsLoading} subscribe={subscribe} />
         )}

@@ -1,11 +1,12 @@
-import { useState, useRef, useEffect } from 'react';
-import { Send } from 'lucide-react';
+import { useState, useRef, useEffect, useCallback } from 'react';
+import { Send, Square, MessageSquare } from 'lucide-react';
 import { api } from '../api/client';
 import { Button } from './ui/Button';
 
 interface AIChatPanelProps {
   sessionId: string;
   defaultMode?: 'quick' | 'standard' | 'max';
+  onFilesChanged?: (files: string[]) => void;
 }
 
 interface ChatMessage {
@@ -13,21 +14,230 @@ interface ChatMessage {
   content: string;
   timestamp: string;
   filesChanged?: string[];
+  isStreaming?: boolean;
+  returncode?: number;
 }
 
-export function AIChatPanel({ sessionId, defaultMode }: AIChatPanelProps) {
+// Immutable update helper: replaces the last message with a new object
+function updateLastMessage(
+  prev: ChatMessage[],
+  updater: (msg: ChatMessage) => Partial<ChatMessage>,
+): ChatMessage[] {
+  if (prev.length === 0) return prev;
+  const updated = [...prev];
+  const last = updated[updated.length - 1];
+  updated[updated.length - 1] = { ...last, ...updater(last) };
+  return updated;
+}
+
+export function AIChatPanel({ sessionId, defaultMode, onFilesChanged }: AIChatPanelProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [mode, setMode] = useState<'quick' | 'standard' | 'max'>(defaultMode || 'quick');
   const [sending, setSending] = useState(false);
+  const [streaming, setStreaming] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const activeTaskRef = useRef<string | null>(null);
 
+  // Auto-scroll to bottom when messages change
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [messages]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (abortRef.current) {
+        abortRef.current.abort();
+      }
+    };
+  }, []);
+
+  const handleCancel = useCallback(async () => {
+    // Abort the fetch stream
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
+    }
+    // Tell the server to kill the process
+    if (activeTaskRef.current) {
+      try {
+        await api.chatCancel(sessionId, activeTaskRef.current);
+      } catch {
+        // Best effort -- task may already be done
+      }
+      activeTaskRef.current = null;
+    }
+    setStreaming(false);
+    setSending(false);
+    // Mark the last streaming message as no longer streaming
+    setMessages(prev =>
+      updateLastMessage(prev, last =>
+        last.isStreaming
+          ? { isStreaming: false, content: last.content + '\n[cancelled]' }
+          : {},
+      ),
+    );
+    inputRef.current?.focus();
+  }, [sessionId]);
+
+  const fallbackToPoll = useCallback(async (taskId: string) => {
+    // Polling fallback for environments that do not support SSE streaming
+    const maxPolls = 150;
+    let pollCount = 0;
+    let poll: { complete: boolean; output_lines: string[]; files_changed: string[]; returncode: number };
+
+    do {
+      await new Promise(r => setTimeout(r, 2000));
+      poll = await api.chatPoll(sessionId, taskId);
+      pollCount++;
+
+      // Update streaming message with partial output
+      if (poll.output_lines.length > 0) {
+        const joined = poll.output_lines.join('\n');
+        setMessages(prev =>
+          updateLastMessage(prev, last =>
+            last.role === 'system' && last.isStreaming ? { content: joined } : {},
+          ),
+        );
+      }
+
+      if (pollCount >= maxPolls) {
+        poll = { complete: true, output_lines: ['Build timed out after 5 minutes.'], files_changed: [], returncode: 1 };
+      }
+    } while (!poll.complete);
+
+    setMessages(prev =>
+      updateLastMessage(prev, last =>
+        last.role === 'system'
+          ? {
+              isStreaming: false,
+              content: poll.output_lines.join('\n') || 'Done.',
+              filesChanged: poll.files_changed,
+              returncode: poll.returncode,
+            }
+          : {},
+      ),
+    );
+
+    if (poll.files_changed?.length > 0 && onFilesChanged) {
+      onFilesChanged(poll.files_changed);
+    }
+  }, [sessionId, onFilesChanged]);
+
+  const startStreaming = useCallback(async (taskId: string) => {
+    const controller = new AbortController();
+    abortRef.current = controller;
+    activeTaskRef.current = taskId;
+    setStreaming(true);
+
+    try {
+      const streamUrl = api.chatStreamUrl(sessionId, taskId);
+      const response = await fetch(streamUrl, { signal: controller.signal });
+
+      if (!response.ok || !response.body) {
+        throw new Error(`Stream failed: ${response.status}`);
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+
+        // Parse SSE events from buffer -- events are separated by double newlines
+        const parts = buffer.split('\n\n');
+        buffer = parts.pop() || '';
+
+        for (const part of parts) {
+          if (!part.trim()) continue;
+
+          const lines = part.split('\n');
+          let eventType = '';
+          let data = '';
+
+          for (const line of lines) {
+            if (line.startsWith('event:')) {
+              eventType = line.slice(6).trim();
+            } else if (line.startsWith('data:')) {
+              data = line.slice(5).trim();
+            }
+          }
+
+          if (eventType === 'output' && data) {
+            try {
+              const { line } = JSON.parse(data);
+              setMessages(prev =>
+                updateLastMessage(prev, last =>
+                  last.role === 'system' && last.isStreaming
+                    ? { content: last.content ? last.content + '\n' + line : line }
+                    : {},
+                ),
+              );
+            } catch {
+              // Skip malformed JSON
+            }
+          } else if (eventType === 'complete' && data) {
+            try {
+              const { returncode, files_changed } = JSON.parse(data);
+              setMessages(prev =>
+                updateLastMessage(prev, last =>
+                  last.role === 'system' && last.isStreaming
+                    ? {
+                        isStreaming: false,
+                        filesChanged: files_changed,
+                        returncode,
+                        content: last.content || 'Done.',
+                      }
+                    : {},
+                ),
+              );
+              // Notify parent about changed files for file tree refresh
+              if (files_changed?.length > 0 && onFilesChanged) {
+                onFilesChanged(files_changed);
+              }
+            } catch {
+              // Skip malformed JSON
+            }
+          } else if (eventType === 'error' && data) {
+            try {
+              const { error } = JSON.parse(data);
+              setMessages(prev =>
+                updateLastMessage(prev, last =>
+                  last.role === 'system' && last.isStreaming
+                    ? { isStreaming: false, content: `Error: ${error}` }
+                    : {},
+                ),
+              );
+            } catch {
+              // Skip malformed JSON
+            }
+          }
+        }
+      }
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        // User cancelled -- already handled
+        return;
+      }
+      // SSE failed -- fall back to polling
+      await fallbackToPoll(taskId);
+    } finally {
+      setStreaming(false);
+      setSending(false);
+      abortRef.current = null;
+      activeTaskRef.current = null;
+      inputRef.current?.focus();
+    }
+  }, [sessionId, onFilesChanged, fallbackToPoll]);
 
   const handleSend = async () => {
     const trimmed = input.trim();
@@ -38,39 +248,30 @@ export function AIChatPanel({ sessionId, defaultMode }: AIChatPanelProps) {
       content: trimmed,
       timestamp: new Date().toISOString(),
     };
-    setMessages(prev => [...prev, userMsg]);
+
+    // Add user message and a placeholder streaming system message
+    const streamingMsg: ChatMessage = {
+      role: 'system',
+      content: '',
+      timestamp: new Date().toISOString(),
+      isStreaming: true,
+    };
+
+    setMessages(prev => [...prev, userMsg, streamingMsg]);
     setInput('');
     setSending(true);
 
     try {
       const { task_id } = await api.chatStart(sessionId, trimmed, mode);
-      // Poll until complete (max 5 min timeout)
-      let poll: { complete: boolean; output_lines: string[]; files_changed: string[]; returncode: number };
-      const maxPolls = 150; // 150 * 2s = 5 min
-      let pollCount = 0;
-      do {
-        await new Promise(r => setTimeout(r, 2000));
-        poll = await api.chatPoll(sessionId, task_id);
-        pollCount++;
-        if (pollCount >= maxPolls) {
-          poll = { complete: true, output_lines: ['Build timed out after 5 minutes.'], files_changed: [], returncode: 1 };
-        }
-      } while (!poll.complete);
-      const systemMsg: ChatMessage = {
-        role: 'system',
-        content: poll.output_lines.join('\n') || 'Done.',
-        timestamp: new Date().toISOString(),
-        filesChanged: poll.files_changed,
-      };
-      setMessages(prev => [...prev, systemMsg]);
+      await startStreaming(task_id);
     } catch (err) {
-      const errorMsg: ChatMessage = {
-        role: 'system',
-        content: `Error: ${err instanceof Error ? err.message : 'Request failed'}`,
-        timestamp: new Date().toISOString(),
-      };
-      setMessages(prev => [...prev, errorMsg]);
-    } finally {
+      setMessages(prev =>
+        updateLastMessage(prev, last =>
+          last.role === 'system' && last.isStreaming
+            ? { isStreaming: false, content: `Error: ${err instanceof Error ? err.message : 'Request failed'}` }
+            : {},
+        ),
+      );
       setSending(false);
       inputRef.current?.focus();
     }
@@ -81,8 +282,12 @@ export function AIChatPanel({ sessionId, defaultMode }: AIChatPanelProps) {
       {/* Messages area */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto p-3 space-y-3 terminal-scroll">
         {messages.length === 0 && (
-          <div className="text-xs text-muted text-center py-8">
-            Send a message to iterate on your project.
+          <div className="flex flex-col items-center justify-center py-12 text-center">
+            <MessageSquare size={28} className="text-muted/30 mb-3" />
+            <p className="text-xs text-muted font-medium">No messages yet</p>
+            <p className="text-[11px] text-muted/70 mt-1 max-w-[200px]">
+              Ask the AI to build, modify, or explain your code.
+            </p>
           </div>
         )}
         {messages.map((msg, i) => (
@@ -94,10 +299,14 @@ export function AIChatPanel({ sessionId, defaultMode }: AIChatPanelProps) {
               className={`max-w-[80%] rounded-lg px-3 py-2 text-xs ${
                 msg.role === 'user'
                   ? 'bg-primary/10 text-ink'
-                  : 'bg-hover text-ink'
+                  : 'bg-hover text-ink border-l-2 border-primary/40'
               }`}
             >
-              <p className="whitespace-pre-wrap">{msg.content}</p>
+              <pre className="whitespace-pre-wrap font-mono text-xs leading-relaxed overflow-x-auto">{msg.content}
+                {msg.isStreaming && (
+                  <span className="inline-block w-1.5 h-3.5 bg-primary/60 animate-pulse ml-0.5 align-text-bottom" />
+                )}
+              </pre>
               {msg.filesChanged && msg.filesChanged.length > 0 && (
                 <div className="mt-2 pt-2 border-t border-border">
                   <span className="text-xs text-muted font-semibold uppercase">Files changed:</span>
@@ -108,20 +317,31 @@ export function AIChatPanel({ sessionId, defaultMode }: AIChatPanelProps) {
                   </ul>
                 </div>
               )}
+              {msg.role === 'system' && !msg.isStreaming && msg.returncode !== undefined && (
+                <div className="mt-1 text-[10px] text-muted">
+                  {msg.returncode === 0 ? 'Done' : `Exit code: ${msg.returncode}`}
+                </div>
+              )}
             </div>
           </div>
         ))}
-        {sending && (
-          <div className="flex justify-start">
-            <div className="bg-hover text-ink rounded-lg px-3 py-2 text-xs">
-              Building<span className="animate-pulse">...</span>
-            </div>
-          </div>
-        )}
       </div>
 
       {/* Input area */}
       <div className="border-t border-border p-2 flex-shrink-0">
+        {/* Status bar when streaming */}
+        {streaming && (
+          <div className="flex items-center justify-between mb-2 px-1">
+            <span className="text-[10px] text-muted font-mono">Streaming...</span>
+            <button
+              onClick={handleCancel}
+              className="flex items-center gap-1 text-[10px] text-red-400 hover:text-red-300 transition-colors"
+            >
+              <Square className="w-2.5 h-2.5" />
+              Stop
+            </button>
+          </div>
+        )}
         {/* Mode toggle */}
         <div className="flex items-center gap-1 mb-2">
           {(['quick', 'standard', 'max'] as const).map(m => (
@@ -153,15 +373,27 @@ export function AIChatPanel({ sessionId, defaultMode }: AIChatPanelProps) {
             className="flex-1 px-3 py-1.5 text-xs bg-card border border-border rounded-btn outline-none focus:border-primary transition-colors"
             disabled={sending}
           />
-          <Button
-            size="sm"
-            icon={Send}
-            onClick={handleSend}
-            disabled={sending || !input.trim()}
-            aria-label="Send message"
-          >
-            Send
-          </Button>
+          {streaming ? (
+            <Button
+              size="sm"
+              icon={Square}
+              onClick={handleCancel}
+              aria-label="Stop streaming"
+              className="bg-red-500/10 hover:bg-red-500/20 text-red-400"
+            >
+              Stop
+            </Button>
+          ) : (
+            <Button
+              size="sm"
+              icon={Send}
+              onClick={handleSend}
+              disabled={sending || !input.trim()}
+              aria-label="Send message"
+            >
+              Send
+            </Button>
+          )}
         </div>
       </div>
     </div>

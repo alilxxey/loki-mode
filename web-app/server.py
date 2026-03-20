@@ -9,7 +9,6 @@ Runs on port 57375 (dashboard uses 57374).
 from __future__ import annotations
 
 import asyncio
-import inspect
 import json
 import os
 import re
@@ -19,13 +18,26 @@ import sys
 import time
 import uuid
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional
 
-from fastapi import Body, FastAPI, WebSocket, WebSocketDisconnect
+try:
+    import pexpect
+    HAS_PEXPECT = True
+except ImportError:
+    HAS_PEXPECT = False
+
+import logging
+import threading
+
+from datetime import datetime
+from fastapi import Body, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
+from starlette.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+
+logger = logging.getLogger("purple-lab")
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -143,6 +155,9 @@ def _kill_tracked_child_processes() -> None:
 
 session = SessionState()
 
+# Terminal PTY instances keyed by session_id
+_terminal_ptys: Dict[str, "pexpect.spawn"] = {}
+
 # Track PIDs of sessions started by Purple Lab (not by external loki CLI)
 _PURPLE_LAB_PIDS_FILE = SCRIPT_DIR.parent / ".loki" / "purple-lab" / "child-pids.json"
 
@@ -248,6 +263,490 @@ class ChatRequest(BaseModel):
 class SecretRequest(BaseModel):
     key: str
     value: str
+
+
+class DevServerStartRequest(BaseModel):
+    command: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# File Watcher (watchdog-based, broadcasts changes via WebSocket)
+# ---------------------------------------------------------------------------
+
+try:
+    from watchdog.observers import Observer
+    from watchdog.events import FileSystemEventHandler, FileSystemEvent
+    HAS_WATCHDOG = True
+except ImportError:
+    HAS_WATCHDOG = False
+    Observer = None  # type: ignore[misc,assignment]
+    FileSystemEventHandler = object  # type: ignore[misc,assignment]
+
+# Patterns to ignore when watching for file changes
+_WATCH_IGNORE_DIRS = {".loki", "node_modules", ".git", "__pycache__", ".next", ".nuxt", "dist", "build", ".cache"}
+_WATCH_IGNORE_EXTENSIONS = {".pyc", ".pyo", ".swp", ".swo", ".swn", ".tmp", ".DS_Store"}
+
+
+class FileChangeHandler(FileSystemEventHandler):  # type: ignore[misc]
+    """Collects file system events and broadcasts them after a debounce window."""
+
+    def __init__(self, project_dir: str, broadcast_fn, loop: asyncio.AbstractEventLoop):
+        super().__init__()
+        self.project_dir = project_dir
+        self.broadcast_fn = broadcast_fn
+        self.loop = loop
+        self._lock = threading.Lock()
+        self._pending: list[dict] = []
+        self._debounce_handle: Optional[asyncio.TimerHandle] = None
+
+    def _should_ignore(self, path: str) -> bool:
+        """Return True if this path should be ignored."""
+        parts = Path(path).parts
+        for part in parts:
+            if part in _WATCH_IGNORE_DIRS:
+                return True
+        name = os.path.basename(path)
+        if name in _WATCH_IGNORE_EXTENSIONS:
+            return True
+        _, ext = os.path.splitext(name)
+        if ext in _WATCH_IGNORE_EXTENSIONS:
+            return True
+        return False
+
+    def on_any_event(self, event) -> None:  # type: ignore[override]
+        if event.is_directory and event.event_type not in ("created", "deleted"):
+            return
+        src = getattr(event, "src_path", "")
+        if not src or self._should_ignore(src):
+            return
+
+        with self._lock:
+            self._pending.append({
+                "path": src,
+                "event_type": event.event_type,
+            })
+
+        # Schedule debounced broadcast on the asyncio event loop
+        try:
+            self.loop.call_soon_threadsafe(self._schedule_broadcast)
+        except RuntimeError:
+            pass  # loop closed
+
+    def _schedule_broadcast(self) -> None:
+        """Schedule the broadcast after 200ms of quiet."""
+        if self._debounce_handle is not None:
+            self._debounce_handle.cancel()
+        self._debounce_handle = self.loop.call_later(0.2, self._fire_broadcast)
+
+    def _fire_broadcast(self) -> None:
+        """Collect pending changes and broadcast them."""
+        with self._lock:
+            changes = self._pending[:]
+            self._pending.clear()
+        self._debounce_handle = None
+
+        if not changes:
+            return
+
+        # Deduplicate by path, keeping the last event type
+        seen: dict[str, str] = {}
+        for c in changes:
+            seen[c["path"]] = c["event_type"]
+
+        raw_paths = list(seen.keys())
+        event_types = [seen[p] for p in raw_paths]
+
+        # Strip project dir prefix to get relative paths for the frontend
+        prefix = self.project_dir.rstrip("/") + "/"
+        paths = [p[len(prefix):] if p.startswith(prefix) else p for p in raw_paths]
+
+        asyncio.ensure_future(self.broadcast_fn({
+            "type": "file_changed",
+            "data": {"paths": paths, "event_types": event_types},
+        }))
+
+
+class FileWatcher:
+    """Manages watchdog observers for project directories."""
+
+    def __init__(self) -> None:
+        self._observers: Dict[str, "Observer"] = {}  # type: ignore[type-arg]
+
+    def start(self, key: str, project_dir: str, broadcast_fn, loop: asyncio.AbstractEventLoop) -> bool:
+        """Start watching a project directory. Returns True if started."""
+        if not HAS_WATCHDOG:
+            logger.info("watchdog not installed -- file watcher disabled")
+            return False
+
+        if key in self._observers:
+            self.stop(key)
+
+        if not os.path.isdir(project_dir):
+            return False
+
+        handler = FileChangeHandler(project_dir, broadcast_fn, loop)
+        observer = Observer()
+        observer.schedule(handler, project_dir, recursive=True)
+        observer.daemon = True
+        observer.start()
+        self._observers[key] = observer
+        logger.info("File watcher started for %s", project_dir)
+        return True
+
+    def stop(self, key: str) -> None:
+        """Stop watching."""
+        observer = self._observers.pop(key, None)
+        if observer is not None:
+            observer.stop()
+            observer.join(timeout=3)
+            logger.info("File watcher stopped for key=%s", key)
+
+    def stop_all(self) -> None:
+        """Stop all watchers."""
+        for key in list(self._observers):
+            self.stop(key)
+
+
+file_watcher = FileWatcher()
+
+
+# ---------------------------------------------------------------------------
+# Dev Server Manager
+# ---------------------------------------------------------------------------
+
+
+class DevServerManager:
+    """Manages dev server processes per session."""
+
+    _PORT_PATTERNS = [
+        # Vite: "  Local:   http://localhost:5173/"
+        re.compile(r"Local:\s+https?://localhost:(\d+)"),
+        # Next.js: "  - Local: http://localhost:3000"
+        re.compile(r"-\s+Local:\s+https?://localhost:(\d+)"),
+        # Django: "Starting development server at http://127.0.0.1:8000/"
+        re.compile(r"server\s+at\s+https?://127\.0\.0\.1:(\d+)", re.IGNORECASE),
+        # Flask: " * Running on http://127.0.0.1:5000"
+        re.compile(r"Running\s+on\s+https?://127\.0\.0\.1:(\d+)"),
+        # Go: "Listening on :8080"
+        re.compile(r"(?:listening|serving)\s+on\s+:(\d+)", re.IGNORECASE),
+        # Generic "listening on port 3000" or "on port 3000"
+        re.compile(r"listening\s+on\s+(?:port\s+)?(\d+)", re.IGNORECASE),
+        re.compile(r"on\s+port\s+(\d+)", re.IGNORECASE),
+        # "port 3000" standalone
+        re.compile(r"port\s+(\d+)", re.IGNORECASE),
+        # Vite ready message: "ready in 300ms -- http://localhost:5173/"
+        re.compile(r"ready\s+in\s+\d+m?s.*localhost:(\d+)"),
+        # Generic URL patterns (last resort -- broad matches)
+        re.compile(r"https?://0\.0\.0\.0:(\d+)"),
+        re.compile(r"https?://127\.0\.0\.1:(\d+)"),
+        re.compile(r"https?://localhost:(\d+)"),
+    ]
+
+    def __init__(self) -> None:
+        self.servers: Dict[str, dict] = {}
+
+    async def detect_dev_command(self, project_dir: str) -> Optional[dict]:
+        """Detect the dev command from project files."""
+        root = Path(project_dir)
+        if not root.is_dir():
+            return None
+
+        pkg_json = root / "package.json"
+        if pkg_json.exists():
+            try:
+                pkg = json.loads(pkg_json.read_text())
+                scripts = pkg.get("scripts", {})
+                deps = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
+                if "dev" in scripts:
+                    port = 5173 if "vite" in deps else 3000
+                    fw = "vite" if "vite" in deps else "next" if "next" in deps else "node"
+                    return {"command": "npm run dev", "expected_port": port, "framework": fw}
+                if "start" in scripts:
+                    fw = "next" if "next" in deps else "react" if "react" in deps else "node"
+                    return {"command": "npm start", "expected_port": 3000, "framework": fw}
+                if "serve" in scripts:
+                    return {"command": "npm run serve", "expected_port": 3000, "framework": "node"}
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        makefile = root / "Makefile"
+        if makefile.exists():
+            try:
+                content = makefile.read_text()
+                for target in ("dev", "run", "serve"):
+                    if re.search(rf"^{target}\s*:", content, re.MULTILINE):
+                        return {"command": f"make {target}", "expected_port": 8000, "framework": "make"}
+            except OSError:
+                pass
+
+        if (root / "manage.py").exists():
+            return {"command": "python manage.py runserver", "expected_port": 8000, "framework": "django"}
+
+        for py_entry in ("app.py", "main.py", "server.py"):
+            py_file = root / py_entry
+            if py_file.exists():
+                try:
+                    src = py_file.read_text(errors="replace")
+                    if "fastapi" in src.lower() or "FastAPI" in src:
+                        module = py_entry[:-3]
+                        return {"command": f"uvicorn {module}:app --reload --port 8000",
+                                "expected_port": 8000, "framework": "fastapi"}
+                    if "flask" in src.lower() or "Flask" in src:
+                        return {"command": "flask run --port 5000",
+                                "expected_port": 5000, "framework": "flask"}
+                except OSError:
+                    pass
+
+        if (root / "go.mod").exists():
+            return {"command": "go run .", "expected_port": 8080, "framework": "go"}
+        if (root / "Cargo.toml").exists():
+            return {"command": "cargo run", "expected_port": 8080, "framework": "rust"}
+
+        return None
+
+    def _parse_port(self, output: str) -> Optional[int]:
+        """Parse port from dev server stdout."""
+        for pattern in self._PORT_PATTERNS:
+            m = pattern.search(output)
+            if m:
+                port = int(m.group(1))
+                if 1024 <= port <= 65535:
+                    return port
+        return None
+
+    async def start(self, session_id: str, project_dir: str, command: Optional[str] = None) -> dict:
+        """Start dev server. Auto-detect command if not provided."""
+        if session_id in self.servers:
+            await self.stop(session_id)
+
+        detected = await self.detect_dev_command(project_dir)
+        if not command and not detected:
+            return {"status": "error", "message": "No dev command detected. Provide one explicitly."}
+
+        cmd_str = command or (detected["command"] if detected else "")
+        expected_port = detected["expected_port"] if detected else 3000
+        framework = detected["framework"] if detected else "unknown"
+
+        build_env = {**os.environ}
+        build_env.update(_load_secrets())
+
+        try:
+            proc = subprocess.Popen(
+                cmd_str,
+                shell=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                text=True,
+                cwd=project_dir,
+                env=build_env,
+                **({"start_new_session": True} if sys.platform != "win32"
+                   else {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}),
+            )
+        except Exception as e:
+            return {"status": "error", "message": f"Failed to start: {e}"}
+
+        server_info: dict = {
+            "process": proc,
+            "port": None,
+            "expected_port": expected_port,
+            "command": cmd_str,
+            "framework": framework,
+            "status": "starting",
+            "pid": proc.pid,
+            "project_dir": project_dir,
+            "output_lines": [],
+        }
+        self.servers[session_id] = server_info
+
+        asyncio.create_task(self._monitor_output(session_id))
+
+        # Wait for port detection (up to 30s)
+        for _ in range(60):
+            await asyncio.sleep(0.5)
+            info = self.servers.get(session_id)
+            if not info:
+                return {"status": "error", "message": "Server entry disappeared"}
+            if info["status"] == "error":
+                return {
+                    "status": "error",
+                    "message": "Dev server crashed",
+                    "output": info["output_lines"][-10:] if info["output_lines"] else [],
+                }
+            if info["port"] is not None:
+                health_ok = await self._health_check(info["port"])
+                if health_ok:
+                    info["status"] = "running"
+                    return {
+                        "status": "running",
+                        "port": info["port"],
+                        "command": cmd_str,
+                        "pid": proc.pid,
+                        "url": f"/proxy/{session_id}/",
+                    }
+
+        if proc.poll() is not None:
+            server_info["status"] = "error"
+            return {
+                "status": "error",
+                "message": "Dev server exited before port was detected",
+                "output": server_info["output_lines"][-10:],
+            }
+
+        health_ok = await self._health_check(expected_port)
+        if health_ok:
+            server_info["port"] = expected_port
+            server_info["status"] = "running"
+            return {
+                "status": "running",
+                "port": expected_port,
+                "command": cmd_str,
+                "pid": proc.pid,
+                "url": f"/proxy/{session_id}/",
+            }
+
+        server_info["status"] = "starting"
+        server_info["port"] = expected_port
+        return {
+            "status": "starting",
+            "message": "Server started but port not yet confirmed",
+            "port": expected_port,
+            "command": cmd_str,
+            "pid": proc.pid,
+            "url": f"/proxy/{session_id}/",
+        }
+
+    async def _monitor_output(self, session_id: str) -> None:
+        """Background task: read dev server stdout and detect port."""
+        info = self.servers.get(session_id)
+        if not info:
+            return
+        proc = info["process"]
+        loop = asyncio.get_running_loop()
+        try:
+            while proc.poll() is None:
+                line = await loop.run_in_executor(None, proc.stdout.readline)
+                if not line:
+                    break
+                text = line.rstrip("\n")
+                info["output_lines"].append(text)
+                if len(info["output_lines"]) > 200:
+                    info["output_lines"] = info["output_lines"][-200:]
+                if info["port"] is None:
+                    detected_port = self._parse_port(text)
+                    if detected_port:
+                        info["port"] = detected_port
+        except Exception:
+            pass
+        finally:
+            # Process exited -- mark as error if it was still starting or running
+            if info.get("status") in ("starting", "running"):
+                info["status"] = "error"
+
+    async def _health_check(self, port: int, retries: int = 3) -> bool:
+        """Check if a port is responding to TCP connections."""
+        import socket
+        loop = asyncio.get_running_loop()
+        for _ in range(retries):
+            try:
+                def check() -> bool:
+                    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    s.settimeout(1)
+                    try:
+                        s.connect(("127.0.0.1", port))
+                        return True
+                    except (ConnectionRefusedError, OSError):
+                        return False
+                    finally:
+                        s.close()
+                if await loop.run_in_executor(None, check):
+                    return True
+            except Exception:
+                pass
+            await asyncio.sleep(0.5)
+        return False
+
+    async def stop(self, session_id: str) -> dict:
+        """Stop dev server for session."""
+        info = self.servers.pop(session_id, None)
+        if not info:
+            return {"stopped": False, "message": "No dev server running"}
+
+        proc = info["process"]
+        if proc.poll() is None:
+            if sys.platform != "win32":
+                try:
+                    pgid = os.getpgid(proc.pid)
+                    os.killpg(pgid, signal.SIGTERM)
+                except (ProcessLookupError, PermissionError, OSError):
+                    try:
+                        proc.terminate()
+                    except Exception:
+                        pass
+            else:
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                if sys.platform != "win32":
+                    try:
+                        pgid = os.getpgid(proc.pid)
+                        os.killpg(pgid, signal.SIGKILL)
+                    except (ProcessLookupError, PermissionError, OSError):
+                        try:
+                            proc.kill()
+                        except Exception:
+                            pass
+                else:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+
+        return {"stopped": True, "message": "Dev server stopped"}
+
+    async def status(self, session_id: str) -> dict:
+        """Get dev server status."""
+        info = self.servers.get(session_id)
+        if not info:
+            return {
+                "running": False,
+                "status": "stopped",
+                "port": None,
+                "command": None,
+                "pid": None,
+                "url": None,
+                "framework": None,
+                "output": [],
+            }
+
+        proc = info["process"]
+        alive = proc.poll() is None
+        if not alive and info["status"] in ("running", "starting"):
+            info["status"] = "error"
+
+        return {
+            "running": alive and info["status"] == "running",
+            "status": info["status"],
+            "port": info.get("port"),
+            "command": info.get("command"),
+            "pid": proc.pid if alive else None,
+            "url": f"/proxy/{session_id}/" if info.get("port") and alive else None,
+            "framework": info.get("framework"),
+            "output": info.get("output_lines", [])[-20:],
+        }
+
+    async def stop_all(self) -> None:
+        """Stop all dev servers (used on shutdown)."""
+        for sid in list(self.servers.keys()):
+            await self.stop(sid)
+
+
+dev_server_manager = DevServerManager()
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -412,9 +911,35 @@ class ChatTask:
         self.complete = False
         self.returncode: int = -1
         self.files_changed: list[str] = []
+        self.process: Optional[subprocess.Popen] = None
+        self.cancelled = False
+        self.created_at: float = time.time()
 
 
 _chat_tasks: dict[str, ChatTask] = {}
+_CHAT_TASK_MAX_AGE = 600  # Seconds to keep completed tasks before cleanup
+_CHAT_TASK_MAX_COUNT = 100  # Max tasks to keep in memory
+
+
+def _cleanup_chat_tasks() -> None:
+    """Remove completed tasks older than _CHAT_TASK_MAX_AGE, or oldest if over limit."""
+    now = time.time()
+    # Remove old completed tasks
+    expired = [
+        tid for tid, t in _chat_tasks.items()
+        if t.complete and (now - t.created_at) > _CHAT_TASK_MAX_AGE
+    ]
+    for tid in expired:
+        del _chat_tasks[tid]
+    # If still over limit, remove oldest completed tasks
+    if len(_chat_tasks) > _CHAT_TASK_MAX_COUNT:
+        completed = sorted(
+            [(tid, t) for tid, t in _chat_tasks.items() if t.complete],
+            key=lambda x: x[1].created_at,
+        )
+        while len(_chat_tasks) > _CHAT_TASK_MAX_COUNT and completed:
+            tid, _ = completed.pop(0)
+            del _chat_tasks[tid]
 
 # ---------------------------------------------------------------------------
 # API endpoints
@@ -507,6 +1032,14 @@ async def start_session(req: StartRequest) -> JSONResponse:
         # Start background output reader
         session._reader_task = asyncio.create_task(_read_process_output())
 
+        # Start file watcher for the project directory
+        file_watcher.start(
+            "session",
+            project_dir,
+            _broadcast,
+            asyncio.get_running_loop(),
+        )
+
     await _broadcast({"type": "session_start", "data": {
         "provider": req.provider,
         "projectDir": project_dir,
@@ -577,6 +1110,23 @@ async def stop_session() -> JSONResponse:
             except Exception:
                 pass
 
+        # Stop file watcher
+        file_watcher.stop("session")
+
+        # Stop dev server if running for this session
+        # (The current active session uses "session" as its key for file_watcher
+        # but dev servers are keyed by session_id from the URL. Stop all to be safe.)
+        await dev_server_manager.stop_all()
+
+        # Clean up any terminal PTYs
+        for sid, pty in list(_terminal_ptys.items()):
+            try:
+                if pty.isalive():
+                    pty.close(force=True)
+            except Exception:
+                pass
+        _terminal_ptys.clear()
+
         # Kill any orphaned loki-run processes for this project
         if session.project_dir:
             await asyncio.get_running_loop().run_in_executor(
@@ -588,9 +1138,41 @@ async def stop_session() -> JSONResponse:
         return JSONResponse(content={"stopped": True, "message": "Session stopped"})
 
 
+@app.on_event("startup")
+async def startup_event():
+    """Initialize database if DATABASE_URL is configured."""
+    try:
+        from models import init_db
+        db_url = os.environ.get("DATABASE_URL")
+        if db_url:
+            await init_db(db_url)
+            logger.info("Database initialized")
+        else:
+            logger.info("No DATABASE_URL set -- running in local mode (no auth, file-based storage)")
+    except ImportError:
+        logger.info("Database models not available -- running in local mode")
+    except Exception as exc:
+        logger.warning("Database initialization failed: %s -- falling back to local mode", exc)
+
+
 @app.on_event("shutdown")
 async def shutdown_event():
-    """Clean up any running session when Purple Lab shuts down."""
+    """Clean up any running session, file watchers, and dev servers when Purple Lab shuts down."""
+    # Stop all file watchers
+    file_watcher.stop_all()
+
+    # Stop all dev servers
+    await dev_server_manager.stop_all()
+
+    # Clean up all terminal PTYs
+    for _sid, _pty in list(_terminal_ptys.items()):
+        try:
+            if _pty.isalive():
+                _pty.close(force=True)
+        except Exception:
+            pass
+    _terminal_ptys.clear()
+
     if not session.running or session.process is None:
         return
 
@@ -639,7 +1221,7 @@ async def shutdown_event():
     # Kill any orphaned loki-run processes for this project
     if project_dir:
         await asyncio.get_running_loop().run_in_executor(
-            None, _kill_orphan_loki_processes, project_dir
+            None, _kill_tracked_child_processes
         )
 
 
@@ -986,11 +1568,7 @@ async def plan_session(req: PlanRequest) -> JSONResponse:
             pass
 
     # Try to parse structured JSON from output first (loki plan may emit JSON blocks)
-    import json as _json
-    import logging as _logging
-    import re as _re
-
-    _log = _logging.getLogger("purple-lab.plan")
+    _log = logging.getLogger("purple-lab.plan")
 
     complexity = "standard"
     cost_estimate = "unknown"
@@ -999,12 +1577,12 @@ async def plan_session(req: PlanRequest) -> JSONResponse:
     parsed = False
 
     # Look for any JSON object containing plan-related keys (supports nested braces)
-    json_match = _re.search(r'\{[^{}]*"complexity"[^{}]*\}', output, _re.DOTALL)
+    json_match = re.search(r'\{[^{}]*"complexity"[^{}]*\}', output, re.DOTALL)
     if not json_match:
-        json_match = _re.search(r'\{[^{}]*"iterations"[^{}]*\}', output, _re.DOTALL)
+        json_match = re.search(r'\{[^{}]*"iterations"[^{}]*\}', output, re.DOTALL)
     if json_match:
         try:
-            data = _json.loads(json_match.group(0))
+            data = json.loads(json_match.group(0))
             if isinstance(data.get("complexity"), dict):
                 complexity = data["complexity"].get("tier", "standard")
             elif isinstance(data.get("complexity"), str):
@@ -1026,37 +1604,37 @@ async def plan_session(req: PlanRequest) -> JSONResponse:
             elif isinstance(data.get("phases"), list):
                 phases = [p for p in data["phases"] if isinstance(p, str)]
             parsed = True
-        except (_json.JSONDecodeError, TypeError, KeyError) as exc:
+        except (json.JSONDecodeError, TypeError, KeyError) as exc:
             _log.warning("JSON plan block found but failed to parse: %s", exc)
 
     # Fallback: line-by-line text parsing with tighter patterns
     if not parsed:
         _log.info("No JSON plan block found, falling back to text parsing")
         for line in output.splitlines():
-            stripped = _re.sub(r'\x1b\[[0-9;]*m', '', line)  # strip ANSI codes
+            stripped = re.sub(r'\x1b\[[0-9;]*m', '', line)  # strip ANSI codes
             lower = stripped.lower().strip()
             if not lower:
                 continue
             # Complexity detection: match "complexity: standard" or "Complexity Tier: complex" etc.
-            if _re.search(r'complexity\s*(?:tier)?\s*[:=]', lower):
+            if re.search(r'complexity\s*(?:tier)?\s*[:=]', lower):
                 for val in ("simple", "standard", "complex", "expert"):
-                    if _re.search(rf'\b{val}\b', lower):
+                    if re.search(rf'\b{val}\b', lower):
                         complexity = val
                         break
             # Cost parsing: look for dollar amounts in cost/estimate lines
             if ("cost" in lower or "estimate" in lower) and "$" in stripped:
-                m = _re.search(r"\$[\d,]+\.?\d*", stripped)
+                m = re.search(r"\$[\d,]+\.?\d*", stripped)
                 if m:
                     cost_estimate = m.group(0)
             # Iteration count
-            if _re.search(r'iterations?\s*[:=]\s*\d+', lower):
-                m = _re.search(r'iterations?\s*[:=]\s*(\d+)', lower)
+            if re.search(r'iterations?\s*[:=]\s*\d+', lower):
+                m = re.search(r'iterations?\s*[:=]\s*(\d+)', lower)
                 if m:
                     iterations = int(m.group(1))
             # Phase/step lines
-            if _re.match(r'^\s*(phase|step)\s+\d', lower):
+            if re.match(r'^\s*(phase|step)\s+\d', lower):
                 for phase_name in ("planning", "implementation", "testing", "review", "deployment"):
-                    if _re.search(rf'\b{phase_name}\b', lower) and phase_name not in phases:
+                    if re.search(rf'\b{phase_name}\b', lower) and phase_name not in phases:
                         phases.append(phase_name)
 
     if not parsed and not phases:
@@ -1093,7 +1671,6 @@ async def share_session() -> JSONResponse:
         None, lambda: _run_loki_cmd(["share"], timeout=60)
     )
     # Try to extract URL from output
-    import re
     url_match = re.search(r"https://gist\.github\.com/\S+", output)
     url = url_match.group(0) if url_match else ""
     return JSONResponse(content={
@@ -1163,7 +1740,6 @@ async def get_metrics() -> JSONResponse:
     except (json.JSONDecodeError, ValueError):
         pass
     # Fallback: parse key metrics from text output
-    import re
     metrics: dict = {
         "iterations": 0,
         "quality_gate_pass_rate": 0.0,
@@ -1314,7 +1890,6 @@ async def get_sessions_history() -> JSONResponse:
 @app.get("/api/sessions/{session_id}")
 async def get_session_detail(session_id: str) -> JSONResponse:
     """Get details of a past session for read-only viewing."""
-    import re
     # Validate session_id format (prevent path traversal)
     if not re.match(r"^[a-zA-Z0-9._-]+$", session_id):
         return JSONResponse(status_code=400, content={"error": "Invalid session ID"})
@@ -1376,7 +1951,6 @@ async def get_session_detail(session_id: str) -> JSONResponse:
 @app.get("/api/sessions/{session_id}/file")
 async def get_session_file(session_id: str, path: str = "") -> JSONResponse:
     """Get file content from a past session with path traversal protection."""
-    import re
     if not re.match(r"^[a-zA-Z0-9._-]+$", session_id) or not path:
         return JSONResponse(status_code=400, content={"error": "Invalid session ID or path"})
 
@@ -1418,7 +1992,6 @@ async def preview_session_file(session_id: str, file_path: str = "index.html") -
     This enables live preview of built projects -- HTML files can load their
     relative CSS, JS, and image assets correctly.
     """
-    import re
     import mimetypes
     if not re.match(r"^[a-zA-Z0-9._-]+$", session_id):
         return JSONResponse(status_code=400, content={"error": "Invalid session ID"})
@@ -1456,7 +2029,6 @@ async def preview_session_file(session_id: str, file_path: str = "index.html") -
 @app.put("/api/sessions/{session_id}/file")
 async def save_session_file(session_id: str, req: FileWriteRequest) -> JSONResponse:
     """Save or update file content in a session's project directory."""
-    import re
     if not re.match(r"^[a-zA-Z0-9._-]+$", session_id):
         return JSONResponse(status_code=400, content={"error": "Invalid session ID"})
     if not req.path:
@@ -1504,7 +2076,6 @@ async def save_session_file(session_id: str, req: FileWriteRequest) -> JSONRespo
 @app.post("/api/sessions/{session_id}/file")
 async def create_session_file(session_id: str, req: FileWriteRequest) -> JSONResponse:
     """Create a new file in a session's project directory."""
-    import re
     if not re.match(r"^[a-zA-Z0-9._-]+$", session_id):
         return JSONResponse(status_code=400, content={"error": "Invalid session ID"})
     if not req.path:
@@ -1545,7 +2116,6 @@ async def create_session_file(session_id: str, req: FileWriteRequest) -> JSONRes
 @app.delete("/api/sessions/{session_id}/file")
 async def delete_session_file(session_id: str, req: FileDeleteRequest) -> JSONResponse:
     """Delete a file from a session's project directory."""
-    import re
     if not re.match(r"^[a-zA-Z0-9._-]+$", session_id):
         return JSONResponse(status_code=400, content={"error": "Invalid session ID"})
     if not req.path:
@@ -1588,7 +2158,6 @@ async def delete_session_file(session_id: str, req: FileDeleteRequest) -> JSONRe
 @app.post("/api/sessions/{session_id}/directory")
 async def create_session_directory(session_id: str, req: DirectoryCreateRequest) -> JSONResponse:
     """Create a directory in a session's project directory."""
-    import re
     if not re.match(r"^[a-zA-Z0-9._-]+$", session_id):
         return JSONResponse(status_code=400, content={"error": "Invalid session ID"})
     if not req.path:
@@ -1677,26 +2246,79 @@ async def chat_session(session_id: str, req: ChatRequest) -> JSONResponse:
     if target is None:
         return JSONResponse(status_code=404, content={"error": "Session not found"})
 
+    # Clean up old completed tasks to prevent unbounded memory growth
+    _cleanup_chat_tasks()
+
+    _cleanup_chat_tasks()
     task = ChatTask()
     _chat_tasks[task.id] = task
 
     async def run_chat() -> None:
-        loop = asyncio.get_running_loop()
+        proc: Optional[subprocess.Popen] = None
+        loki = _find_loki_cli()
+        if loki is None:
+            task.output_lines = ["loki CLI not found"]
+            task.returncode = 1
+            task.complete = True
+            return
         if req.mode == "quick":
-            cmd_args = ["quick", req.message]
+            cmd_args = [loki, "quick", req.message]
         else:
-            cmd_args = ["start", "--provider", "claude", str(target / "PRD.md")]
-        rc, output = await loop.run_in_executor(
-            None, lambda: _run_loki_cmd(cmd_args, cwd=str(target), timeout=300)
-        )
-        task.output_lines = output.splitlines()
-        task.returncode = rc
+            cmd_args = [loki, "start", "--provider", "claude", str(target / "PRD.md")]
+        try:
+            proc = subprocess.Popen(
+                cmd_args,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                text=True,
+                cwd=str(target),
+                env={**os.environ},
+                start_new_session=True,
+            )
+            task.process = proc
+            loop = asyncio.get_running_loop()
+
+            def _read_lines() -> None:
+                """Read stdout line-by-line in a thread."""
+                assert proc.stdout is not None
+                for raw_line in proc.stdout:
+                    if task.cancelled:
+                        break
+                    task.output_lines.append(raw_line.rstrip("\n"))
+                proc.stdout.close()
+
+            await asyncio.wait_for(
+                loop.run_in_executor(None, _read_lines),
+                timeout=300,
+            )
+            proc.wait(timeout=10)
+            task.returncode = proc.returncode
+        except asyncio.TimeoutError:
+            if proc is not None:
+                try:
+                    pgid = os.getpgid(proc.pid)
+                    os.killpg(pgid, signal.SIGKILL)
+                except (ProcessLookupError, OSError):
+                    proc.kill()
+                proc.wait()
+            task.output_lines.append("Command timed out after 5 minutes")
+            task.returncode = 1
+        except Exception as e:
+            task.output_lines.append(str(e))
+            task.returncode = 1
+            if proc is not None and proc.poll() is None:
+                try:
+                    pgid = os.getpgid(proc.pid)
+                    os.killpg(pgid, signal.SIGKILL)
+                except (ProcessLookupError, OSError):
+                    proc.kill()
+                proc.wait()
         # Detect changed files
         try:
-            import subprocess as _sp
-            result = _sp.run(
+            result = subprocess.run(
                 ["git", "diff", "--name-only", "HEAD~1"],
-                cwd=str(target), capture_output=True, text=True, timeout=10
+                cwd=str(target), capture_output=True, text=True, timeout=10,
             )
             if result.returncode == 0:
                 task.files_changed = [f for f in result.stdout.strip().splitlines() if f]
@@ -1728,10 +2350,88 @@ async def get_chat_status(session_id: str, task_id: str) -> JSONResponse:
     })
 
 
+@app.get("/api/sessions/{session_id}/chat/{task_id}/stream")
+async def stream_chat(session_id: str, task_id: str, request: Request) -> StreamingResponse:
+    """Stream chat task output as Server-Sent Events.
+
+    Sends incremental output lines as they arrive, 10x faster than polling.
+    Falls back gracefully -- the polling endpoint remains available.
+    """
+    task = _chat_tasks.get(task_id)
+    _sse_headers = {
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+    }
+    if task is None:
+        async def _not_found():
+            yield f"event: error\ndata: {json.dumps({'error': 'Task not found'})}\n\n"
+        return StreamingResponse(_not_found(), media_type="text/event-stream", headers=_sse_headers)
+
+    async def event_generator():
+        last_line = 0
+        while True:
+            # Check if the client disconnected
+            if await request.is_disconnected():
+                break
+
+            # Send new lines since last check
+            current_count = len(task.output_lines)
+            if current_count > last_line:
+                for line in task.output_lines[last_line:current_count]:
+                    yield f"event: output\ndata: {json.dumps({'line': line})}\n\n"
+                last_line = current_count
+
+            # Check if complete -- flush any final lines first
+            if task.complete:
+                final_count = len(task.output_lines)
+                if final_count > last_line:
+                    for line in task.output_lines[last_line:final_count]:
+                        yield f"event: output\ndata: {json.dumps({'line': line})}\n\n"
+                yield f"event: complete\ndata: {json.dumps({'returncode': task.returncode, 'files_changed': task.files_changed})}\n\n"
+                break
+
+            await asyncio.sleep(0.1)  # 100ms -- 20x faster than 2s polling
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers=_sse_headers,
+    )
+
+
+@app.post("/api/sessions/{session_id}/chat/{task_id}/cancel")
+async def cancel_chat(session_id: str, task_id: str) -> JSONResponse:
+    """Cancel a running chat task."""
+    task = _chat_tasks.get(task_id)
+    if task is None:
+        return JSONResponse(status_code=404, content={"error": "Task not found"})
+    if task.complete:
+        return JSONResponse(content={"cancelled": False, "reason": "Task already complete"})
+    task.cancelled = True
+    if task.process and task.process.poll() is None:
+        try:
+            pgid = os.getpgid(task.process.pid)
+            os.killpg(pgid, signal.SIGTERM)
+            task.process.wait(timeout=3)
+        except (ProcessLookupError, OSError):
+            pass
+        if task.process.poll() is None:
+            try:
+                pgid = os.getpgid(task.process.pid)
+                os.killpg(pgid, signal.SIGKILL)
+            except (ProcessLookupError, OSError):
+                task.process.kill()
+            task.process.wait(timeout=5)
+    task.output_lines.append("[cancelled by user]")
+    task.returncode = 1
+    task.complete = True
+    return JSONResponse(content={"cancelled": True})
+
+
 @app.post("/api/sessions/{session_id}/review")
 async def review_session(session_id: str) -> JSONResponse:
     """Run loki review on a project."""
-    import re
     if not re.match(r"^[a-zA-Z0-9._-]+$", session_id):
         return JSONResponse(status_code=400, content={"error": "Invalid session ID"})
     target = _find_session_dir(session_id)
@@ -1746,7 +2446,6 @@ async def review_session(session_id: str) -> JSONResponse:
 @app.post("/api/sessions/{session_id}/test")
 async def test_session(session_id: str) -> JSONResponse:
     """Run loki test on a project."""
-    import re
     if not re.match(r"^[a-zA-Z0-9._-]+$", session_id):
         return JSONResponse(status_code=400, content={"error": "Invalid session ID"})
     target = _find_session_dir(session_id)
@@ -1761,7 +2460,6 @@ async def test_session(session_id: str) -> JSONResponse:
 @app.post("/api/sessions/{session_id}/explain")
 async def explain_session(session_id: str) -> JSONResponse:
     """Run loki explain on a project."""
-    import re
     if not re.match(r"^[a-zA-Z0-9._-]+$", session_id):
         return JSONResponse(status_code=400, content={"error": "Invalid session ID"})
     target = _find_session_dir(session_id)
@@ -1776,7 +2474,6 @@ async def explain_session(session_id: str) -> JSONResponse:
 @app.post("/api/sessions/{session_id}/export")
 async def export_session(session_id: str) -> JSONResponse:
     """Run loki export json on a project."""
-    import re
     if not re.match(r"^[a-zA-Z0-9._-]+$", session_id):
         return JSONResponse(status_code=400, content={"error": "Invalid session ID"})
     target = _find_session_dir(session_id)
@@ -1950,6 +2647,400 @@ async def get_preview_info(session_id: str) -> JSONResponse:
 
 
 # ---------------------------------------------------------------------------
+# Dev server management endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/sessions/{session_id}/devserver/start")
+async def start_devserver(session_id: str, req: DevServerStartRequest) -> JSONResponse:
+    """Start a dev server for a session's project."""
+    if not re.match(r"^[a-zA-Z0-9._-]+$", session_id):
+        return JSONResponse(status_code=400, content={"error": "Invalid session ID"})
+    target = _find_session_dir(session_id)
+    if target is None:
+        return JSONResponse(status_code=404, content={"error": "Session not found"})
+    result = await dev_server_manager.start(session_id, str(target), req.command)
+    status_code = 200 if result.get("status") != "error" else 500
+    return JSONResponse(content=result, status_code=status_code)
+
+
+@app.post("/api/sessions/{session_id}/devserver/stop")
+async def stop_devserver(session_id: str) -> JSONResponse:
+    """Stop the dev server for a session."""
+    if not re.match(r"^[a-zA-Z0-9._-]+$", session_id):
+        return JSONResponse(status_code=400, content={"error": "Invalid session ID"})
+    result = await dev_server_manager.stop(session_id)
+    return JSONResponse(content=result)
+
+
+@app.get("/api/sessions/{session_id}/devserver/status")
+async def get_devserver_status(session_id: str) -> JSONResponse:
+    """Get dev server status for a session."""
+    if not re.match(r"^[a-zA-Z0-9._-]+$", session_id):
+        return JSONResponse(status_code=400, content={"error": "Invalid session ID"})
+    result = await dev_server_manager.status(session_id)
+    return JSONResponse(content=result)
+
+
+# ---------------------------------------------------------------------------
+# HTTP Proxy for dev server preview
+# ---------------------------------------------------------------------------
+
+
+@app.api_route("/proxy/{session_id}/{path:path}",
+               methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"])
+async def proxy_to_devserver(session_id: str, path: str, request: Request):
+    """Proxy requests to the dev server running for this session.
+
+    Uses streaming to handle large responses without buffering them entirely
+    in memory (important for JS bundles, images, etc.).
+    """
+    import httpx
+
+    server = dev_server_manager.servers.get(session_id)
+    if not server or server["status"] != "running" or server.get("port") is None:
+        return JSONResponse(
+            {"error": "Dev server not running", "hint": "Start the dev server first"},
+            status_code=503,
+        )
+
+    target_port = server["port"]
+    target_url = f"http://127.0.0.1:{target_port}/{path}"
+    if request.url.query:
+        target_url += f"?{request.url.query}"
+
+    # Build headers to forward (skip hop-by-hop headers)
+    skip_headers = {"host", "connection", "keep-alive", "transfer-encoding",
+                    "te", "trailer", "upgrade"}
+    fwd_headers = {
+        k: v for k, v in request.headers.items()
+        if k.lower() not in skip_headers
+    }
+    fwd_headers["host"] = f"127.0.0.1:{target_port}"
+
+    body = await request.body()
+
+    # Use a client that is NOT used as a context manager so we can stream
+    # the response body without closing the connection prematurely.
+    client = httpx.AsyncClient(timeout=60.0, follow_redirects=False)
+    try:
+        resp = await client.send(
+            client.build_request(
+                method=request.method,
+                url=target_url,
+                headers=fwd_headers,
+                content=body if body else None,
+            ),
+            stream=True,
+        )
+    except httpx.ConnectError:
+        await client.aclose()
+        return JSONResponse(
+            {"error": "Cannot connect to dev server", "port": target_port},
+            status_code=502,
+        )
+    except httpx.TimeoutException:
+        await client.aclose()
+        return JSONResponse(
+            {"error": "Dev server request timed out"},
+            status_code=504,
+        )
+    except Exception as e:
+        await client.aclose()
+        return JSONResponse(
+            {"error": f"Proxy error: {e}"},
+            status_code=502,
+        )
+
+    # Build response headers, passing through relevant ones
+    resp_skip = {"transfer-encoding", "connection", "keep-alive", "content-encoding"}
+    resp_headers = {
+        k: v for k, v in resp.headers.items()
+        if k.lower() not in resp_skip
+    }
+
+    async def stream_body():
+        try:
+            async for chunk in resp.aiter_bytes(chunk_size=65536):
+                yield chunk
+        finally:
+            await resp.aclose()
+            await client.aclose()
+
+    return StreamingResponse(
+        content=stream_body(),
+        status_code=resp.status_code,
+        headers=resp_headers,
+    )
+
+
+@app.websocket("/proxy/{session_id}/{path:path}")
+async def proxy_websocket(websocket: WebSocket, session_id: str, path: str):
+    """Proxy WebSocket connections for HMR (Vite, webpack, etc.).
+
+    Handles any WS path under /proxy/{session_id}/ so that Vite's
+    /__vite_hmr, webpack's /ws, and other HMR paths all work.
+    """
+    import websockets
+
+    server = dev_server_manager.servers.get(session_id)
+    if not server or server["status"] != "running" or server.get("port") is None:
+        await websocket.close(code=1008, reason="Dev server not running")
+        return
+
+    target_port = server["port"]
+    # Forward the exact sub-path to the upstream dev server
+    ws_url = f"ws://127.0.0.1:{target_port}/{path}"
+
+    await websocket.accept()
+
+    try:
+        async with websockets.connect(ws_url) as upstream:
+            async def client_to_upstream():
+                try:
+                    while True:
+                        data = await websocket.receive_text()
+                        await upstream.send(data)
+                except (WebSocketDisconnect, Exception):
+                    pass
+
+            async def upstream_to_client():
+                try:
+                    async for msg in upstream:
+                        if isinstance(msg, str):
+                            await websocket.send_text(msg)
+                        elif isinstance(msg, bytes):
+                            await websocket.send_bytes(msg)
+                except Exception:
+                    pass
+
+            await asyncio.gather(
+                client_to_upstream(),
+                upstream_to_client(),
+                return_exceptions=True,
+            )
+    except Exception:
+        pass
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# Authentication middleware
+# ---------------------------------------------------------------------------
+
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    """Enforce JWT auth when database is configured. Skip for public paths."""
+    path = request.url.path
+    skip_auth_prefixes = ["/health", "/api/auth/", "/ws", "/proxy/"]
+    if any(path.startswith(p) for p in skip_auth_prefixes) or not path.startswith("/api/"):
+        return await call_next(request)
+
+    # If no DB configured, skip auth (local mode)
+    try:
+        from models import async_session_factory
+        if async_session_factory is None:
+            return await call_next(request)
+    except ImportError:
+        return await call_next(request)
+
+    # Verify JWT
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        return JSONResponse({"error": "Not authenticated"}, status_code=401)
+
+    try:
+        from auth import verify_token
+    except ImportError:
+        # Auth module not installed but database IS configured -- block the request
+        logger.warning("Auth module not available but database is configured -- blocking request")
+        return JSONResponse({"error": "Server authentication misconfigured"}, status_code=500)
+
+    token = auth_header.split(" ", 1)[1]
+    payload = verify_token(token)
+    if not payload:
+        return JSONResponse({"error": "Invalid or expired token"}, status_code=401)
+    request.state.user = payload
+
+    return await call_next(request)
+
+
+# ---------------------------------------------------------------------------
+# Auth endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/auth/me")
+async def get_me(request: Request) -> JSONResponse:
+    """Get current user info. Returns local_mode=True when no auth configured."""
+    try:
+        from models import async_session_factory
+        if async_session_factory is None:
+            return JSONResponse(content={"authenticated": False, "local_mode": True})
+    except ImportError:
+        return JSONResponse(content={"authenticated": False, "local_mode": True})
+
+    user = getattr(request.state, "user", None)
+    if user is None:
+        return JSONResponse(content={"authenticated": False, "local_mode": False})
+    return JSONResponse(content={"authenticated": True, **user})
+
+
+@app.get("/api/auth/github/url")
+async def github_auth_url() -> JSONResponse:
+    """Get GitHub OAuth authorization URL with CSRF state parameter."""
+    try:
+        from auth import GITHUB_CLIENT_ID, generate_oauth_state
+    except ImportError:
+        return JSONResponse(status_code=501, content={"error": "Auth module not available"})
+    if not GITHUB_CLIENT_ID:
+        return JSONResponse(status_code=501, content={"error": "GitHub OAuth not configured"})
+    state = generate_oauth_state()
+    url = f"https://github.com/login/oauth/authorize?client_id={GITHUB_CLIENT_ID}&scope=user:email&state={state}"
+    return JSONResponse(content={"url": url})
+
+
+@app.post("/api/auth/github/callback")
+async def github_callback(body: dict = Body(...)) -> JSONResponse:
+    """Handle GitHub OAuth callback -- exchange code for JWT."""
+    try:
+        from auth import create_access_token, github_oauth_callback, validate_oauth_state
+        from models import async_session_factory, User
+    except ImportError:
+        return JSONResponse(status_code=501, content={"error": "Auth module not available"})
+
+    code = body.get("code")
+    state = body.get("state")
+    if not code:
+        return JSONResponse(status_code=400, content={"error": "Missing code parameter"})
+    if not validate_oauth_state(state):
+        return JSONResponse(status_code=403, content={"error": "Invalid or expired OAuth state (CSRF check failed)"})
+
+    try:
+        user_info = await github_oauth_callback(code)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("GitHub OAuth callback failed: %s", exc)
+        return JSONResponse(status_code=502, content={"error": "GitHub authentication failed"})
+
+    # Create or update user in DB if database is configured
+    if async_session_factory:
+        from sqlalchemy import select
+        async with async_session_factory() as db:
+            result = await db.execute(
+                select(User).where(User.email == user_info["email"])
+            )
+            db_user = result.scalar_one_or_none()
+            if db_user is None:
+                db_user = User(
+                    email=user_info["email"],
+                    name=user_info["name"],
+                    avatar_url=user_info.get("avatar_url"),
+                    provider="github",
+                    provider_id=user_info["provider_id"],
+                )
+                db.add(db_user)
+            else:
+                db_user.name = user_info["name"]
+                db_user.avatar_url = user_info.get("avatar_url")
+                db_user.last_login = datetime.utcnow()
+            await db.commit()
+
+    token = create_access_token({
+        "sub": user_info["email"],
+        "name": user_info["name"],
+        "avatar": user_info.get("avatar_url", ""),
+    })
+    return JSONResponse(content={"token": token, "user": user_info})
+
+
+@app.get("/api/auth/google/url")
+async def google_auth_url() -> JSONResponse:
+    """Get Google OAuth authorization URL with CSRF state parameter."""
+    try:
+        from auth import GOOGLE_CLIENT_ID, generate_oauth_state
+    except ImportError:
+        return JSONResponse(status_code=501, content={"error": "Auth module not available"})
+    if not GOOGLE_CLIENT_ID:
+        return JSONResponse(status_code=501, content={"error": "Google OAuth not configured"})
+    redirect_uri = os.environ.get("GOOGLE_REDIRECT_URI", f"http://localhost:{PORT}/api/auth/google/callback")
+    state = generate_oauth_state()
+    url = (
+        f"https://accounts.google.com/o/oauth2/v2/auth"
+        f"?client_id={GOOGLE_CLIENT_ID}"
+        f"&redirect_uri={redirect_uri}"
+        f"&response_type=code"
+        f"&scope=openid%20email%20profile"
+        f"&state={state}"
+    )
+    return JSONResponse(content={"url": url})
+
+
+@app.post("/api/auth/google/callback")
+async def google_callback(body: dict = Body(...)) -> JSONResponse:
+    """Handle Google OAuth callback -- exchange code for JWT."""
+    try:
+        from auth import create_access_token, google_oauth_callback, validate_oauth_state
+        from models import async_session_factory, User
+    except ImportError:
+        return JSONResponse(status_code=501, content={"error": "Auth module not available"})
+
+    code = body.get("code")
+    state = body.get("state")
+    if not code:
+        return JSONResponse(status_code=400, content={"error": "Missing code parameter"})
+    if not validate_oauth_state(state):
+        return JSONResponse(status_code=403, content={"error": "Invalid or expired OAuth state (CSRF check failed)"})
+
+    # Use server-controlled redirect_uri -- never trust client-supplied value
+    redirect_uri = os.environ.get("GOOGLE_REDIRECT_URI", f"http://localhost:{PORT}/api/auth/google/callback")
+
+    try:
+        user_info = await google_oauth_callback(code, redirect_uri)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Google OAuth callback failed: %s", exc)
+        return JSONResponse(status_code=502, content={"error": "Google authentication failed"})
+
+    # Create or update user in DB if database is configured
+    if async_session_factory:
+        from sqlalchemy import select
+        async with async_session_factory() as db:
+            result = await db.execute(
+                select(User).where(User.email == user_info["email"])
+            )
+            db_user = result.scalar_one_or_none()
+            if db_user is None:
+                db_user = User(
+                    email=user_info["email"],
+                    name=user_info["name"],
+                    avatar_url=user_info.get("avatar_url"),
+                    provider="google",
+                    provider_id=user_info["provider_id"],
+                )
+                db.add(db_user)
+            else:
+                db_user.name = user_info["name"]
+                db_user.avatar_url = user_info.get("avatar_url")
+                db_user.last_login = datetime.utcnow()
+            await db.commit()
+
+    token = create_access_token({
+        "sub": user_info["email"],
+        "name": user_info["name"],
+        "avatar": user_info.get("avatar_url", ""),
+    })
+    return JSONResponse(content={"token": token, "user": user_info})
+
+
+# ---------------------------------------------------------------------------
 # Health check
 # ---------------------------------------------------------------------------
 
@@ -2081,6 +3172,10 @@ async def websocket_endpoint(ws: WebSocket) -> None:
         "data": {"running": session.running, "provider": session.provider},
     }))
 
+    # Ensure file watcher is running if session is active (handles page reloads)
+    if session.running and session.project_dir and "session" not in file_watcher._observers:
+        file_watcher.start("session", session.project_dir, _broadcast, asyncio.get_running_loop())
+
     # Send recent log lines as backfill
     for line in session.log_lines[-100:]:
         await ws.send_text(json.dumps({
@@ -2124,6 +3219,204 @@ async def websocket_endpoint(ws: WebSocket) -> None:
         except (asyncio.CancelledError, Exception):
             pass
         session.ws_clients.discard(ws)
+
+
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Terminal PTY WebSocket (interactive shell per session)
+# ---------------------------------------------------------------------------
+
+# Track active WebSocket connections per session for multi-tab awareness
+_terminal_ws_clients: Dict[str, set] = {}
+
+
+@app.websocket("/ws/terminal/{session_id}")
+async def terminal_websocket(ws: WebSocket, session_id: str) -> None:
+    """Interactive terminal via PTY. Requires pexpect.
+
+    Reuses an existing PTY if one is already alive for this session (e.g. on
+    reconnect or second browser tab). Only kills the PTY when the *last*
+    WebSocket client for this session disconnects.
+    """
+    await ws.accept()
+
+    if not HAS_PEXPECT:
+        await ws.send_text(json.dumps({
+            "type": "output",
+            "data": "\r\n[Error] pexpect is not installed. "
+                    "Run: pip install pexpect\r\n",
+        }))
+        await ws.close()
+        return
+
+    # ---- Reuse or spawn PTY ------------------------------------------------
+    pty = _terminal_ptys.get(session_id)
+    spawned_new = False
+    if pty is None or not pty.isalive():
+        # Determine working directory
+        cwd = str(Path.home())
+        session_dir = _find_session_dir(session_id)
+        if session_dir and session_dir.is_dir():
+            cwd = str(session_dir)
+        elif session.project_dir and Path(session.project_dir).is_dir():
+            cwd = session.project_dir
+
+        # Build environment with secrets injected
+        env = os.environ.copy()
+        env["TERM"] = "xterm-256color"
+        try:
+            secrets = _load_secrets()
+            env.update(secrets)
+        except Exception:
+            pass
+
+        # Prefer user configured shell, fall back to /bin/bash
+        user_shell = os.environ.get("SHELL", "/bin/bash")
+        if not os.path.isfile(user_shell):
+            user_shell = "/bin/bash"
+
+        try:
+            pty = pexpect.spawn(
+                user_shell,
+                args=["--login"],
+                encoding="utf-8",
+                codec_errors="replace",
+                cwd=cwd,
+                env=env,
+                dimensions=(24, 80),
+            )
+            pty.setecho(True)
+            spawned_new = True
+        except Exception as exc:
+            await ws.send_text(json.dumps({
+                "type": "output",
+                "data": f"\r\n[Error] Failed to spawn terminal: {exc}\r\n",
+            }))
+            await ws.close()
+            return
+
+        _terminal_ptys[session_id] = pty
+
+    # ---- Track this WebSocket client ----------------------------------------
+    if session_id not in _terminal_ws_clients:
+        _terminal_ws_clients[session_id] = set()
+    ws_id = id(ws)
+    _terminal_ws_clients[session_id].add(ws_id)
+
+    if not spawned_new:
+        try:
+            await ws.send_text(json.dumps({
+                "type": "output",
+                "data": "\r\n\x1b[32m-- Reconnected to existing terminal session --\x1b[0m\r\n",
+            }))
+        except Exception:
+            pass
+
+    # ---- Background task: read PTY output and forward to WebSocket ----------
+    async def read_pty_output() -> None:
+        loop = asyncio.get_event_loop()
+        while True:
+            try:
+                data = await loop.run_in_executor(None, _pty_read, pty)
+                if data is None:
+                    # PTY closed / EOF
+                    try:
+                        await ws.send_text(json.dumps({
+                            "type": "output",
+                            "data": "\r\n[Terminal session ended]\r\n",
+                        }))
+                    except Exception:
+                        pass
+                    break
+                if data:
+                    await ws.send_text(json.dumps({
+                        "type": "output",
+                        "data": data,
+                    }))
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                break
+
+    reader_task = asyncio.create_task(read_pty_output())
+
+    try:
+        while True:
+            raw = await ws.receive_text()
+            try:
+                msg = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+
+            msg_type = msg.get("type", "")
+
+            if msg_type == "input":
+                data = msg.get("data", "")
+                if data and pty.isalive():
+                    pty.send(data)
+
+            elif msg_type == "resize":
+                cols = msg.get("cols", 80)
+                rows = msg.get("rows", 24)
+                if pty.isalive():
+                    pty.setwinsize(rows, cols)
+
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        pass
+    finally:
+        reader_task.cancel()
+        try:
+            await reader_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+        # Untrack this client
+        clients = _terminal_ws_clients.get(session_id)
+        if clients:
+            clients.discard(ws_id)
+
+        # Only kill PTY when the last client disconnects
+        remaining = _terminal_ws_clients.get(session_id)
+        if not remaining:
+            _terminal_ws_clients.pop(session_id, None)
+            if pty.isalive():
+                pty.close(force=True)
+            _terminal_ptys.pop(session_id, None)
+
+
+def _pty_read(pty: "pexpect.spawn") -> Optional[str]:
+    """Blocking read from PTY with batching.
+
+    Uses a longer timeout (0.5s) to avoid busy-looping when idle.
+    When data IS available, greedily reads more to batch output
+    (up to 32KB per batch to keep latency reasonable).
+    Returns None on EOF.
+    """
+    try:
+        data = pty.read_nonblocking(size=4096, timeout=0.5)
+        # Greedily read more available data to batch output (e.g. cat large_file)
+        total = len(data) if data else 0
+        while total < 32768:
+            try:
+                more = pty.read_nonblocking(size=4096, timeout=0.01)
+                if more:
+                    data += more
+                    total += len(more)
+                else:
+                    break
+            except (pexpect.TIMEOUT, pexpect.EOF, Exception):
+                break
+        return data
+    except pexpect.TIMEOUT:
+        return ""
+    except pexpect.EOF:
+        return None
+    except Exception:
+        return None
+
 
 
 # ---------------------------------------------------------------------------

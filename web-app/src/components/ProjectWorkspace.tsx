@@ -12,12 +12,17 @@ import {
   Code2, Eye as PreviewIcon, Settings2, KeyRound, FileText as PrdIcon,
   AlertTriangle,
   Server, Package, Terminal,
+  RefreshCw,
 } from 'lucide-react';
 import { api } from '../api/client';
+import { useWebSocket } from '../hooks/useWebSocket';
 import { IconButton } from './ui/IconButton';
 import { Button } from './ui/Button';
 import { ContextMenu } from './ui/ContextMenu';
+import { ErrorBoundary } from './ErrorBoundary';
+import { Skeleton, SkeletonEditor } from './ui/Skeleton';
 import { ActivityPanel } from './ActivityPanel';
+import { useKeyboardShortcuts, KeyboardShortcutsModal, ShortcutsHelpButton } from './KeyboardShortcuts';
 import type { FileNode } from '../types/api';
 import type { SessionDetail } from '../api/client';
 
@@ -260,8 +265,10 @@ function SecretsPanel() {
 
   if (loading) {
     return (
-      <div className="p-6">
-        <div className="text-sm text-muted animate-pulse">Loading secrets...</div>
+      <div className="p-6 space-y-4">
+        <Skeleton variant="text" width="180px" height="16px" />
+        <Skeleton variant="block" width="100%" height="60px" />
+        <Skeleton variant="block" width="100%" height="80px" />
       </div>
     );
   }
@@ -408,6 +415,21 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
   } | null>(null);
   const [isBuilding, setIsBuilding] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
+  const [filesChangedIndicator, setFilesChangedIndicator] = useState(false);
+  const [externalChangeFile, setExternalChangeFile] = useState<string | null>(null);
+  const filesChangedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Subscribe to WebSocket for file_changed events
+  const { subscribe } = useWebSocket();
+
+  const refreshSession = useCallback(async () => {
+    try {
+      const updated = await api.getSessionDetail(sessionData.id);
+      setSessionData(updated);
+    } catch {
+      // ignore refresh errors
+    }
+  }, [sessionData.id]);
 
   const handleStop = useCallback(async () => {
     try {
@@ -469,31 +491,137 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
     api.getPreviewInfo(sessionData.id).then(setPreviewInfo).catch(() => {});
   }, [sessionData.id]);
 
+  // Dev server state
+  const [devServer, setDevServer] = useState<{
+    running: boolean;
+    status: string;
+    port: number | null;
+    command: string | null;
+    url: string | null;
+    framework: string | null;
+    output: string[];
+  } | null>(null);
+  const [devServerStarting, setDevServerStarting] = useState(false);
+  const [devServerError, setDevServerError] = useState<string | null>(null);
+  const [customDevCommand, setCustomDevCommand] = useState('');
+
+  // File watcher: listen for file_changed WebSocket events
+  useEffect(() => {
+    const unsub = subscribe('file_changed', (data: unknown) => {
+      const payload = data as { paths?: string[]; event_types?: string[] };
+      if (!payload.paths || payload.paths.length === 0) return;
+
+      // Show "files changed" indicator briefly
+      setFilesChangedIndicator(true);
+      if (filesChangedTimerRef.current) clearTimeout(filesChangedTimerRef.current);
+      filesChangedTimerRef.current = setTimeout(() => setFilesChangedIndicator(false), 2000);
+
+      // Refresh file tree
+      refreshSession();
+
+      // Check if currently open file was changed externally
+      if (selectedFile) {
+        const changedPaths = payload.paths;
+        if (changedPaths.some(p => p === selectedFile || selectedFile.endsWith(p))) {
+          setExternalChangeFile(selectedFile);
+        }
+      }
+
+      // If preview tab is active and dev server is NOT running, refresh iframe
+      if (activeWorkspaceTab === 'preview' && !devServer?.running) {
+        setPreviewKey(k => k + 1);
+      }
+    });
+
+    return () => {
+      unsub();
+      if (filesChangedTimerRef.current) clearTimeout(filesChangedTimerRef.current);
+    };
+  }, [subscribe, selectedFile, activeWorkspaceTab, devServer?.running, refreshSession]);
+
+  const handleReloadExternalFile = useCallback(async () => {
+    if (!externalChangeFile || !sessionData.id) return;
+    try {
+      const result = await api.getSessionFileContent(sessionData.id, externalChangeFile);
+      setFileContent(result.content);
+      setEditorContent(result.content);
+      setIsModified(false);
+      setOpenTabs(prev => prev.map(t =>
+        t.path === externalChangeFile ? { ...t, content: result.content, modified: false } : t
+      ));
+    } catch {
+      // ignore reload errors
+    }
+    setExternalChangeFile(null);
+  }, [externalChangeFile, sessionData.id]);
+
+  // Poll dev server status when preview tab is active
+  useEffect(() => {
+    if (activeWorkspaceTab !== 'preview') return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const status = await api.devserver.status(sessionData.id);
+        if (!cancelled) setDevServer(status);
+      } catch {
+        // ignore
+      }
+    };
+    poll();
+    const interval = setInterval(poll, 3000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [activeWorkspaceTab, sessionData.id]);
+
+  const handleStartDevServer = useCallback(async (command?: string) => {
+    setDevServerStarting(true);
+    setDevServerError(null);
+    try {
+      const result = await api.devserver.start(sessionData.id, command);
+      if (result.status === 'error') {
+        setDevServerError(result.message || 'Failed to start dev server');
+      } else {
+        // Refresh status
+        const status = await api.devserver.status(sessionData.id);
+        setDevServer(status);
+      }
+    } catch (e) {
+      setDevServerError(e instanceof Error ? e.message : 'Failed to start dev server');
+    }
+    setDevServerStarting(false);
+  }, [sessionData.id]);
+
+  const handleStopDevServer = useCallback(async () => {
+    try {
+      await api.devserver.stop(sessionData.id);
+      const status = await api.devserver.status(sessionData.id);
+      setDevServer(status);
+    } catch {
+      // ignore
+    }
+  }, [sessionData.id]);
+
+  // Determine preview URL: use proxy if dev server is running, else static
+  const devServerProxyUrl = devServer?.running && devServer?.url
+    ? `/proxy/${encodeURIComponent(sessionData.id)}/`
+    : null;
   const defaultPreviewUrl = previewInfo?.preview_url || `/api/sessions/${encodeURIComponent(sessionData.id)}/preview/index.html`;
+  const effectivePreviewUrl = devServerProxyUrl || defaultPreviewUrl;
 
   // Preview history state
   const [previewHistory, setPreviewHistory] = useState<string[]>([]);
   const [previewHistoryIndex, setPreviewHistoryIndex] = useState(0);
 
-  // Reset preview history when previewInfo loads
+  // Reset preview history when dev server or previewInfo changes
   useEffect(() => {
-    if (previewInfo?.preview_url) {
-      setPreviewHistory([previewInfo.preview_url]);
+    const url = devServerProxyUrl || previewInfo?.preview_url;
+    if (url) {
+      setPreviewHistory([url]);
       setPreviewHistoryIndex(0);
     }
-  }, [previewInfo?.preview_url]);
+  }, [devServerProxyUrl, previewInfo?.preview_url]);
 
-  const currentPreviewUrl = previewHistory[previewHistoryIndex] || defaultPreviewUrl;
+  const currentPreviewUrl = previewHistory[previewHistoryIndex] || effectivePreviewUrl;
   const [previewInputUrl, setPreviewInputUrl] = useState(currentPreviewUrl);
-
-  const refreshSession = useCallback(async () => {
-    try {
-      const updated = await api.getSessionDetail(sessionData.id);
-      setSessionData(updated);
-    } catch {
-      // ignore refresh errors
-    }
-  }, [sessionData.id]);
 
   const handleContextMenu = useCallback((e: React.MouseEvent, path: string, name: string, type: string) => {
     e.preventDefault();
@@ -599,6 +727,9 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
   }, [handleReview, handleTest, handleExplain, handleDeleteFile]);
 
   const handleFileSelect = useCallback(async (path: string, name: string) => {
+    // Clear external-change notification when switching files
+    setExternalChangeFile(null);
+
     if (isModified && selectedFile && editorContent !== null) {
       setOpenTabs(prev => prev.map(t =>
         t.path === selectedFile ? { ...t, content: editorContent, modified: true } : t
@@ -755,6 +886,14 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
   const fileSize = selectedFile ? findFileSize(sessionData.files, selectedFile) : undefined;
   const fileExt = selectedFileName.split('.').pop()?.toUpperCase() || '';
 
+  const { showHelp, setShowHelp } = useKeyboardShortcuts({
+    onToggleBuild: () => {
+      if (isBuilding) {
+        handleStop();
+      }
+    },
+  });
+
   return (
     <div className="flex flex-col h-full relative">
       {/* Header */}
@@ -825,6 +964,7 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
         <IconButton icon={Eye} label="Review project" size="sm" onClick={handleReview} disabled={!!actionState?.loading} />
         <IconButton icon={TestTube2} label="Run tests" size="sm" onClick={handleTest} disabled={!!actionState?.loading} />
         <IconButton icon={BookOpen} label="Explain project" size="sm" onClick={handleExplain} disabled={!!actionState?.loading} />
+        <ShortcutsHelpButton onClick={() => setShowHelp(true)} />
       </div>
 
       {/* Workspace: vertical split - top: editor, bottom: activity panel */}
@@ -837,7 +977,14 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
               <Panel defaultSize={20} minSize={15}>
                 <div className="h-full flex flex-col border-r border-border bg-card">
                   <div className="px-3 py-2 border-b border-border flex items-center gap-2">
-                    <span className="text-xs text-muted-accessible uppercase tracking-wider font-semibold flex-1">Files</span>
+                    <span className="text-xs text-muted-accessible uppercase tracking-wider font-semibold flex-1">
+                      Files
+                      {filesChangedIndicator && (
+                        <span className="ml-2 text-[10px] font-normal text-primary animate-pulse">
+                          changed
+                        </span>
+                      )}
+                    </span>
                     <button
                       onClick={handleCreateFile}
                       title="New File"
@@ -863,7 +1010,11 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
                         onContextMenu={handleContextMenu}
                       />
                     ) : (
-                      <div className="p-4 text-xs text-muted">No files</div>
+                      <div className="flex flex-col items-center justify-center p-6 text-center h-full">
+                        <FolderOpen size={28} className="text-muted/40 mb-2" />
+                        <p className="text-xs text-muted font-medium">No files yet</p>
+                        <p className="text-[11px] text-muted/70 mt-0.5">Start a build to generate your project.</p>
+                      </div>
                     )}
                   </div>
                 </div>
@@ -957,10 +1108,32 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
                                 </button>
                               )}
                             </div>
+                            {/* External file change notification */}
+                            {externalChangeFile === selectedFile && (
+                              <div className="px-4 py-1.5 border-b border-border flex items-center gap-2 flex-shrink-0 bg-warning/10">
+                                <RefreshCw size={12} className="text-warning" />
+                                <span className="text-xs text-warning font-medium">File changed externally</span>
+                                <div className="ml-auto flex items-center gap-1.5">
+                                  <button
+                                    onClick={handleReloadExternalFile}
+                                    className="text-xs font-medium px-2 py-0.5 rounded border border-warning/40 bg-warning/10 text-warning hover:bg-warning/20 transition-colors"
+                                  >
+                                    Reload
+                                  </button>
+                                  <button
+                                    onClick={() => setExternalChangeFile(null)}
+                                    className="text-xs font-medium px-2 py-0.5 rounded border border-border text-muted hover:text-ink hover:bg-hover transition-colors"
+                                  >
+                                    Dismiss
+                                  </button>
+                                </div>
+                              </div>
+                            )}
                             <div className="flex-1 min-h-0">
                               {fileLoading ? (
-                                <div className="text-muted text-xs animate-pulse p-4">Loading...</div>
+                                <SkeletonEditor />
                               ) : (
+                                <ErrorBoundary name="Editor">
                                 <Editor
                                   value={editorContent ?? ''}
                                   language={getMonacoLanguage(selectedFileName)}
@@ -982,22 +1155,28 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
                                     bracketPairColorization: { enabled: true },
                                   }}
                                 />
+                                </ErrorBoundary>
                               )}
                             </div>
                           </>
                         ) : (
-                          <div className="flex-1 flex items-center justify-center text-muted text-sm">
-                            Select a file to view its contents
+                          <div className="flex-1 flex flex-col items-center justify-center text-center p-8">
+                            <FileCode2 size={32} className="text-muted/30 mb-3" />
+                            <p className="text-sm text-muted">Select a file to view its contents</p>
+                            <p className="text-xs text-muted/60 mt-1">
+                              Use the file tree or press <kbd className="px-1.5 py-0.5 text-[10px] font-mono bg-hover border border-border rounded">Cmd+P</kbd> to quick open
+                            </p>
                           </div>
                         )}
                       </div>
                     )}
 
                     {activeWorkspaceTab === 'preview' && (
+                      <ErrorBoundary name="Preview">
                       <div className="h-full flex flex-col">
                         {/* Preview toolbar */}
                         <div className="px-3 py-1.5 border-b border-border flex items-center gap-2 bg-hover">
-                          {previewInfo?.preview_url ? (
+                          {(devServer?.running || previewInfo?.preview_url) ? (
                             <>
                               <IconButton icon={PreviewBack} label="Back" size="sm" onClick={handlePreviewBack} disabled={previewHistoryIndex <= 0} />
                               <IconButton icon={PreviewForward} label="Forward" size="sm" onClick={handlePreviewForward} disabled={previewHistoryIndex >= previewHistory.length - 1} />
@@ -1009,6 +1188,15 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
                                 className="flex-1 px-3 py-1 text-xs font-mono bg-card border border-border rounded-btn"
                               />
                               <IconButton icon={ExternalLink} label="Open in new tab" size="sm" onClick={() => window.open(currentPreviewUrl, '_blank')} />
+                              {devServer?.running && (
+                                <button
+                                  onClick={handleStopDevServer}
+                                  className="flex items-center gap-1 px-2 py-1 text-xs font-medium rounded border border-danger/40 bg-danger/10 text-danger hover:bg-danger/20 transition-colors"
+                                >
+                                  <Square size={12} />
+                                  Stop
+                                </button>
+                              )}
                             </>
                           ) : previewInfo ? (
                             <div className="flex-1 flex items-center gap-2 text-sm text-muted">
@@ -1021,8 +1209,48 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
                           )}
                         </div>
 
-                        {/* Content based on project type */}
-                        {previewInfo?.preview_url ? (
+                        {/* Dev server status bar */}
+                        {devServer && devServer.status !== 'stopped' && (
+                          <div className={`px-3 py-1 border-b flex items-center gap-2 text-xs ${
+                            devServer.running ? 'bg-green-50 border-green-200 text-green-700' :
+                            devServer.status === 'starting' ? 'bg-yellow-50 border-yellow-200 text-yellow-700' :
+                            devServer.status === 'error' ? 'bg-red-50 border-red-200 text-red-700' :
+                            'bg-gray-50 border-border text-muted'
+                          }`}>
+                            <span className={`w-2 h-2 rounded-full ${
+                              devServer.running ? 'bg-green-500' :
+                              devServer.status === 'starting' ? 'bg-yellow-500 animate-pulse' :
+                              devServer.status === 'error' ? 'bg-red-500' :
+                              'bg-gray-400'
+                            }`} />
+                            {devServer.running && devServer.port && (
+                              <span>Running on port {devServer.port}</span>
+                            )}
+                            {devServer.status === 'starting' && (
+                              <span>Starting dev server...</span>
+                            )}
+                            {devServer.status === 'error' && (
+                              <span>Dev server crashed</span>
+                            )}
+                            {devServer.command && (
+                              <span className="text-xs font-mono opacity-60 ml-auto truncate max-w-xs">{devServer.command}</span>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Content: iframe when running, controls when not */}
+                        {devServer?.running ? (
+                          <div className="flex-1 bg-white">
+                            <iframe
+                              key={previewKey}
+                              ref={previewRef}
+                              src={currentPreviewUrl}
+                              title="Project Preview"
+                              className="w-full h-full border-0"
+                              sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+                            />
+                          </div>
+                        ) : previewInfo?.preview_url ? (
                           <div className="flex-1 bg-white">
                             <iframe
                               key={previewKey}
@@ -1050,17 +1278,83 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
                               <h3 className="text-lg font-heading text-ink mb-1">{previewInfo.type.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}</h3>
                               <p className="text-sm text-muted">{previewInfo.description}</p>
                             </div>
-                            {previewInfo.dev_command && (
-                              <div className="card p-4 max-w-md w-full">
-                                <p className="text-xs font-semibold text-muted-accessible uppercase tracking-wider mb-2">Run locally</p>
-                                <code className="text-sm font-mono text-primary bg-hover px-3 py-2 rounded-btn block">
-                                  {previewInfo.dev_command}
-                                </code>
+
+                            {/* Dev server controls */}
+                            {(previewInfo.dev_command || previewInfo.type !== 'unknown') && (
+                              <div className="card p-4 max-w-md w-full space-y-3">
+                                {previewInfo.dev_command && (
+                                  <>
+                                    <p className="text-xs font-semibold text-muted-accessible uppercase tracking-wider">Dev Server</p>
+                                    <div className="flex items-center gap-2">
+                                      <code className="text-sm font-mono text-primary bg-hover px-3 py-2 rounded-btn flex-1 text-left truncate">
+                                        {previewInfo.dev_command}
+                                      </code>
+                                      <button
+                                        onClick={() => handleStartDevServer()}
+                                        disabled={devServerStarting}
+                                        className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-btn bg-primary text-white hover:bg-primary/90 transition-colors disabled:opacity-50"
+                                      >
+                                        <Play size={12} />
+                                        {devServerStarting ? 'Starting...' : 'Start'}
+                                      </button>
+                                    </div>
+                                  </>
+                                )}
+
+                                {/* Custom command input */}
+                                <div className="pt-2 border-t border-border">
+                                  <p className="text-xs text-muted mb-2">Or use a custom command:</p>
+                                  <div className="flex items-center gap-2">
+                                    <input
+                                      value={customDevCommand}
+                                      onChange={e => setCustomDevCommand(e.target.value)}
+                                      onKeyDown={e => { if (e.key === 'Enter' && customDevCommand.trim()) handleStartDevServer(customDevCommand.trim()); }}
+                                      placeholder="e.g. npm run dev"
+                                      className="flex-1 px-3 py-1.5 text-xs font-mono bg-card border border-border rounded-btn"
+                                    />
+                                    <button
+                                      onClick={() => customDevCommand.trim() && handleStartDevServer(customDevCommand.trim())}
+                                      disabled={devServerStarting || !customDevCommand.trim()}
+                                      className="px-3 py-1.5 text-xs font-medium rounded-btn border border-primary/40 bg-primary/10 text-primary hover:bg-primary/20 transition-colors disabled:opacity-50"
+                                    >
+                                      Run
+                                    </button>
+                                  </div>
+                                </div>
                               </div>
                             )}
-                            {previewInfo.port && (
+
+                            {/* Error display */}
+                            {devServerError && (
+                              <div className="card p-3 max-w-md w-full border-danger/30 bg-danger/5">
+                                <p className="text-xs text-danger font-medium mb-1">Dev server error</p>
+                                <p className="text-xs text-danger/80">{devServerError}</p>
+                              </div>
+                            )}
+
+                            {/* Error with output: show crash info and restart */}
+                            {devServer?.status === 'error' && (
+                              <div className="card p-3 max-w-md w-full border-danger/30 bg-danger/5">
+                                <div className="flex items-center justify-between mb-2">
+                                  <p className="text-xs text-danger font-medium">Dev server crashed</p>
+                                  <button
+                                    onClick={() => handleStartDevServer()}
+                                    className="text-xs px-2 py-1 rounded border border-danger/40 text-danger hover:bg-danger/10 transition-colors"
+                                  >
+                                    Restart
+                                  </button>
+                                </div>
+                                {devServer.output.length > 0 && (
+                                  <pre className="text-[11px] font-mono text-danger/70 bg-danger/5 p-2 rounded max-h-32 overflow-y-auto whitespace-pre-wrap">
+                                    {devServer.output.slice(-10).join('\n')}
+                                  </pre>
+                                )}
+                              </div>
+                            )}
+
+                            {previewInfo.port && !devServer?.running && (
                               <p className="text-xs text-muted">
-                                Server runs on port {previewInfo.port}
+                                Server will run on port {previewInfo.port}
                               </p>
                             )}
                           </div>
@@ -1070,6 +1364,7 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
                           </div>
                         )}
                       </div>
+                      </ErrorBoundary>
                     )}
 
                     {activeWorkspaceTab === 'config' && (
@@ -1167,14 +1462,16 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
           <PanelResizeHandle className="h-1 bg-border hover:bg-primary/30 cursor-row-resize" />
 
           <Panel defaultSize={30} minSize={15} collapsible>
-            <ActivityPanel
-              logs={null}
-              logsLoading={false}
-              agents={null}
-              checklist={null}
-              sessionId={session.id}
-              buildMode={buildMode}
-            />
+            <ErrorBoundary name="ActivityPanel">
+              <ActivityPanel
+                logs={null}
+                logsLoading={false}
+                agents={null}
+                checklist={null}
+                sessionId={session.id}
+                buildMode={buildMode}
+              />
+            </ErrorBoundary>
           </Panel>
         </PanelGroup>
       </div>
@@ -1256,6 +1553,9 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
           </div>
         </div>
       )}
+
+      {/* Keyboard shortcuts modal */}
+      <KeyboardShortcutsModal open={showHelp} onClose={() => setShowHelp(false)} />
     </div>
   );
 }
