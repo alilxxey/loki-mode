@@ -39,20 +39,20 @@ export function ProviderPanel({ currentProvider, isRunning, onProviderChange }: 
 
   return (
     <div className="flex flex-col gap-1">
-      <div className="text-[10px] font-semibold text-slate uppercase tracking-wider">Provider</div>
-      <div className="flex items-center gap-1 glass-subtle rounded-xl p-1">
+      <div className="text-[10px] font-semibold text-muted-accessible uppercase tracking-wider">Provider</div>
+      <div className="flex items-center gap-1 card rounded-card p-1">
         {['claude', 'codex', 'gemini'].map((p) => (
           <button
             key={p}
             onClick={() => !isRunning && handleSet(p)}
             disabled={setting || isRunning}
             title={isRunning ? 'Stop the build to switch provider' : undefined}
-            className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all ${
+            className={`px-3 py-1.5 text-xs font-semibold rounded-btn transition-all ${
               provider === p
-                ? 'bg-accent-product text-white shadow-sm'
+                ? 'bg-primary text-white shadow-sm'
                 : isRunning
-                ? 'text-slate/40 cursor-not-allowed'
-                : 'text-slate hover:text-charcoal hover:bg-white/40 cursor-pointer'
+                ? 'text-muted/40 cursor-not-allowed'
+                : 'text-muted hover:text-ink hover:bg-hover cursor-pointer'
             }`}
           >
             {p === 'claude' ? 'Claude' : p === 'codex' ? 'Codex' : 'Gemini'}
@@ -60,7 +60,7 @@ export function ProviderPanel({ currentProvider, isRunning, onProviderChange }: 
         ))}
       </div>
       {isRunning && (
-        <div className="text-[10px] text-slate">Stop build to switch provider</div>
+        <div className="text-[10px] text-muted-accessible">Stop build to switch provider</div>
       )}
       {error && (
         <div className="text-[10px] text-danger">{error}</div>

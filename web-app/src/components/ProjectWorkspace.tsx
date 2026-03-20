@@ -1,7 +1,16 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import Editor from '@monaco-editor/react';
 import { Panel, Group as PanelGroup, Separator as PanelResizeHandle } from 'react-resizable-panels';
+import {
+  FileCode2, FileCode, FileType, FileJson, FileText,
+  Folder, FolderOpen, File, ChevronDown, ChevronRight,
+  X, FilePlus, FolderPlus,
+  ArrowLeft as PreviewBack, ArrowRight as PreviewForward,
+  RotateCw, ExternalLink,
+} from 'lucide-react';
 import { api } from '../api/client';
+import { IconButton } from './ui/IconButton';
+import { ActivityPanel } from './ActivityPanel';
 import type { FileNode } from '../types/api';
 import type { SessionDetail } from '../api/client';
 
@@ -10,30 +19,25 @@ interface ProjectWorkspaceProps {
   onClose: () => void;
 }
 
-function getLanguageClass(filename: string): string {
-  const ext = filename.split('.').pop()?.toLowerCase() || '';
-  const map: Record<string, string> = {
-    js: 'text-yellow-600', ts: 'text-blue-500', tsx: 'text-blue-400', jsx: 'text-yellow-500',
-    py: 'text-green-600', rb: 'text-red-500', go: 'text-cyan-600',
-    html: 'text-orange-500', css: 'text-purple-500', json: 'text-green-500',
-    md: 'text-slate', yaml: 'text-green-400', yml: 'text-green-400',
-    sh: 'text-green-600', bash: 'text-green-600',
-    rs: 'text-orange-600', java: 'text-red-600', kt: 'text-purple-600',
-    sql: 'text-blue-600', svg: 'text-orange-400',
-  };
-  return map[ext] || 'text-charcoal/80';
-}
-
-function getFileIcon(name: string, type: string): string {
-  if (type === 'directory') return '[ ]';
+function getFileIcon(name: string, type: string, isOpen?: boolean): React.ReactNode {
+  if (type === 'directory') return isOpen ? <FolderOpen size={14} /> : <Folder size={14} />;
   const ext = name.split('.').pop()?.toLowerCase() || '';
-  const icons: Record<string, string> = {
-    js: 'JS', ts: 'TS', tsx: 'TX', jsx: 'JX', py: 'PY', html: '<>', css: '##',
-    json: '{}', md: 'MD', yml: 'YL', yaml: 'YL', sh: 'SH', go: 'GO',
-    rs: 'RS', rb: 'RB', java: 'JV', kt: 'KT', sql: 'SQ', svg: 'SV',
-    png: 'IM', jpg: 'IM', gif: 'IM', ico: 'IC',
+  const icons: Record<string, React.ReactNode> = {
+    js: <FileCode2 size={14} className="text-yellow-600" />,
+    ts: <FileCode2 size={14} className="text-blue-500" />,
+    tsx: <FileCode2 size={14} className="text-blue-400" />,
+    jsx: <FileCode2 size={14} className="text-yellow-500" />,
+    py: <FileCode2 size={14} className="text-green-600" />,
+    html: <FileCode size={14} className="text-orange-500" />,
+    css: <FileType size={14} className="text-purple-500" />,
+    json: <FileJson size={14} className="text-green-500" />,
+    md: <FileText size={14} className="text-muted" />,
+    go: <FileCode2 size={14} className="text-cyan-600" />,
+    rs: <FileCode2 size={14} className="text-orange-600" />,
+    rb: <FileCode2 size={14} className="text-red-500" />,
+    sh: <FileCode2 size={14} className="text-green-600" />,
   };
-  return icons[ext] || '..';
+  return icons[ext] || <File size={14} />;
 }
 
 function getMonacoLanguage(filename: string): string {
@@ -57,7 +61,6 @@ function getMonacoLanguage(filename: string): string {
     rb: 'ruby',
     dockerfile: 'dockerfile',
   };
-  // Handle special filenames
   const lower = filename.toLowerCase();
   if (lower === 'dockerfile') return 'dockerfile';
   if (lower === 'makefile') return 'makefile';
@@ -104,7 +107,7 @@ function FileTree({
   });
 
   return (
-    <div>
+    <div role={depth === 0 ? 'tree' : 'group'}>
       {nodes.map((node) => {
         const isDir = node.type === 'directory';
         const isOpen = expanded.has(node.path);
@@ -112,6 +115,10 @@ function FileTree({
         return (
           <div key={node.path} className="group/file">
             <button
+              role="treeitem"
+              aria-label={node.name}
+              aria-selected={isSelected}
+              {...(isDir ? { 'aria-expanded': isOpen } : {})}
               onClick={() => {
                 if (isDir) {
                   setExpanded(prev => {
@@ -124,21 +131,23 @@ function FileTree({
                 }
               }}
               className={`w-full text-left flex items-center gap-1.5 px-2 py-1 text-xs font-mono rounded transition-colors ${
-                isSelected ? 'bg-accent-product/10 text-accent-product' : 'text-charcoal/70 hover:bg-white/40'
+                isSelected ? 'bg-primary/10 text-primary' : 'text-ink/70 hover:bg-hover'
               }`}
               style={{ paddingLeft: `${depth * 14 + 8}px` }}
             >
               {isDir ? (
-                <span className="text-[10px] text-slate w-3 text-center flex-shrink-0">{isOpen ? 'v' : '>'}</span>
+                <span className="w-3 flex items-center justify-center flex-shrink-0 text-muted">
+                  {isOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                </span>
               ) : (
                 <span className="w-3 flex-shrink-0" />
               )}
-              <span className={`text-[10px] font-bold w-5 text-center flex-shrink-0 ${isDir ? 'text-accent-product' : getLanguageClass(node.name)}`}>
-                {getFileIcon(node.name, node.type)}
+              <span className={`w-5 flex items-center justify-center flex-shrink-0 ${isDir ? 'text-primary' : ''}`}>
+                {getFileIcon(node.name, node.type, isOpen)}
               </span>
               <span className="truncate">{node.name}{isDir ? '/' : ''}</span>
               {!isDir && node.size != null && node.size > 0 && (
-                <span className="text-[10px] text-slate/40 ml-auto flex-shrink-0">{formatSize(node.size)}</span>
+                <span className="text-[10px] text-muted/40 ml-auto flex-shrink-0">{formatSize(node.size)}</span>
               )}
               {!isDir && onDelete && (
                 <span
@@ -151,10 +160,10 @@ function FileTree({
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') { e.stopPropagation(); onDelete(node.path, node.name); }
                   }}
-                  className="text-[10px] text-slate/30 hover:text-red-500 ml-1 flex-shrink-0 opacity-0 group-hover/file:opacity-100 transition-opacity cursor-pointer"
+                  className="text-muted/30 hover:text-danger ml-1 flex-shrink-0 opacity-0 group-hover/file:opacity-100 transition-opacity cursor-pointer"
                   title="Delete file"
                 >
-                  x
+                  <X size={12} />
                 </span>
               )}
             </button>
@@ -403,7 +412,7 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
-      <div className="glass px-5 py-3 flex items-center gap-4 flex-shrink-0 border-b border-white/10">
+      <div className="bg-card px-3 py-2 flex items-center gap-3 flex-shrink-0 border-b border-border">
         <button onClick={() => {
           if (isModified) {
             const discard = window.confirm('Unsaved changes. Discard?');
@@ -411,197 +420,222 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
           }
           onClose();
         }}
-          className="text-xs font-medium px-3 py-1.5 rounded-lg border border-white/20 text-slate hover:text-charcoal hover:bg-white/30 transition-colors">
+          className="text-xs font-medium px-3 py-1.5 rounded-btn border border-border text-muted hover:text-ink hover:bg-hover transition-colors">
           Back
         </button>
         <div className="flex-1 min-w-0">
-          <h2 className="text-sm font-bold text-charcoal truncate">{sessionData.id}</h2>
-          <p className="text-[10px] font-mono text-slate truncate">{sessionData.path}</p>
+          <h2 className="text-sm font-bold text-ink truncate">{sessionData.id}</h2>
+          <p className="text-[10px] font-mono text-muted-accessible truncate">{sessionData.path}</p>
         </div>
         <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
           sessionData.status === 'completed' || sessionData.status === 'completion_promise_fulfilled'
-            ? 'bg-success/10 text-success' : 'bg-slate/10 text-slate'
+            ? 'bg-success/10 text-success' : 'bg-muted/10 text-muted'
         }`}>{sessionData.status}</span>
         {canPreview && (
           <button onClick={() => setShowPreview(!showPreview)}
-            className={`text-xs font-medium px-3 py-1.5 rounded-lg border transition-colors ${
-              showPreview ? 'border-accent-product/40 bg-accent-product/10 text-accent-product'
-                : 'border-white/20 text-slate hover:text-charcoal hover:bg-white/30'
+            className={`text-xs font-medium px-3 py-1.5 rounded-btn border transition-colors ${
+              showPreview ? 'border-primary/40 bg-primary/10 text-primary'
+                : 'border-border text-muted hover:text-ink hover:bg-hover'
             }`}>
             {showPreview ? 'Hide Preview' : 'Preview'}
           </button>
         )}
       </div>
 
-      {/* Workspace: file tree | editor | preview */}
+      {/* Workspace: vertical split - top: editor, bottom: activity panel */}
       <div className="flex-1 min-h-0">
-        <PanelGroup orientation="horizontal" className="h-full">
-          {/* Sidebar: file tree */}
-          <Panel defaultSize={20} minSize={15}>
-            <div className="h-full flex flex-col border-r border-white/10 bg-white/30">
-              <div className="px-3 py-2 border-b border-white/10 flex items-center gap-2">
-                <span className="text-[10px] text-slate uppercase tracking-wider font-semibold flex-1">Files</span>
-                <button
-                  onClick={handleCreateFile}
-                  title="New File"
-                  className="text-[10px] text-slate hover:text-accent-product px-1.5 py-0.5 rounded border border-white/20 hover:border-accent-product/30 transition-colors"
-                >
-                  + File
-                </button>
-                <button
-                  onClick={handleCreateFolder}
-                  title="New Folder"
-                  className="text-[10px] text-slate hover:text-accent-product px-1.5 py-0.5 rounded border border-white/20 hover:border-accent-product/30 transition-colors"
-                >
-                  + Dir
-                </button>
-              </div>
-              <div className="flex-1 overflow-y-auto terminal-scroll">
-                {sessionData.files.length > 0 ? (
-                  <FileTree
-                    nodes={sessionData.files}
-                    selectedPath={selectedFile}
-                    onSelect={handleFileSelect}
-                    onDelete={handleDeleteFile}
-                  />
-                ) : (
-                  <div className="p-4 text-xs text-slate">No files</div>
-                )}
-              </div>
-            </div>
-          </Panel>
-
-          <PanelResizeHandle className="w-1 bg-white/10 hover:bg-accent-product/30 transition-colors cursor-col-resize" />
-
-          {/* Editor */}
-          <Panel defaultSize={showPreview ? 50 : 80} minSize={25}>
-            <div className="h-full flex flex-col min-w-0">
-              {/* Tab bar */}
-              {openTabs.length > 0 && (
-                <div className="flex items-center border-b border-white/10 bg-white/10 overflow-x-auto flex-shrink-0">
-                  {openTabs.map(tab => (
+        <PanelGroup orientation="vertical">
+          <Panel defaultSize={70} minSize={40}>
+            {/* Horizontal split: file tree | editor | preview */}
+            <PanelGroup orientation="horizontal" className="h-full">
+              {/* Sidebar: file tree */}
+              <Panel defaultSize={20} minSize={15}>
+                <div className="h-full flex flex-col border-r border-border bg-card">
+                  <div className="px-3 py-2 border-b border-border flex items-center gap-2">
+                    <span className="text-[10px] text-muted-accessible uppercase tracking-wider font-semibold flex-1">Files</span>
                     <button
-                      key={tab.path}
-                      onClick={() => handleFileSelect(tab.path, tab.name)}
-                      className={`flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-mono border-r border-white/10 whitespace-nowrap transition-colors ${
-                        tab.path === selectedFile
-                          ? 'bg-white/40 text-charcoal'
-                          : 'text-slate hover:text-charcoal hover:bg-white/20'
-                      }`}
+                      onClick={handleCreateFile}
+                      title="New File"
+                      className="flex items-center gap-1 text-[10px] text-muted-accessible hover:text-primary px-1.5 py-0.5 rounded border border-border hover:border-primary/30 transition-colors"
                     >
-                      <span className={`text-[9px] font-bold ${getLanguageClass(tab.name)}`}>
-                        {getFileIcon(tab.name, 'file')}
-                      </span>
-                      {tab.name}
-                      {tab.modified && <span className="w-1.5 h-1.5 rounded-full bg-accent-product" />}
-                      <span
-                        role="button"
-                        tabIndex={-1}
-                        onClick={(e) => { e.stopPropagation(); handleCloseTab(tab.path); }}
-                        onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); handleCloseTab(tab.path); } }}
-                        className="text-slate/30 hover:text-danger ml-1 cursor-pointer"
-                      >
-                        x
-                      </span>
+                      <FilePlus size={12} /> New
                     </button>
-                  ))}
-                </div>
-              )}
-
-              {selectedFile ? (
-                <>
-                  <div className="px-4 py-1.5 border-b border-white/10 flex items-center gap-2 flex-shrink-0 bg-white/20">
-                    <span className="text-xs font-mono text-charcoal/60 truncate">{selectedFile}</span>
-                    {isSaving && (
-                      <span className="text-[10px] text-accent-product animate-pulse flex-shrink-0">Saving...</span>
-                    )}
-                    <span className="ml-auto text-[10px] text-slate/50 font-mono">
-                      {fileSize != null ? formatSize(fileSize) : ''}
-                    </span>
-                    <span className="text-[10px] text-slate/40 font-mono uppercase">{fileExt}</span>
-                    {isModified && (
-                      <button
-                        onClick={handleSave}
-                        className="text-[10px] font-medium px-2 py-0.5 rounded border border-accent-product/40 bg-accent-product/10 text-accent-product hover:bg-accent-product/20 transition-colors"
-                      >
-                        Save
-                      </button>
-                    )}
+                    <button
+                      onClick={handleCreateFolder}
+                      title="New Folder"
+                      className="flex items-center gap-1 text-[10px] text-muted-accessible hover:text-primary px-1.5 py-0.5 rounded border border-border hover:border-primary/30 transition-colors"
+                    >
+                      <FolderPlus size={12} /> New
+                    </button>
                   </div>
-                  <div className="flex-1 min-h-0">
-                    {fileLoading ? (
-                      <div className="text-slate text-xs animate-pulse p-4">Loading...</div>
-                    ) : (
-                      <Editor
-                        value={editorContent ?? ''}
-                        language={getMonacoLanguage(selectedFileName)}
-                        theme="vs"
-                        onChange={handleEditorChange}
-                        onMount={handleEditorMount}
-                        options={{
-                          minimap: { enabled: false },
-                          fontSize: 13,
-                          lineNumbers: 'on',
-                          wordWrap: 'on',
-                          scrollBeyondLastLine: false,
-                          automaticLayout: true,
-                          padding: { top: 8 },
-                          renderLineHighlight: 'line',
-                          smoothScrolling: true,
-                          cursorBlinking: 'smooth',
-                          folding: true,
-                          bracketPairColorization: { enabled: true },
-                        }}
+                  <div className="flex-1 overflow-y-auto terminal-scroll">
+                    {sessionData.files.length > 0 ? (
+                      <FileTree
+                        nodes={sessionData.files}
+                        selectedPath={selectedFile}
+                        onSelect={handleFileSelect}
+                        onDelete={handleDeleteFile}
                       />
+                    ) : (
+                      <div className="p-4 text-xs text-muted">No files</div>
                     )}
-                  </div>
-                </>
-              ) : (
-                <div className="flex-1 flex items-center justify-center text-slate text-sm">
-                  Select a file to view its contents
-                </div>
-              )}
-            </div>
-          </Panel>
-
-          {/* Live preview (collapsible) */}
-          {showPreview && (
-            <>
-              <PanelResizeHandle className="w-1 bg-white/10 hover:bg-accent-product/30 transition-colors cursor-col-resize" />
-              <Panel defaultSize={30} minSize={20} collapsible>
-                <div className="h-full flex flex-col border-l border-white/10">
-                  <div className="px-4 py-2 border-b border-white/10 flex items-center gap-2 flex-shrink-0 bg-white/20">
-                    <span className="text-xs font-semibold text-charcoal">Live Preview</span>
-                    <span className="text-[10px] font-mono text-slate/50 truncate ml-auto">{previewUrl}</span>
-                  </div>
-                  <div className="flex-1 bg-white">
-                    <iframe
-                      key={previewKey}
-                      ref={previewRef}
-                      src={previewUrl}
-                      title="Project Preview"
-                      className="w-full h-full border-0"
-                      sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
-                    />
                   </div>
                 </div>
               </Panel>
-            </>
-          )}
+
+              <PanelResizeHandle className="w-1 bg-border hover:bg-primary/30 transition-colors cursor-col-resize" />
+
+              {/* Editor */}
+              <Panel defaultSize={showPreview ? 50 : 80} minSize={25}>
+                <div className="h-full flex flex-col min-w-0">
+                  {/* Tab bar */}
+                  {openTabs.length > 0 && (
+                    <div className="flex items-center border-b border-border bg-hover overflow-x-auto flex-shrink-0">
+                      {openTabs.map(tab => (
+                        <button
+                          key={tab.path}
+                          onClick={() => handleFileSelect(tab.path, tab.name)}
+                          className={`flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-mono border-r border-border whitespace-nowrap transition-colors ${
+                            tab.path === selectedFile
+                              ? 'bg-card text-ink'
+                              : 'text-muted hover:text-ink hover:bg-card'
+                          }`}
+                        >
+                          <span className="w-4 flex items-center justify-center">
+                            {getFileIcon(tab.name, 'file')}
+                          </span>
+                          {tab.name}
+                          {tab.modified && <span className="w-1.5 h-1.5 rounded-full bg-primary" />}
+                          <span
+                            role="button"
+                            tabIndex={-1}
+                            onClick={(e) => { e.stopPropagation(); handleCloseTab(tab.path); }}
+                            onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); handleCloseTab(tab.path); } }}
+                            className="text-muted/30 hover:text-danger ml-1 cursor-pointer"
+                          >
+                            <X size={12} />
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  {selectedFile ? (
+                    <>
+                      <div className="px-4 py-1.5 border-b border-border flex items-center gap-2 flex-shrink-0 bg-hover">
+                        <span className="text-xs font-mono text-ink/60 truncate">{selectedFile}</span>
+                        {isSaving && (
+                          <span className="text-[10px] text-primary animate-pulse flex-shrink-0">Saving...</span>
+                        )}
+                        <span className="ml-auto text-[10px] text-muted/50 font-mono">
+                          {fileSize != null ? formatSize(fileSize) : ''}
+                        </span>
+                        <span className="text-[10px] text-muted/40 font-mono uppercase">{fileExt}</span>
+                        {isModified && (
+                          <button
+                            onClick={handleSave}
+                            className="text-[10px] font-medium px-2 py-0.5 rounded border border-primary/40 bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
+                          >
+                            Save
+                          </button>
+                        )}
+                      </div>
+                      <div className="flex-1 min-h-0">
+                        {fileLoading ? (
+                          <div className="text-muted text-xs animate-pulse p-4">Loading...</div>
+                        ) : (
+                          <Editor
+                            value={editorContent ?? ''}
+                            language={getMonacoLanguage(selectedFileName)}
+                            theme="vs"
+                            onChange={handleEditorChange}
+                            onMount={handleEditorMount}
+                            options={{
+                              minimap: { enabled: false },
+                              fontSize: 13,
+                              lineNumbers: 'on',
+                              wordWrap: 'on',
+                              scrollBeyondLastLine: false,
+                              automaticLayout: true,
+                              padding: { top: 8 },
+                              renderLineHighlight: 'line',
+                              smoothScrolling: true,
+                              cursorBlinking: 'smooth',
+                              folding: true,
+                              bracketPairColorization: { enabled: true },
+                            }}
+                          />
+                        )}
+                      </div>
+                    </>
+                  ) : (
+                    <div className="flex-1 flex items-center justify-center text-muted text-sm">
+                      Select a file to view its contents
+                    </div>
+                  )}
+                </div>
+              </Panel>
+
+              {/* Live preview (collapsible) */}
+              {showPreview && (
+                <>
+                  <PanelResizeHandle className="w-1 bg-border hover:bg-primary/30 transition-colors cursor-col-resize" />
+                  <Panel defaultSize={30} minSize={20} collapsible>
+                    <div className="h-full flex flex-col border-l border-border">
+                      {/* Preview toolbar */}
+                      <div className="px-3 py-1.5 border-b border-border flex items-center gap-2 bg-hover">
+                        <IconButton icon={PreviewBack} label="Back" size="sm" onClick={() => {}} />
+                        <IconButton icon={PreviewForward} label="Forward" size="sm" onClick={() => {}} />
+                        <IconButton icon={RotateCw} label="Refresh" size="sm" onClick={() => setPreviewKey(k => k + 1)} />
+                        <input
+                          value={previewUrl}
+                          readOnly
+                          className="flex-1 px-3 py-1 text-xs font-mono bg-card border border-border rounded-btn"
+                        />
+                        <IconButton icon={ExternalLink} label="Open in new tab" size="sm" onClick={() => window.open(previewUrl, '_blank')} />
+                      </div>
+                      <div className="flex-1 bg-white">
+                        <iframe
+                          key={previewKey}
+                          ref={previewRef}
+                          src={previewUrl}
+                          title="Project Preview"
+                          className="w-full h-full border-0"
+                          sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+                        />
+                      </div>
+                    </div>
+                  </Panel>
+                </>
+              )}
+            </PanelGroup>
+          </Panel>
+
+          <PanelResizeHandle className="h-1 bg-border hover:bg-primary/30 cursor-row-resize" />
+
+          <Panel defaultSize={30} minSize={15} collapsible>
+            <ActivityPanel
+              logs={null}
+              logsLoading={false}
+              agents={null}
+              checklist={null}
+              sessionId={session.id}
+            />
+          </Panel>
         </PanelGroup>
       </div>
 
       {/* Quick Open modal (Cmd+P) */}
       {showQuickOpen && (
-        <div className="fixed inset-0 z-50 flex items-start justify-center pt-[20vh]" onClick={() => setShowQuickOpen(false)}>
-          <div className="bg-white rounded-xl shadow-2xl border border-white/20 w-full max-w-lg" onClick={e => e.stopPropagation()}>
+        <div className="fixed inset-0 z-50 flex items-start justify-center pt-[20vh]" role="dialog" aria-modal="true" aria-label="Quick open file search" onClick={() => setShowQuickOpen(false)}>
+          <div className="bg-card rounded-card shadow-2xl border border-border w-full max-w-lg" onClick={e => e.stopPropagation()}>
             <input
               ref={quickOpenRef}
               type="text"
               value={quickOpenQuery}
               onChange={e => setQuickOpenQuery(e.target.value)}
               placeholder="Search files by name..."
-              className="w-full px-4 py-3 text-sm font-mono border-b border-white/10 outline-none rounded-t-xl bg-transparent"
+              className="w-full px-4 py-3 text-sm font-mono border-b border-border outline-none rounded-t-card bg-transparent"
               onKeyDown={e => {
                 if (e.key === 'Enter' && filteredFiles.length > 0) {
                   handleFileSelect(filteredFiles[0].path, filteredFiles[0].name);
@@ -618,17 +652,17 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
                     handleFileSelect(f.path, f.name);
                     setShowQuickOpen(false);
                   }}
-                  className="w-full text-left px-4 py-2 text-xs font-mono hover:bg-accent-product/5 flex items-center gap-2"
+                  className="w-full text-left px-4 py-2 text-xs font-mono hover:bg-primary/5 flex items-center gap-2"
                 >
-                  <span className={`text-[10px] font-bold ${getLanguageClass(f.name)}`}>
+                  <span className="w-5 flex items-center justify-center">
                     {getFileIcon(f.name, 'file')}
                   </span>
-                  <span className="text-charcoal">{f.name}</span>
-                  <span className="text-slate/40 ml-auto truncate text-[10px]">{f.path}</span>
+                  <span className="text-ink">{f.name}</span>
+                  <span className="text-muted/40 ml-auto truncate text-[10px]">{f.path}</span>
                 </button>
               ))}
               {filteredFiles.length === 0 && (
-                <div className="px-4 py-3 text-xs text-slate">No matching files</div>
+                <div className="px-4 py-3 text-xs text-muted">No matching files</div>
               )}
             </div>
           </div>

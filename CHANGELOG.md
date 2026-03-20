@@ -5,6 +5,20 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [6.42.0] - 2026-03-20
+
+### Added
+- Multi-page web app: Projects page (session browser with filtering), Templates page (13 PRD templates with categories), Settings page (provider selection, version info)
+- AI Chat panel: in-session conversational interface using `loki quick` for mid-run steering and clarifications
+- Activity panel: real-time activity feed showing agent actions as they happen
+- Cost tracker: live token usage and cost display per session
+- UI component library: Badge, Button, Card, ContextMenu, IconButton shared components
+- URL-based routing for all web app pages (react-router)
+
+### Changed
+- Home page refactored to dedicated HomePage component with improved layout
+- All web app components updated for consistency with new UI library
+
 ## [6.41.0] - 2026-03-19
 
 ### Added

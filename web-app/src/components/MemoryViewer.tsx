@@ -41,26 +41,26 @@ export function MemoryViewer({ memory, loading }: MemoryViewerProps) {
   const tokenPercent = memory ? Math.min((memory.total_tokens / TOKEN_BUDGET) * 100, 100) : 0;
 
   return (
-    <div className="glass p-6">
+    <div className="card p-6">
       <div className="flex items-center justify-between mb-4">
-        <h3 className="text-sm font-semibold text-charcoal uppercase tracking-wider">
+        <h3 className="text-sm font-semibold text-ink uppercase tracking-wider">
           Memory System
         </h3>
         {memory && (
-          <span className="font-mono text-xs text-slate">
+          <span className="font-mono text-xs text-muted">
             {formatTimestamp(memory.last_consolidation)}
           </span>
         )}
       </div>
 
       {loading && !memory && (
-        <div className="text-center py-8 text-slate text-sm">Loading memory...</div>
+        <div className="text-center py-8 text-muted text-sm">Loading memory...</div>
       )}
 
       {!loading && !memory && (
         <div className="text-center py-8">
-          <p className="text-slate text-sm">No memory data available</p>
-          <p className="text-primary-wash text-xs mt-1">Memory populates during autonomous runs</p>
+          <p className="text-muted text-sm">No memory data available</p>
+          <p className="text-primary/60 text-xs mt-1">Memory populates during autonomous runs</p>
         </div>
       )}
 
@@ -71,12 +71,12 @@ export function MemoryViewer({ memory, loading }: MemoryViewerProps) {
             {stats.map((stat) => (
               <div
                 key={stat.label}
-                className={`${stat.bg} border ${stat.border} rounded-xl p-3 text-center`}
+                className={`${stat.bg} border ${stat.border} rounded-card p-3 text-center`}
               >
                 <div className={`text-2xl font-bold font-mono ${stat.color}`}>
                   {stat.count}
                 </div>
-                <div className="text-[10px] text-slate font-medium mt-1 uppercase tracking-wider">
+                <div className="text-[10px] text-muted-accessible font-medium mt-1 uppercase tracking-wider">
                   {stat.label}
                 </div>
               </div>
@@ -86,15 +86,15 @@ export function MemoryViewer({ memory, loading }: MemoryViewerProps) {
           {/* Token usage */}
           <div className="mt-3">
             <div className="flex items-center justify-between mb-1.5">
-              <span className="text-xs text-slate font-medium">Token Usage</span>
-              <span className="text-xs font-mono text-charcoal">
+              <span className="text-xs text-muted font-medium">Token Usage</span>
+              <span className="text-xs font-mono text-ink">
                 {formatTokens(memory.total_tokens)} / {formatTokens(TOKEN_BUDGET)}
               </span>
             </div>
             <div className="w-full h-2 bg-charcoal/10 rounded-full overflow-hidden">
               <div
                 className={`h-full rounded-full transition-all duration-500 ${
-                  tokenPercent > 80 ? 'bg-danger' : tokenPercent > 50 ? 'bg-warning' : 'bg-primary-light'
+                  tokenPercent > 80 ? 'bg-danger' : tokenPercent > 50 ? 'bg-warning' : 'bg-info'
                 }`}
                 style={{ width: `${tokenPercent}%` }}
               />
@@ -103,8 +103,8 @@ export function MemoryViewer({ memory, loading }: MemoryViewerProps) {
 
           {/* Last consolidation */}
           <div className="mt-3 flex items-center justify-between text-xs">
-            <span className="text-slate">Last Consolidation</span>
-            <span className="font-mono text-charcoal">
+            <span className="text-muted">Last Consolidation</span>
+            <span className="font-mono text-ink">
               {memory.last_consolidation
                 ? new Date(memory.last_consolidation).toLocaleString()
                 : 'Never'}

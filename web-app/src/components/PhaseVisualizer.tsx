@@ -26,12 +26,12 @@ export function PhaseVisualizer({ currentPhase, iteration }: PhaseVisualizerProp
   const active = mapPhaseString(currentPhase);
 
   return (
-    <div className="glass p-6">
+    <div className="card p-6">
       <div className="flex items-center justify-between mb-4">
-        <h3 className="text-sm font-semibold text-charcoal uppercase tracking-wider">
+        <h3 className="text-sm font-semibold text-ink uppercase tracking-wider">
           RARV Cycle
         </h3>
-        <span className="font-mono text-xs text-slate">
+        <span className="font-mono text-xs text-muted">
           Iteration {iteration}
         </span>
       </div>
@@ -55,7 +55,7 @@ export function PhaseVisualizer({ currentPhase, iteration }: PhaseVisualizerProp
                     y1={cy}
                     x2={60 + 40 * Math.cos(((i + 1) * 90 - 90) * (Math.PI / 180))}
                     y2={60 + 40 * Math.sin(((i + 1) * 90 - 90) * (Math.PI / 180))}
-                    stroke={isPast ? '#3D52A0' : '#ADBBDA'}
+                    stroke={isPast ? '#553DE9' : '#ECEAE3'}
                     strokeWidth={isPast ? 2 : 1}
                     strokeDasharray={isPast ? 'none' : '4 3'}
                   />
@@ -67,7 +67,7 @@ export function PhaseVisualizer({ currentPhase, iteration }: PhaseVisualizerProp
                     y1={cy}
                     x2={60 + 40 * Math.cos(-90 * (Math.PI / 180))}
                     y2={60 + 40 * Math.sin(-90 * (Math.PI / 180))}
-                    stroke="#ADBBDA"
+                    stroke="#ECEAE3"
                     strokeWidth={1}
                     strokeDasharray="4 3"
                   />
@@ -77,8 +77,8 @@ export function PhaseVisualizer({ currentPhase, iteration }: PhaseVisualizerProp
                   cx={cx}
                   cy={cy}
                   r={isActive ? 14 : 10}
-                  fill={isActive ? '#3D52A0' : isPast ? '#7091E6' : '#EDE8F5'}
-                  stroke={isActive ? '#6C63FF' : isPast ? '#3D52A0' : '#ADBBDA'}
+                  fill={isActive ? '#553DE9' : isPast ? '#553DE9' : '#E8E4FD'}
+                  stroke={isActive ? '#4432c4' : isPast ? '#553DE9' : '#ECEAE3'}
                   strokeWidth={isActive ? 3 : 1.5}
                   className={isActive ? 'phase-active' : ''}
                 />
@@ -87,7 +87,7 @@ export function PhaseVisualizer({ currentPhase, iteration }: PhaseVisualizerProp
                   x={cx}
                   y={cy + (i === 0 ? -20 : i === 2 ? 24 : 0)}
                   textAnchor="middle"
-                  className="text-[9px] font-semibold fill-charcoal"
+                  className="text-[9px] font-semibold fill-ink"
                   dx={i === 1 ? 22 : i === 3 ? -22 : 0}
                 >
                   {phase.label[0]}
@@ -109,7 +109,7 @@ export function PhaseVisualizer({ currentPhase, iteration }: PhaseVisualizerProp
           return (
             <div
               key={phase.key}
-              className={`flex items-center gap-3 px-3 py-2 rounded-xl transition-all duration-200 ${
+              className={`flex items-center gap-3 px-3 py-2 rounded-card transition-all duration-200 ${
                 isActive
                   ? 'bg-primary/8 border border-primary/20'
                   : 'opacity-50'
@@ -117,15 +117,15 @@ export function PhaseVisualizer({ currentPhase, iteration }: PhaseVisualizerProp
             >
               <div
                 className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${
-                  isActive ? 'bg-primary phase-active' : 'bg-surface'
+                  isActive ? 'bg-primary phase-active' : 'bg-border'
                 }`}
               />
               <div>
-                <span className={`text-sm font-semibold ${isActive ? 'text-primary' : 'text-slate'}`}>
+                <span className={`text-sm font-semibold ${isActive ? 'text-primary' : 'text-muted'}`}>
                   {phase.label}
                 </span>
                 {isActive && (
-                  <p className="text-xs text-slate mt-0.5">{phase.description}</p>
+                  <p className="text-xs text-muted mt-0.5">{phase.description}</p>
                 )}
               </div>
             </div>

@@ -3171,6 +3171,13 @@ cmd_web_stop() {
     local port
     port=$(cat "${LOKI_DIR}/purple-lab/port" 2>/dev/null || echo "$PURPLE_LAB_DEFAULT_PORT")
 
+    # Gracefully stop any active session before killing Purple Lab
+    curl -s --max-time 3 -X POST "http://127.0.0.1:${port}/api/session/stop" >/dev/null 2>&1 || true
+    sleep 1
+
+    # Kill any orphaned loki-run processes (belt-and-suspenders)
+    pkill -f "loki-run-" 2>/dev/null || true
+
     # Try PID file first
     if [ -f "$PURPLE_LAB_PID_FILE" ]; then
         local pid

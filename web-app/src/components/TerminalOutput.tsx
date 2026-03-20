@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { Radio, Lock, ArrowDown } from 'lucide-react';
 import type { LogEntry } from '../types/api';
 
 interface TerminalOutputProps {
@@ -8,10 +9,10 @@ interface TerminalOutputProps {
 }
 
 const LEVEL_COLORS: Record<string, string> = {
-  info: 'text-primary-light',
+  info: 'text-info',
   error: 'text-danger',
   warning: 'text-warning',
-  debug: 'text-slate',
+  debug: 'text-muted',
   critical: 'text-danger font-bold',
 };
 
@@ -92,32 +93,34 @@ export function TerminalOutput({ logs, loading, subscribe }: TerminalOutputProps
   };
 
   return (
-    <div className="glass p-0 overflow-hidden flex flex-col" style={{ height: 'calc(100vh - 380px)', minHeight: '300px', maxHeight: '600px' }}>
-      <div className="flex items-center justify-between px-4 py-3 border-b border-white/10 flex-shrink-0">
-        <h3 className="text-sm font-semibold text-charcoal uppercase tracking-wider">
+    <div className="card p-0 overflow-hidden flex flex-col h-full">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-border flex-shrink-0">
+        <h3 className="text-sm font-semibold text-ink uppercase tracking-wider">
           Terminal
         </h3>
         <div className="flex items-center gap-3">
-          <span className="font-mono text-xs text-slate">
+          <span className="font-mono text-xs text-muted">
             {displayLogs.length} lines
           </span>
           {/* Scroll lock toggle */}
           <button
             onClick={scrollLocked ? scrollToBottom : () => setScrollLocked(true)}
-            className={`text-xs font-medium px-2.5 py-1 rounded-lg border transition-colors ${
+            className={`flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-lg border transition-colors ${
               scrollLocked
                 ? 'border-warning/40 text-warning bg-warning/5 hover:bg-warning/10'
                 : 'border-primary/20 text-primary hover:bg-primary/5'
             }`}
             title={scrollLocked ? 'Scroll locked -- click to resume auto-scroll' : 'Auto-scrolling -- click to lock'}
           >
+            {scrollLocked ? <Lock size={12} /> : <Radio size={12} />}
             {scrollLocked ? 'Locked' : 'Live'}
           </button>
           {scrollLocked && (
             <button
               onClick={scrollToBottom}
-              className="text-xs text-primary hover:text-primary-light transition-colors font-medium"
+              className="flex items-center gap-1.5 text-xs text-primary hover:text-primary transition-colors font-medium"
             >
+              <ArrowDown size={12} />
               Jump to bottom
             </button>
           )}
@@ -127,27 +130,27 @@ export function TerminalOutput({ logs, loading, subscribe }: TerminalOutputProps
       <div
         ref={containerRef}
         onScroll={handleScroll}
-        className="flex-1 overflow-y-auto terminal-scroll bg-charcoal/[0.03] p-4 font-mono text-xs leading-relaxed"
+        className="flex-1 overflow-y-auto terminal-scroll bg-ink/[0.03] p-4 font-mono text-xs leading-relaxed"
       >
         {loading && !logs && wsLines.length === 0 && (
-          <div className="text-slate animate-pulse">Connecting to log stream...</div>
+          <div className="text-muted animate-pulse">Connecting to log stream...</div>
         )}
 
         {displayLogs.length === 0 && !loading && (
-          <div className="text-slate/60">
+          <div className="text-muted/60">
             <p>No log output yet.</p>
             <p className="mt-1">Start a build to see terminal output here.</p>
           </div>
         )}
 
         {displayLogs.map((entry, i) => (
-          <div key={i} className="flex gap-2 hover:bg-white/5 rounded px-1 -mx-1">
-            <span className="text-slate/40 flex-shrink-0 select-none w-16 text-right">
+          <div key={i} className="flex gap-2 hover:bg-hover rounded px-1 -mx-1">
+            <span className="text-muted/40 flex-shrink-0 select-none w-16 text-right">
               {formatTimestamp(entry.timestamp)}
             </span>
             <span
               className={`flex-shrink-0 w-12 text-right uppercase text-[10px] font-semibold ${
-                LEVEL_COLORS[entry.level] || 'text-slate'
+                LEVEL_COLORS[entry.level] || 'text-muted'
               }`}
             >
               {entry.level}
@@ -155,7 +158,7 @@ export function TerminalOutput({ logs, loading, subscribe }: TerminalOutputProps
             <span className={`flex-1 break-all ${
               entry.level === 'error' || entry.level === 'critical'
                 ? 'text-danger'
-                : 'text-charcoal/80'
+                : 'text-ink/80'
             }`}>
               {entry.message}
             </span>

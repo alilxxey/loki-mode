@@ -131,7 +131,7 @@ export const api = {
     fetchJSON<{ content: string }>(`/sessions/${encodeURIComponent(sessionId)}/file?path=${encodeURIComponent(path)}`),
 
   // Templates
-  getTemplates: () => fetchJSON<{ name: string; filename: string }[]>('/templates'),
+  getTemplates: () => fetchJSON<{ name: string; filename: string; description: string; category: string }[]>('/templates'),
   getTemplateContent: (filename: string) =>
     fetchJSON<{ name: string; content: string }>(`/templates/${encodeURIComponent(filename)}`),
 
@@ -197,6 +197,25 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ path }),
     }),
+
+  // CLI feature endpoints
+  reviewProject: (sessionId: string) =>
+    fetchJSON<{ output: string; returncode: number }>(`/sessions/${encodeURIComponent(sessionId)}/review`, { method: 'POST' }),
+
+  testProject: (sessionId: string) =>
+    fetchJSON<{ output: string; returncode: number }>(`/sessions/${encodeURIComponent(sessionId)}/test`, { method: 'POST' }),
+
+  explainProject: (sessionId: string) =>
+    fetchJSON<{ output: string; returncode: number }>(`/sessions/${encodeURIComponent(sessionId)}/explain`, { method: 'POST' }),
+
+  exportProject: (sessionId: string) =>
+    fetchJSON<{ output: string; returncode: number }>(`/sessions/${encodeURIComponent(sessionId)}/export`, { method: 'POST' }),
+
+  chatMessage: (sessionId: string, message: string, mode: string = 'quick') =>
+    fetchJSON<{ output: string; files_changed: string[]; returncode: number }>(
+      `/sessions/${encodeURIComponent(sessionId)}/chat`,
+      { method: 'POST', body: JSON.stringify({ message, mode }) },
+    ),
 };
 
 export class PurpleLabWebSocket {

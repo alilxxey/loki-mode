@@ -2,7 +2,6 @@ import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import { ErrorBoundary } from '../components/ErrorBoundary';
-import { Header } from '../components/Header';
 import { ProjectWorkspace } from '../components/ProjectWorkspace';
 import type { SessionDetail } from '../api/client';
 
@@ -30,13 +29,10 @@ export default function ProjectPage() {
 
   if (loading) {
     return (
-      <div className="h-screen bg-background flex flex-col">
-        <Header status={null} wsConnected={false} />
-        <div className="flex-1 flex items-center justify-center">
-          <div className="text-center">
-            <div className="text-slate animate-pulse text-sm">Loading project...</div>
-            <div className="text-[10px] font-mono text-slate/50 mt-2">{sessionId}</div>
-          </div>
+      <div className="h-screen bg-background flex items-center justify-center">
+        <div className="text-center">
+          <div className="text-muted animate-pulse text-sm">Loading project...</div>
+          <div className="text-[10px] font-mono text-muted/50 mt-2">{sessionId}</div>
         </div>
       </div>
     );
@@ -44,19 +40,16 @@ export default function ProjectPage() {
 
   if (error || !session) {
     return (
-      <div className="h-screen bg-background flex flex-col">
-        <Header status={null} wsConnected={false} />
-        <div className="flex-1 flex items-center justify-center">
-          <div className="text-center">
-            <p className="text-danger text-sm font-medium">Project not found</p>
-            <p className="text-xs text-slate mt-1">{error || `Session ${sessionId} does not exist`}</p>
-            <button
-              onClick={() => navigate('/')}
-              className="mt-4 px-4 py-2 rounded-xl text-sm font-semibold border border-accent-product/30 text-accent-product hover:bg-accent-product/5 transition-all"
-            >
-              Back to Home
-            </button>
-          </div>
+      <div className="h-screen bg-background flex items-center justify-center">
+        <div className="text-center">
+          <p className="text-danger text-sm font-medium">Project not found</p>
+          <p className="text-xs text-muted mt-1">{error || `Session ${sessionId} does not exist`}</p>
+          <button
+            onClick={() => navigate('/')}
+            className="mt-4 px-4 py-2 rounded-btn text-sm font-semibold border border-primary/30 text-primary hover:bg-primary/5 transition-all"
+          >
+            Back to Home
+          </button>
         </div>
       </div>
     );
@@ -64,7 +57,6 @@ export default function ProjectPage() {
 
   return (
     <div className="h-screen bg-background flex flex-col">
-      <Header status={null} wsConnected={false} />
       <div className="flex-1 min-h-0">
         <ErrorBoundary name="ProjectWorkspace">
           <ProjectWorkspace session={session} onClose={() => navigate('/')} />

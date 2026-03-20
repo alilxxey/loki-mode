@@ -1,0 +1,281 @@
+import { useState, useCallback, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { api } from '../api/client';
+import { usePolling } from '../hooks/usePolling';
+import { useWebSocket, StateUpdate } from '../hooks/useWebSocket';
+import { ErrorBoundary } from '../components/ErrorBoundary';
+import { ControlBar } from '../components/ControlBar';
+import { StatusOverview } from '../components/StatusOverview';
+import { PRDInput } from '../components/PRDInput';
+import { PhaseVisualizer } from '../components/PhaseVisualizer';
+import { AgentDashboard } from '../components/AgentDashboard';
+import { TerminalOutput } from '../components/TerminalOutput';
+import { QualityGatesPanel } from '../components/QualityGatesPanel';
+import { FileBrowser } from '../components/FileBrowser';
+import { MemoryViewer } from '../components/MemoryViewer';
+import { ReportPanel } from '../components/ReportPanel';
+import { MetricsPanel } from '../components/MetricsPanel';
+import { SessionHistory } from '../components/SessionHistory';
+import type { StatusResponse, Agent, LogEntry } from '../types/api';
+
+export default function HomePage() {
+  const navigate = useNavigate();
+  const [startError, setStartError] = useState<string | null>(null);
+  const [isRunning, setIsRunning] = useState(() => sessionStorage.getItem('pl_running') === '1');
+  const [isPaused, setIsPaused] = useState(false);
+  const [currentPrd, setCurrentPrd] = useState<string | null>(() => sessionStorage.getItem('pl_prd'));
+  const [wasRunning, setWasRunning] = useState(false);
+  const [showReport, setShowReport] = useState(false);
+  const [showMetrics, setShowMetrics] = useState(false);
+  const [activeTab, setActiveTab] = useState<'terminal' | 'metrics'>(
+    () => (sessionStorage.getItem('pl_tab') as 'terminal' | 'metrics') || 'terminal'
+  );
+  const [selectedProvider, setSelectedProvider] = useState(
+    () => sessionStorage.getItem('pl_provider') || 'claude'
+  );
+
+  // Primary state -- populated by WebSocket state_update pushes
+  const [wsStatus, setWsStatus] = useState<StatusResponse | null>(null);
+  const [wsAgents, setWsAgents] = useState<Agent[] | null>(null);
+  const [wsLogs, setWsLogs] = useState<LogEntry[] | null>(null);
+
+  const handleStateUpdate = useCallback((update: StateUpdate) => {
+    if (!update) {
+      setWsStatus(null);
+      setWsAgents(null);
+      setWsLogs(null);
+      return;
+    }
+    setWsStatus(update.status);
+    setWsAgents(update.agents);
+    setWsLogs(update.logs);
+    setIsRunning(update.status.running ?? false);
+    setIsPaused(update.status.paused ?? false);
+  }, []);
+
+  const { connected, subscribe } = useWebSocket(handleStateUpdate);
+
+  const fetchStatus = useCallback(() => api.getStatus(), []);
+  const { data: httpStatus } = usePolling(fetchStatus, 30000, !connected);
+
+  useEffect(() => {
+    if (wsStatus === null && httpStatus !== null) {
+      setIsRunning(httpStatus.running ?? false);
+      setIsPaused(httpStatus.paused ?? false);
+    }
+  }, [httpStatus, wsStatus]);
+
+  // Persist state to sessionStorage
+  useEffect(() => {
+    sessionStorage.setItem('pl_running', isRunning ? '1' : '0');
+    if (isRunning) setWasRunning(true);
+  }, [isRunning]);
+  useEffect(() => {
+    if (currentPrd) sessionStorage.setItem('pl_prd', currentPrd);
+    else sessionStorage.removeItem('pl_prd');
+  }, [currentPrd]);
+  useEffect(() => { sessionStorage.setItem('pl_provider', selectedProvider); }, [selectedProvider]);
+  useEffect(() => { sessionStorage.setItem('pl_tab', activeTab); }, [activeTab]);
+
+  const fetchMemory = useCallback(() => api.getMemorySummary(), []);
+  const fetchChecklist = useCallback(() => api.getChecklist(), []);
+  const fetchFiles = useCallback(() => api.getFiles(), []);
+
+  const { data: memory, loading: memoryLoading } = usePolling(fetchMemory, 30000, isRunning);
+  const { data: checklist, loading: checklistLoading } = usePolling(fetchChecklist, 30000, isRunning);
+  const { data: files, loading: filesLoading } = usePolling(fetchFiles, 30000, isRunning);
+
+  const status = wsStatus ?? httpStatus;
+  const agents = wsAgents;
+  const logs = wsLogs;
+  const agentsLoading = wsAgents === null;
+  const logsLoading = wsLogs === null;
+
+  const handleStartBuild = useCallback(async (prd: string, provider: string, projectDir?: string, mode?: string) => {
+    setStartError(null);
+    setWasRunning(false);
+    setShowReport(false);
+    setActiveTab('terminal');
+    try {
+      await api.startSession({ prd, provider, projectDir, mode });
+      setCurrentPrd(prd);
+    } catch (e) {
+      setStartError(e instanceof Error ? e.message : 'Failed to start session');
+    }
+  }, []);
+
+  const handleStopBuild = useCallback(async () => {
+    try {
+      const result = await api.stopSession();
+      if (result.stopped) {
+        setIsRunning(false);
+        setIsPaused(false);
+        setCurrentPrd(null);
+        setWsStatus(null);
+        setWsAgents(null);
+        setWsLogs(null);
+      }
+    } catch {
+      setIsRunning(false);
+      setIsPaused(false);
+      setCurrentPrd(null);
+    }
+    sessionStorage.removeItem('pl_running');
+    sessionStorage.removeItem('pl_prd');
+    sessionStorage.removeItem('pl_tab');
+  }, []);
+
+  const handleLoadSession = useCallback((item: { id: string }) => {
+    navigate(`/project/${item.id}`);
+  }, [navigate]);
+
+  const handleProviderChange = useCallback((provider: string) => {
+    setSelectedProvider(provider);
+  }, []);
+
+  const handlePause = useCallback(async () => {
+    try { await api.pauseSession(); setIsPaused(true); } catch { /* ignore */ }
+  }, []);
+
+  const handleResume = useCallback(async () => {
+    try { await api.resumeSession(); setIsPaused(false); } catch { /* ignore */ }
+  }, []);
+
+  const prdSummary = currentPrd
+    ? currentPrd.replace(/^#+\s*/gm, '').split('\n').find(l => l.trim().length > 0) || null
+    : null;
+
+  return (
+    <div className="min-h-screen bg-[#FAF9F6] relative">
+      <div className="pattern-nodes" />
+
+      <div className="max-w-[1920px] mx-auto px-6 py-6 relative z-10">
+        {!isRunning ? (
+          <div className="flex flex-col items-center">
+            <div className="text-center mt-8 mb-8">
+              <h2 className="font-heading text-h1 text-[#36342E]">
+                Describe it. Build it. Ship it.
+              </h2>
+              <p className="text-[#6B6960] mt-2 text-base max-w-lg mx-auto">
+                Paste a PRD or pick a template. Purple Lab spins up autonomous agents
+                to build your project from scratch.
+              </p>
+            </div>
+
+            <div className="w-full max-w-3xl">
+              <PRDInput
+                onSubmit={handleStartBuild}
+                running={isRunning}
+                error={startError}
+                provider={selectedProvider}
+                onProviderChange={handleProviderChange}
+              />
+            </div>
+
+            {wasRunning && !isRunning && (
+              <div className="w-full max-w-3xl mt-4 flex flex-col gap-4">
+                <button
+                  onClick={async () => {
+                    try {
+                      const sessions = await api.getSessionsHistory();
+                      if (sessions.length > 0) navigate(`/project/${sessions[0].id}`);
+                    } catch { /* ignore */ }
+                  }}
+                  className="w-full px-6 py-4 rounded-card text-base font-bold bg-[#553DE9] text-white hover:bg-[#553DE9]/90 transition-all shadow-lg shadow-[#553DE9]/20"
+                >
+                  View Project -- Browse Files and Preview
+                </button>
+                <div className="flex items-center gap-3">
+                  <button onClick={() => setShowReport(!showReport)}
+                    className="px-4 py-2 rounded-card text-sm font-semibold border border-[#553DE9]/30 text-[#553DE9] hover:bg-[#553DE9]/5 transition-all">
+                    {showReport ? 'Hide Report' : 'Report'}
+                  </button>
+                  <button onClick={() => setShowMetrics(!showMetrics)}
+                    className="px-4 py-2 rounded-card text-sm font-semibold border border-[#ECEAE3] text-[#6B6960] hover:text-[#36342E] hover:bg-[#F8F4F0] transition-all">
+                    {showMetrics ? 'Hide Metrics' : 'Metrics'}
+                  </button>
+                </div>
+                <ReportPanel visible={showReport} />
+                <MetricsPanel visible={showMetrics} />
+              </div>
+            )}
+
+            <div className="w-full max-w-3xl mt-4">
+              <SessionHistory onLoadSession={handleLoadSession} />
+            </div>
+
+            <div className="mt-6 text-xs text-[#6B6960] flex items-center gap-2">
+              <div className={`w-2 h-2 rounded-full ${connected ? 'bg-[#1FC5A8]' : 'bg-[#C45B5B]'}`} />
+              {connected ? 'Connected to Purple Lab backend' : 'Waiting for backend connection...'}
+            </div>
+          </div>
+        ) : (
+          <>
+            <ErrorBoundary name="ControlBar">
+              <ControlBar status={status} prdSummary={prdSummary} onStop={handleStopBuild}
+                onPause={handlePause} onResume={handleResume} isPaused={isPaused} />
+            </ErrorBoundary>
+
+            <div className="mt-4">
+              <ErrorBoundary name="StatusOverview">
+                <StatusOverview status={status} />
+              </ErrorBoundary>
+            </div>
+
+            <div className="mt-4 grid grid-cols-12 gap-6" style={{ height: 'calc(100vh - 340px)', minHeight: '400px' }}>
+              <div className="col-span-3 flex flex-col gap-6">
+                <ErrorBoundary name="PhaseVisualizer">
+                  <PhaseVisualizer currentPhase={status?.phase || 'idle'} iteration={status?.iteration || 0} />
+                </ErrorBoundary>
+              </div>
+
+              <div className="col-span-5 flex flex-col gap-0 min-h-0">
+                <div className="flex items-center gap-1 mb-2 flex-shrink-0">
+                  <button onClick={() => setActiveTab('terminal')}
+                    className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all ${activeTab === 'terminal' ? 'bg-[#553DE9] text-white' : 'text-[#6B6960] hover:text-[#36342E] hover:bg-[#F8F4F0]'}`}>
+                    Terminal
+                  </button>
+                  <button onClick={() => setActiveTab('metrics')}
+                    className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all ${activeTab === 'metrics' ? 'bg-[#553DE9] text-white' : 'text-[#6B6960] hover:text-[#36342E] hover:bg-[#F8F4F0]'}`}>
+                    Metrics
+                  </button>
+                </div>
+                <div className="flex-1 min-h-0">
+                  <ErrorBoundary name="Terminal">
+                    {activeTab === 'terminal' ? (
+                      <TerminalOutput logs={logs} loading={logsLoading} subscribe={subscribe} />
+                    ) : (
+                      <MetricsPanel visible={true} />
+                    )}
+                  </ErrorBoundary>
+                </div>
+              </div>
+
+              <div className="col-span-4 flex flex-col gap-6 overflow-y-auto">
+                <ErrorBoundary name="AgentDashboard">
+                  <AgentDashboard agents={agents} loading={agentsLoading} />
+                </ErrorBoundary>
+                <ErrorBoundary name="QualityGates">
+                  <QualityGatesPanel checklist={checklist} loading={checklistLoading} />
+                </ErrorBoundary>
+              </div>
+            </div>
+
+            <div className="mt-6 grid grid-cols-12 gap-6">
+              <div className="col-span-6">
+                <ErrorBoundary name="FileBrowser">
+                  <FileBrowser files={files} loading={filesLoading} />
+                </ErrorBoundary>
+              </div>
+              <div className="col-span-6">
+                <ErrorBoundary name="MemoryViewer">
+                  <MemoryViewer memory={memory} loading={memoryLoading} />
+                </ErrorBoundary>
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}

@@ -9,7 +9,7 @@ interface QualityGatesPanelProps {
 const STATUS_STYLES: Record<ChecklistItem['status'], { badge: string; dot: string; label: string }> = {
   pass: { badge: 'bg-success/10 text-success border-success/20', dot: 'bg-success', label: 'Pass' },
   fail: { badge: 'bg-danger/10 text-danger border-danger/20', dot: 'bg-danger', label: 'Fail' },
-  skip: { badge: 'bg-slate/10 text-slate border-slate/20', dot: 'bg-slate/40', label: 'Skip' },
+  skip: { badge: 'bg-muted/10 text-muted border-muted/20', dot: 'bg-muted/40', label: 'Skip' },
   pending: { badge: 'bg-warning/10 text-warning border-warning/20', dot: 'bg-warning', label: 'Pending' },
 };
 
@@ -18,7 +18,7 @@ function GateItem({ item }: { item: ChecklistItem }) {
   const style = STATUS_STYLES[item.status];
 
   return (
-    <div className={`border rounded-xl overflow-hidden ${style.badge}`}>
+    <div className={`border rounded-card overflow-hidden ${style.badge}`}>
       <button
         type="button"
         className="w-full flex items-center gap-3 px-3 py-2.5 text-left"
@@ -30,7 +30,7 @@ function GateItem({ item }: { item: ChecklistItem }) {
           {style.label}
         </span>
         {item.details && (
-          <span className="text-xs text-slate/60 flex-shrink-0">
+          <span className="text-xs text-muted/60 flex-shrink-0">
             {expanded ? 'v' : '>'}
           </span>
         )}
@@ -50,26 +50,26 @@ export function QualityGatesPanel({ checklist, loading }: QualityGatesPanelProps
     : 0;
 
   return (
-    <div className="glass p-6">
+    <div className="card p-6">
       <div className="flex items-center justify-between mb-4">
-        <h3 className="text-sm font-semibold text-charcoal uppercase tracking-wider">
+        <h3 className="text-sm font-semibold text-ink uppercase tracking-wider">
           Quality Gates
         </h3>
         {checklist && (
-          <span className="font-mono text-xs text-slate">
+          <span className="font-mono text-xs text-muted">
             {checklist.passed}/{checklist.total} passed
           </span>
         )}
       </div>
 
       {loading && !checklist && (
-        <div className="text-center py-8 text-slate text-sm">Loading gates...</div>
+        <div className="text-center py-8 text-muted text-sm">Loading gates...</div>
       )}
 
       {!loading && !checklist && (
         <div className="text-center py-8">
-          <p className="text-slate text-sm">No quality gate data</p>
-          <p className="text-primary-wash text-xs mt-1">Gates run during verification phase</p>
+          <p className="text-muted text-sm">No quality gate data</p>
+          <p className="text-primary/60 text-xs mt-1">Gates run during verification phase</p>
         </div>
       )}
 
@@ -82,7 +82,7 @@ export function QualityGatesPanel({ checklist, loading }: QualityGatesPanelProps
               <span className="text-danger font-medium">{checklist.failed} failed</span>
             )}
             {checklist.skipped > 0 && (
-              <span className="text-slate">{checklist.skipped} skipped</span>
+              <span className="text-muted">{checklist.skipped} skipped</span>
             )}
             {checklist.pending > 0 && (
               <span className="text-warning">{checklist.pending} pending</span>

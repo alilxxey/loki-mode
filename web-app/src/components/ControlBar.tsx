@@ -1,3 +1,4 @@
+import { Square, Pause, Play } from 'lucide-react';
 import type { StatusResponse } from '../types/api';
 
 interface ControlBarProps {
@@ -45,35 +46,35 @@ export function ControlBar({ status, prdSummary, onStop, onPause, onResume, isPa
   const paused = isPaused ?? status?.paused ?? false;
 
   return (
-    <div className="glass px-5 py-3 flex items-center gap-6 text-sm">
+    <div className="card px-5 py-3 flex items-center gap-6 text-sm">
       {/* Phase */}
       <div className="flex items-center gap-2">
-        <span className="text-xs text-slate uppercase tracking-wider font-medium">Phase</span>
-        <span className="font-mono font-semibold text-charcoal">
+        <span className="text-xs text-muted uppercase tracking-wider font-medium">Phase</span>
+        <span className="font-mono font-semibold text-ink">
           {status?.phase || 'idle'}
         </span>
       </div>
 
-      <div className="w-px h-5 bg-surface" />
+      <div className="w-px h-5 bg-border" />
 
       {/* Complexity */}
       <div className="flex items-center gap-2">
-        <span className="text-xs text-slate uppercase tracking-wider font-medium">Complexity</span>
+        <span className="text-xs text-muted uppercase tracking-wider font-medium">Complexity</span>
         <span className={`font-mono font-semibold ${
           status?.complexity === 'complex' ? 'text-warning' :
-          status?.complexity === 'simple' ? 'text-success' : 'text-charcoal'
+          status?.complexity === 'simple' ? 'text-success' : 'text-ink'
         }`}>
           {status?.complexity || 'standard'}
         </span>
       </div>
 
-      <div className="w-px h-5 bg-surface" />
+      <div className="w-px h-5 bg-border" />
 
       {/* Model tier */}
       <div className="flex items-center gap-2">
-        <span className="text-xs text-slate uppercase tracking-wider font-medium">Model</span>
+        <span className="text-xs text-muted uppercase tracking-wider font-medium">Model</span>
         <span className={`font-mono font-semibold px-2 py-0.5 rounded-md text-xs ${
-          tier === 'Opus' ? 'bg-accent-product/10 text-accent-product' :
+          tier === 'Opus' ? 'bg-primary/10 text-primary' :
           tier === 'Haiku' ? 'bg-success/10 text-success' :
           'bg-primary/10 text-primary'
         }`}>
@@ -81,20 +82,20 @@ export function ControlBar({ status, prdSummary, onStop, onPause, onResume, isPa
         </span>
       </div>
 
-      <div className="w-px h-5 bg-surface" />
+      <div className="w-px h-5 bg-border" />
 
       {/* Tasks */}
       <div className="flex items-center gap-2">
-        <span className="text-xs text-slate uppercase tracking-wider font-medium">Tasks</span>
-        <span className="font-mono text-charcoal">
+        <span className="text-xs text-muted uppercase tracking-wider font-medium">Tasks</span>
+        <span className="font-mono text-ink">
           {status?.current_task ? (
             <span className="text-xs">{status.current_task}</span>
           ) : (
-            <span className="text-slate">--</span>
+            <span className="text-muted">--</span>
           )}
         </span>
         {(status?.pending_tasks ?? 0) > 0 && (
-          <span className="text-xs text-primary-wash font-mono">
+          <span className="text-xs text-primary font-mono">
             +{status?.pending_tasks} pending
           </span>
         )}
@@ -103,10 +104,10 @@ export function ControlBar({ status, prdSummary, onStop, onPause, onResume, isPa
       {/* PRD summary pill */}
       {prdSummary && (
         <>
-          <div className="w-px h-5 bg-surface" />
+          <div className="w-px h-5 bg-border" />
           <div className="flex items-center gap-2 min-w-0">
-            <span className="text-xs text-slate uppercase tracking-wider font-medium flex-shrink-0">Building</span>
-            <span className="text-xs font-mono text-charcoal truncate max-w-[220px]" title={prdSummary}>
+            <span className="text-xs text-muted uppercase tracking-wider font-medium flex-shrink-0">Building</span>
+            <span className="text-xs font-mono text-ink truncate max-w-[220px]" title={prdSummary}>
               {prdSummary.length > 60 ? prdSummary.slice(0, 60) + '...' : prdSummary}
             </span>
           </div>
@@ -117,7 +118,7 @@ export function ControlBar({ status, prdSummary, onStop, onPause, onResume, isPa
 
       {/* Uptime */}
       {(status?.uptime ?? 0) > 0 && (
-        <span className="font-mono text-xs text-slate">
+        <span className="font-mono text-xs text-muted">
           {formatUptime(status?.uptime ?? 0)}
         </span>
       )}
@@ -126,8 +127,9 @@ export function ControlBar({ status, prdSummary, onStop, onPause, onResume, isPa
       {(onPause || onResume) && (
         <button
           onClick={paused ? onResume : onPause}
-          className="px-4 py-1.5 rounded-xl text-xs font-semibold border border-warning/30 text-warning hover:bg-warning/10 transition-colors"
+          className="flex items-center gap-1.5 px-4 py-1.5 rounded-btn text-xs font-semibold border border-warning/30 text-warning hover:bg-warning/10 transition-colors"
         >
+          {paused ? <Play size={14} /> : <Pause size={14} />}
           {paused ? 'Resume' : 'Pause'}
         </button>
       )}
@@ -136,8 +138,9 @@ export function ControlBar({ status, prdSummary, onStop, onPause, onResume, isPa
       {onStop && (
         <button
           onClick={onStop}
-          className="px-4 py-1.5 rounded-xl text-xs font-semibold bg-danger/10 text-danger border border-danger/20 hover:bg-danger/20 transition-colors"
+          className="flex items-center gap-1.5 px-4 py-1.5 rounded-btn text-xs font-semibold bg-danger/10 text-danger border border-danger/20 hover:bg-danger/20 transition-colors"
         >
+          <Square size={14} />
           Stop
         </button>
       )}

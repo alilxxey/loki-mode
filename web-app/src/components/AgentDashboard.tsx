@@ -6,12 +6,12 @@ interface AgentDashboardProps {
 }
 
 const AGENT_TYPE_COLORS: Record<string, string> = {
-  architect: 'bg-accent-product/10 text-accent-product border-accent-product/20',
+  architect: 'bg-primary/10 text-primary border-primary/20',
   developer: 'bg-primary/10 text-primary border-primary/20',
   tester: 'bg-success/10 text-success border-success/20',
   reviewer: 'bg-warning/10 text-warning border-warning/20',
-  planner: 'bg-primary-wash/20 text-charcoal border-primary-wash/30',
-  default: 'bg-surface/30 text-slate border-surface/50',
+  planner: 'bg-primary/60/20 text-ink border-primary/60/30',
+  default: 'bg-border/30 text-muted border-border/50',
 };
 
 function getAgentColor(type: string): string {
@@ -28,24 +28,24 @@ export function AgentDashboard({ agents, loading }: AgentDashboardProps) {
   const inactiveAgents = agents?.filter(a => !a.alive) || [];
 
   return (
-    <div className="glass p-6">
+    <div className="card p-6">
       <div className="flex items-center justify-between mb-4">
-        <h3 className="text-sm font-semibold text-charcoal uppercase tracking-wider">
+        <h3 className="text-sm font-semibold text-ink uppercase tracking-wider">
           Agents
         </h3>
-        <span className="font-mono text-xs text-slate">
+        <span className="font-mono text-xs text-muted">
           {activeAgents.length} active
         </span>
       </div>
 
       {loading && !agents && (
-        <div className="text-center py-8 text-slate text-sm">Loading agents...</div>
+        <div className="text-center py-8 text-muted text-sm">Loading agents...</div>
       )}
 
       {!loading && agents?.length === 0 && (
         <div className="text-center py-8">
-          <p className="text-slate text-sm">No agents running</p>
-          <p className="text-primary-wash text-xs mt-1">Start a build to spawn agents</p>
+          <p className="text-muted text-sm">No agents running</p>
+          <p className="text-primary/60 text-xs mt-1">Start a build to spawn agents</p>
         </div>
       )}
 
@@ -61,7 +61,7 @@ export function AgentDashboard({ agents, loading }: AgentDashboardProps) {
       {/* Inactive agents (collapsed) */}
       {inactiveAgents.length > 0 && (
         <details className="mt-3">
-          <summary className="text-xs text-slate cursor-pointer hover:text-charcoal transition-colors">
+          <summary className="text-xs text-muted cursor-pointer hover:text-ink transition-colors">
             {inactiveAgents.length} completed
           </summary>
           <div className="space-y-1.5 mt-2">
@@ -80,18 +80,18 @@ function AgentCard({ agent, compact }: { agent: Agent; compact?: boolean }) {
 
   if (compact) {
     return (
-      <div className="flex items-center gap-2 px-2 py-1 rounded-lg bg-white/30 text-xs">
-        <div className="w-1.5 h-1.5 rounded-full bg-slate/30" />
-        <span className="font-medium text-slate truncate">{agent.name || agent.id}</span>
-        <span className="text-primary-wash ml-auto">{agent.type}</span>
+      <div className="flex items-center gap-2 px-2 py-1 rounded-btn bg-hover text-xs">
+        <div className="w-1.5 h-1.5 rounded-full bg-muted/30" />
+        <span className="font-medium text-muted truncate">{agent.name || agent.id}</span>
+        <span className="text-primary/60 ml-auto">{agent.type}</span>
       </div>
     );
   }
 
   return (
-    <div className={`flex items-start gap-3 px-3 py-2.5 rounded-xl border ${colorClass}`}>
+    <div className={`flex items-start gap-3 px-3 py-2.5 rounded-card border ${colorClass}`}>
       <div className="flex-shrink-0 mt-0.5">
-        <div className={`w-2.5 h-2.5 rounded-full ${agent.alive ? 'bg-success phase-active' : 'bg-slate/30'}`} />
+        <div className={`w-2.5 h-2.5 rounded-full ${agent.alive ? 'bg-success phase-active' : 'bg-muted/30'}`} />
       </div>
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
@@ -108,7 +108,7 @@ function AgentCard({ agent, compact }: { agent: Agent; compact?: boolean }) {
         )}
       </div>
       {agent.pid && (
-        <span className="text-[10px] font-mono text-slate/50 flex-shrink-0">PID {agent.pid}</span>
+        <span className="text-[10px] font-mono text-muted-accessible flex-shrink-0">PID {agent.pid}</span>
       )}
     </div>
   );

@@ -140,9 +140,9 @@ export function PRDInput({ onSubmit, running, error, provider: providerProp, onP
         onCancel={() => setShowPlanModal(false)}
       />
     )}
-    <div className="glass p-6 flex flex-col">
+    <div className="card p-6 flex flex-col">
       <div className="flex items-center justify-between mb-4">
-        <h3 className="text-sm font-semibold text-charcoal uppercase tracking-wider">
+        <h3 className="text-sm font-semibold text-ink uppercase tracking-wider">
           Product Requirements
         </h3>
         <div className="flex items-center gap-2">
@@ -150,13 +150,13 @@ export function PRDInput({ onSubmit, running, error, provider: providerProp, onP
           <div className="relative">
             <button
               onClick={() => setShowTemplates(!showTemplates)}
-              className="text-xs font-medium px-3 py-1.5 rounded-xl border border-primary/20 text-primary hover:bg-primary/5 transition-colors"
+              className="text-xs font-medium px-3 py-1.5 rounded-card border border-primary/20 text-primary hover:bg-primary/5 transition-colors"
             >
               {selectedTemplate || 'Templates'}
             </button>
 
             {showTemplates && (
-              <div className="absolute right-0 top-full mt-1 w-56 glass-subtle rounded-xl overflow-hidden z-20 shadow-glass">
+              <div className="absolute right-0 top-full mt-1 w-56 card rounded-card overflow-hidden z-20 shadow-card-hover">
                 <div className="py-1 max-h-64 overflow-y-auto terminal-scroll">
                   {templateLoadError && (
                     <div className="px-3 py-2 text-xs text-warning border-b border-warning/10">
@@ -164,13 +164,13 @@ export function PRDInput({ onSubmit, running, error, provider: providerProp, onP
                     </div>
                   )}
                   {!templateLoadError && templates.length === 0 && (
-                    <div className="px-3 py-2 text-xs text-slate">Loading...</div>
+                    <div className="px-3 py-2 text-xs text-muted">Loading...</div>
                   )}
                   {templates.map((t) => (
                     <button
                       key={t.filename}
                       onClick={() => handleTemplateSelect(t.filename, t.name)}
-                      className="w-full text-left px-3 py-2 text-sm text-charcoal hover:bg-primary/5 transition-colors"
+                      className="w-full text-left px-3 py-2 text-sm text-ink hover:bg-primary/5 transition-colors"
                     >
                       {t.name}
                     </button>
@@ -187,13 +187,13 @@ export function PRDInput({ onSubmit, running, error, provider: providerProp, onP
         value={prd}
         onChange={(e) => setPrd(e.target.value)}
         placeholder="Paste your PRD here, or select a template above to get started..."
-        className="flex-1 min-h-[280px] w-full bg-white/40 rounded-xl border border-white/30 px-4 py-3 text-sm font-mono text-charcoal placeholder:text-primary-wash resize-none focus:outline-none focus:ring-2 focus:ring-accent-product/20 focus:border-accent-product/30 transition-all"
+        className="flex-1 min-h-[280px] w-full bg-card rounded-card border border-border-light px-4 py-3 text-sm font-mono text-ink placeholder:text-primary/60 resize-none focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
         spellCheck={false}
       />
 
       {/* Project directory field */}
       <div className="mt-3">
-        <label className="block text-xs text-slate font-medium mb-1 uppercase tracking-wider">
+        <label className="block text-xs text-muted font-medium mb-1 uppercase tracking-wider">
           Project Directory
         </label>
         <input
@@ -201,17 +201,17 @@ export function PRDInput({ onSubmit, running, error, provider: providerProp, onP
           value={projectDir}
           onChange={(e) => setProjectDir(e.target.value)}
           placeholder="Leave blank to auto-create, or type a path (e.g. /Users/you/my-project)"
-          className="w-full bg-white/40 rounded-xl border border-white/30 px-4 py-2 text-sm font-mono text-charcoal placeholder:text-primary-wash/70 focus:outline-none focus:ring-2 focus:ring-accent-product/20 focus:border-accent-product/30 transition-all"
+          className="w-full bg-card rounded-card border border-border-light px-4 py-2 text-sm font-mono text-ink placeholder:text-primary/60/70 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
           spellCheck={false}
         />
-        <p className="text-[10px] text-slate mt-1">
+        <p className="text-[10px] text-muted-accessible mt-1">
           Type a path or leave blank to auto-create under ~/purple-lab-projects/
         </p>
       </div>
 
       {/* Error display */}
       {error && (
-        <div className="mt-3 px-3 py-2 rounded-lg bg-danger/10 border border-danger/20 text-danger text-xs font-medium">
+        <div className="mt-3 px-3 py-2 rounded-btn bg-danger/10 border border-danger/20 text-danger text-xs font-medium">
           {error}
         </div>
       )}
@@ -222,20 +222,20 @@ export function PRDInput({ onSubmit, running, error, provider: providerProp, onP
         <button
           onClick={() => setQuickMode(!quickMode)}
           title="Quick Mode: 3 iterations max, faster builds"
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all ${
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-card text-xs font-semibold border transition-all ${
             quickMode
-              ? 'bg-accent-product/10 border-accent-product/30 text-accent-product'
-              : 'border-white/30 text-slate hover:text-charcoal hover:bg-white/20'
+              ? 'bg-primary/10 border-primary/30 text-primary'
+              : 'border-border-light text-muted hover:text-ink hover:bg-card'
           }`}
         >
-          <span className={`w-1.5 h-1.5 rounded-full ${quickMode ? 'bg-accent-product' : 'bg-slate/40'}`} />
+          <span className={`w-1.5 h-1.5 rounded-full ${quickMode ? 'bg-primary' : 'bg-muted/40'}`} />
           Quick
         </button>
 
         <div className="flex-1" />
 
         {/* Character count */}
-        <span className="text-xs text-slate font-mono">
+        <span className="text-xs text-muted font-mono">
           {prd.length.toLocaleString()} chars
         </span>
 
@@ -243,10 +243,10 @@ export function PRDInput({ onSubmit, running, error, provider: providerProp, onP
         <button
           onClick={handleEstimate}
           disabled={!prd.trim() || running || planLoading}
-          className={`px-4 py-2.5 rounded-xl text-sm font-semibold border transition-all ${
+          className={`px-4 py-2.5 rounded-card text-sm font-semibold border transition-all ${
             !prd.trim() || running || planLoading
-              ? 'border-white/20 text-slate/40 cursor-not-allowed'
-              : 'border-accent-product/30 text-accent-product hover:bg-accent-product/5'
+              ? 'border-border text-muted/40 cursor-not-allowed'
+              : 'border-primary/30 text-primary hover:bg-primary/5'
           }`}
         >
           {planLoading ? 'Analyzing...' : 'Estimate'}
@@ -256,10 +256,10 @@ export function PRDInput({ onSubmit, running, error, provider: providerProp, onP
         <button
           onClick={handleSubmit}
           disabled={!prd.trim() || running || submitting}
-          className={`px-6 py-2.5 rounded-xl text-sm font-semibold transition-all ${
+          className={`px-6 py-2.5 rounded-card text-sm font-semibold transition-all ${
             !prd.trim() || running || submitting
-              ? 'bg-surface/50 text-slate cursor-not-allowed'
-              : 'bg-accent-product text-white hover:bg-accent-product/90 shadow-glass-subtle'
+              ? 'bg-primary/10 text-muted cursor-not-allowed'
+              : 'bg-primary text-white hover:bg-primary/90 shadow-button'
           }`}
         >
           {submitting ? 'Starting...' : running ? 'Building...' : 'Start Build'}

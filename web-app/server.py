@@ -109,6 +109,44 @@ class SessionState:
         self.log_lines = []
 
 
+def _kill_orphan_loki_processes(project_dir: str = "") -> None:
+    """Kill any orphaned loki-run processes."""
+    import subprocess as _sp
+    patterns: list[str] = []
+    if project_dir:
+        patterns.append(f"loki-run.*{project_dir}")
+    patterns.append("loki-run-")
+
+    killed_pids: set[int] = set()
+    for pattern in patterns:
+        try:
+            result = _sp.run(
+                ["pgrep", "-f", pattern],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode == 0:
+                for pid_str in result.stdout.strip().splitlines():
+                    try:
+                        pid = int(pid_str.strip())
+                        if pid not in killed_pids:
+                            os.kill(pid, signal.SIGTERM)
+                            killed_pids.add(pid)
+                    except (ValueError, ProcessLookupError, PermissionError):
+                        pass
+        except Exception:
+            pass
+
+    # Wait briefly then SIGKILL any survivors
+    if killed_pids:
+        import time as _time
+        _time.sleep(2)
+        for pid in killed_pids:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+
+
 session = SessionState()
 
 # ---------------------------------------------------------------------------
@@ -160,6 +198,11 @@ class DirectoryCreateRequest(BaseModel):
 class FileDeleteRequest(BaseModel):
     path: str
 
+
+class ChatRequest(BaseModel):
+    message: str
+    mode: str = "quick"  # "quick" or "standard"
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -194,6 +237,20 @@ def _safe_resolve(base: Path, requested: str) -> Optional[Path]:
         return resolved
     except (ValueError, OSError):
         pass
+    return None
+
+
+def _find_session_dir(session_id: str) -> Optional[Path]:
+    """Find a session's project directory by ID."""
+    search_dirs = [
+        Path.home() / "purple-lab-projects",
+        Path.home() / ".loki-sessions",
+        Path.home() / ".loki" / "sessions",
+    ]
+    for base_dir in search_dirs:
+        candidate = base_dir / session_id
+        if candidate.is_dir():
+            return candidate
     return None
 
 
@@ -425,9 +482,66 @@ async def stop_session() -> JSONResponse:
             except Exception:
                 pass
 
+        # Kill any orphaned loki-run processes for this project
+        if session.project_dir:
+            _kill_orphan_loki_processes(session.project_dir)
+
         await _broadcast({"type": "session_end", "data": {"message": "Session stopped by user"}})
 
         return JSONResponse(content={"stopped": True, "message": "Session stopped"})
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Clean up any running session when Purple Lab shuts down."""
+    if not session.running or session.process is None:
+        return
+
+    project_dir = session.project_dir
+    session.running = False
+    await session.cleanup()
+
+    proc = session.process
+    if proc and proc.poll() is None:
+        if sys.platform != "win32":
+            try:
+                pgid = os.getpgid(proc.pid)
+                os.killpg(pgid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError, OSError):
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+        else:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            if sys.platform != "win32":
+                try:
+                    pgid = os.getpgid(proc.pid)
+                    os.killpg(pgid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError, OSError):
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+            else:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            try:
+                proc.wait(timeout=3)
+            except Exception:
+                pass
+
+    # Kill any orphaned loki-run processes for this project
+    if project_dir:
+        _kill_orphan_loki_processes(project_dir)
 
 
 @app.get("/api/session/status")
@@ -649,15 +763,43 @@ async def resume_session() -> JSONResponse:
 
 @app.get("/api/templates")
 async def get_templates() -> JSONResponse:
-    """List available PRD templates."""
+    """List available PRD templates with description and category."""
     templates_dir = PROJECT_ROOT / "templates"
     if not templates_dir.is_dir():
         return JSONResponse(content=[])
 
+    # Category mapping from filename
+    _category_map = {
+        'static-landing-page': 'Website', 'blog-platform': 'Website', 'e-commerce': 'Website',
+        'full-stack-demo': 'Website', 'dashboard': 'Website',
+        'rest-api': 'API', 'rest-api-auth': 'API', 'api-only': 'API', 'microservice': 'API',
+        'cli-tool': 'CLI', 'npm-library': 'CLI',
+        'discord-bot': 'Bot', 'slack-bot': 'Bot', 'ai-chatbot': 'Bot',
+        'data-pipeline': 'Data', 'web-scraper': 'Data',
+    }
+
     templates = []
     for f in sorted(templates_dir.glob("*.md")):
         name = f.stem.replace("-", " ").replace("_", " ").title()
-        templates.append({"name": name, "filename": f.name})
+        # Extract description: first non-heading, non-blank paragraph
+        description = ""
+        try:
+            text = f.read_text(errors="replace")
+            for line in text.splitlines():
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#"):
+                    continue
+                description = stripped[:200]
+                break
+        except OSError:
+            pass
+        category = _category_map.get(f.stem, "Other")
+        templates.append({
+            "name": name,
+            "filename": f.name,
+            "description": description,
+            "category": category,
+        })
     return JSONResponse(content=templates)
 
 
@@ -1403,6 +1545,114 @@ async def onboard_session(req: OnboardRequest) -> JSONResponse:
         "claude_md": claude_content,
         "returncode": rc,
     })
+
+
+# ---------------------------------------------------------------------------
+# CLI feature endpoints (chat, review, test, explain, export)
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/sessions/{session_id}/chat")
+async def chat_session(session_id: str, req: ChatRequest) -> JSONResponse:
+    """Run iterative chat command on a project."""
+    import re
+    if not re.match(r"^[a-zA-Z0-9._-]+$", session_id):
+        return JSONResponse(status_code=400, content={"error": "Invalid session ID"})
+
+    # Find project directory
+    target = _find_session_dir(session_id)
+
+    if target is None:
+        return JSONResponse(status_code=404, content={"error": "Session not found"})
+
+    # Build command based on mode
+    if req.mode == "quick":
+        cmd_args = ["quick", req.message]
+    else:
+        cmd_args = ["start", "--provider", "claude", str(target / "PRD.md")]
+
+    rc, output = await asyncio.get_running_loop().run_in_executor(
+        None, lambda: _run_loki_cmd(cmd_args, cwd=str(target), timeout=300)
+    )
+
+    # Detect changed files
+    files_changed: list[str] = []
+    try:
+        import subprocess as _sp
+        result = _sp.run(
+            ["git", "diff", "--name-only", "HEAD~1"],
+            cwd=str(target), capture_output=True, text=True, timeout=10
+        )
+        if result.returncode == 0:
+            files_changed = [f for f in result.stdout.strip().splitlines() if f]
+    except Exception:
+        pass
+
+    return JSONResponse(content={
+        "output": output,
+        "files_changed": files_changed,
+        "returncode": rc,
+    })
+
+
+@app.post("/api/sessions/{session_id}/review")
+async def review_session(session_id: str) -> JSONResponse:
+    """Run loki review on a project."""
+    import re
+    if not re.match(r"^[a-zA-Z0-9._-]+$", session_id):
+        return JSONResponse(status_code=400, content={"error": "Invalid session ID"})
+    target = _find_session_dir(session_id)
+    if target is None:
+        return JSONResponse(status_code=404, content={"error": "Session not found"})
+    rc, output = await asyncio.get_running_loop().run_in_executor(
+        None, lambda: _run_loki_cmd(["review", str(target)], cwd=str(target), timeout=120)
+    )
+    return JSONResponse(content={"output": output, "returncode": rc})
+
+
+@app.post("/api/sessions/{session_id}/test")
+async def test_session(session_id: str) -> JSONResponse:
+    """Run loki test on a project."""
+    import re
+    if not re.match(r"^[a-zA-Z0-9._-]+$", session_id):
+        return JSONResponse(status_code=400, content={"error": "Invalid session ID"})
+    target = _find_session_dir(session_id)
+    if target is None:
+        return JSONResponse(status_code=404, content={"error": "Session not found"})
+    rc, output = await asyncio.get_running_loop().run_in_executor(
+        None, lambda: _run_loki_cmd(["test", "--dir", str(target)], cwd=str(target), timeout=120)
+    )
+    return JSONResponse(content={"output": output, "returncode": rc})
+
+
+@app.post("/api/sessions/{session_id}/explain")
+async def explain_session(session_id: str) -> JSONResponse:
+    """Run loki explain on a project."""
+    import re
+    if not re.match(r"^[a-zA-Z0-9._-]+$", session_id):
+        return JSONResponse(status_code=400, content={"error": "Invalid session ID"})
+    target = _find_session_dir(session_id)
+    if target is None:
+        return JSONResponse(status_code=404, content={"error": "Session not found"})
+    rc, output = await asyncio.get_running_loop().run_in_executor(
+        None, lambda: _run_loki_cmd(["explain", str(target)], cwd=str(target), timeout=120)
+    )
+    return JSONResponse(content={"output": output, "returncode": rc})
+
+
+@app.post("/api/sessions/{session_id}/export")
+async def export_session(session_id: str) -> JSONResponse:
+    """Run loki export json on a project."""
+    import re
+    if not re.match(r"^[a-zA-Z0-9._-]+$", session_id):
+        return JSONResponse(status_code=400, content={"error": "Invalid session ID"})
+    target = _find_session_dir(session_id)
+    if target is None:
+        return JSONResponse(status_code=404, content={"error": "Session not found"})
+    rc, output = await asyncio.get_running_loop().run_in_executor(
+        None, lambda: _run_loki_cmd(["export", "json"], cwd=str(target), timeout=60)
+    )
+    return JSONResponse(content={"output": output, "returncode": rc})
 
 
 # ---------------------------------------------------------------------------

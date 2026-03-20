@@ -69,22 +69,22 @@ export function ReportPanel({ visible }: ReportPanelProps) {
   };
 
   return (
-    <div className="glass p-4 rounded-2xl">
+    <div className="card p-4 rounded-card">
       <div className="flex items-center justify-between mb-3">
-        <h3 className="text-sm font-semibold text-charcoal uppercase tracking-wider">
+        <h3 className="text-sm font-semibold text-ink uppercase tracking-wider">
           Session Report
         </h3>
         <div className="flex items-center gap-2">
           {/* Format selector */}
-          <div className="flex items-center gap-1 glass-subtle rounded-xl p-1">
+          <div className="flex items-center gap-1 card rounded-card p-1">
             {(['markdown', 'html'] as const).map((f) => (
               <button
                 key={f}
                 onClick={() => setFormat(f)}
-                className={`px-3 py-1 text-xs font-semibold rounded-lg transition-all ${
+                className={`px-3 py-1 text-xs font-semibold rounded-btn transition-all ${
                   format === f
-                    ? 'bg-accent-product text-white shadow-sm'
-                    : 'text-slate hover:text-charcoal hover:bg-white/40'
+                    ? 'bg-primary text-white shadow-sm'
+                    : 'text-muted hover:text-ink hover:bg-hover'
                 }`}
               >
                 {f.toUpperCase()}
@@ -94,7 +94,7 @@ export function ReportPanel({ visible }: ReportPanelProps) {
           <button
             onClick={handleGenerate}
             disabled={loadingReport}
-            className="px-4 py-1.5 rounded-xl text-xs font-semibold bg-accent-product text-white hover:bg-accent-product/90 disabled:opacity-50 transition-all"
+            className="px-4 py-1.5 rounded-card text-xs font-semibold bg-primary text-white hover:bg-primary/90 disabled:opacity-50 transition-all"
           >
             {loadingReport ? 'Generating...' : 'Generate Report'}
           </button>
@@ -102,7 +102,7 @@ export function ReportPanel({ visible }: ReportPanelProps) {
       </div>
 
       {error && (
-        <div className="mb-3 px-3 py-2 rounded-lg bg-danger/10 border border-danger/20 text-danger text-xs">
+        <div className="mb-3 px-3 py-2 rounded-btn bg-danger/10 border border-danger/20 text-danger text-xs">
           {error}
         </div>
       )}
@@ -110,50 +110,50 @@ export function ReportPanel({ visible }: ReportPanelProps) {
       {report && (
         <div className="mt-3">
           <div className="flex items-center gap-2 mb-2">
-            <span className="text-xs text-slate">
+            <span className="text-xs text-muted">
               Report generated ({report.format})
             </span>
             <div className="flex-1" />
             <button
               onClick={() => handleCopy(report.content)}
-              className="px-3 py-1 text-xs font-medium text-slate hover:text-charcoal border border-white/30 rounded-lg hover:bg-white/30 transition-all"
+              className="px-3 py-1 text-xs font-medium text-muted hover:text-ink border border-border-light rounded-btn hover:bg-hover transition-all"
             >
               {copied ? 'Copied' : 'Copy'}
             </button>
             <button
               onClick={handleDownload}
-              className="px-3 py-1 text-xs font-medium text-slate hover:text-charcoal border border-white/30 rounded-lg hover:bg-white/30 transition-all"
+              className="px-3 py-1 text-xs font-medium text-muted hover:text-ink border border-border-light rounded-btn hover:bg-hover transition-all"
             >
               Download
             </button>
             <button
               onClick={handleShare}
               disabled={loadingShare}
-              className="px-3 py-1 text-xs font-medium bg-accent-product/10 text-accent-product border border-accent-product/20 rounded-lg hover:bg-accent-product/20 disabled:opacity-50 transition-all"
+              className="px-3 py-1 text-xs font-medium bg-primary/10 text-primary border border-primary/20 rounded-btn hover:bg-primary/20 disabled:opacity-50 transition-all"
             >
               {loadingShare ? 'Sharing...' : 'Share as Gist'}
             </button>
           </div>
 
           {shareResult && (
-            <div className="mb-2 flex items-center gap-2 px-3 py-2 rounded-lg bg-success/10 border border-success/20">
+            <div className="mb-2 flex items-center gap-2 px-3 py-2 rounded-btn bg-success/10 border border-success/20">
               <span className="text-xs text-success font-medium">Shared:</span>
               {shareResult.url ? (
                 <a
                   href={shareResult.url}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-xs text-accent-product underline flex-1 truncate"
+                  className="text-xs text-primary underline flex-1 truncate"
                 >
                   {shareResult.url}
                 </a>
               ) : (
-                <span className="text-xs text-slate flex-1">No URL returned</span>
+                <span className="text-xs text-muted flex-1">No URL returned</span>
               )}
               {shareResult.url && (
                 <button
                   onClick={() => handleCopy(shareResult.url)}
-                  className="text-xs text-slate hover:text-charcoal"
+                  className="text-xs text-muted hover:text-ink"
                 >
                   Copy URL
                 </button>
@@ -161,7 +161,7 @@ export function ReportPanel({ visible }: ReportPanelProps) {
             </div>
           )}
 
-          <pre className="text-[11px] font-mono text-charcoal bg-black/5 rounded-xl p-3 overflow-auto max-h-64 whitespace-pre-wrap terminal-scroll">
+          <pre className="text-[11px] font-mono text-ink bg-black/5 rounded-card p-3 overflow-auto max-h-64 whitespace-pre-wrap terminal-scroll">
             {report.content || '(empty report)'}
           </pre>
         </div>
