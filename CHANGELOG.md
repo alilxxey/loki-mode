@@ -5,6 +5,22 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [6.39.0] - 2026-03-19
+
+### Added
+- URL-based project routing: `/project/:sessionId` URLs persist across refresh (React Router)
+- Live preview server: `GET /api/sessions/:id/preview/:path` serves project files with correct MIME types, enabling HTML/CSS/JS preview in iframe
+- ProjectPage component with lazy loading (code-split 8.4KB chunk)
+- Line numbers in code viewer with hover highlighting
+- File size and type display in code viewer header
+- Scroll position resets when switching files
+- Session state persistence: provider, active tab, current PRD survive page refresh via sessionStorage
+
+### Changed
+- Session history navigation uses URL (`/project/:id`) instead of in-memory state
+- "View Project" button navigates to URL route instead of loading inline
+- Preview iframe uses real URL (`/api/sessions/:id/preview/index.html`) instead of srcDoc, so relative CSS/JS/image assets load correctly
+
 ## [6.38.5] - 2026-03-19
 
 ### Fixed

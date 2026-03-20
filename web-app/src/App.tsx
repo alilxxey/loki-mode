@@ -1,4 +1,5 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, lazy, Suspense } from 'react';
+import { Routes, Route, useNavigate } from 'react-router-dom';
 import { api } from './api/client';
 import { usePolling } from './hooks/usePolling';
 import { useWebSocket, StateUpdate } from './hooks/useWebSocket';
@@ -16,30 +17,44 @@ import { MemoryViewer } from './components/MemoryViewer';
 import { ReportPanel } from './components/ReportPanel';
 import { MetricsPanel } from './components/MetricsPanel';
 import { SessionHistory } from './components/SessionHistory';
-import { ProjectWorkspace } from './components/ProjectWorkspace';
-import type { StatusResponse, Agent, LogEntry, FileNode } from './types/api';
-import type { SessionDetail } from './api/client';
+import type { StatusResponse, Agent, LogEntry } from './types/api';
+
+const ProjectPage = lazy(() => import('./pages/ProjectPage'));
 
 export default function App() {
+  return (
+    <Routes>
+      <Route path="/" element={<HomePage />} />
+      <Route path="/project/:sessionId" element={
+        <Suspense fallback={<div className="h-screen bg-background flex items-center justify-center text-slate">Loading...</div>}>
+          <ProjectPage />
+        </Suspense>
+      } />
+    </Routes>
+  );
+}
+
+function HomePage() {
+  const navigate = useNavigate();
   const [startError, setStartError] = useState<string | null>(null);
-  // Restore isRunning from sessionStorage so page refresh during build doesn't flash landing
   const [isRunning, setIsRunning] = useState(() => sessionStorage.getItem('pl_running') === '1');
   const [isPaused, setIsPaused] = useState(false);
-  const [currentPrd, setCurrentPrd] = useState<string | null>(null);
+  const [currentPrd, setCurrentPrd] = useState<string | null>(() => sessionStorage.getItem('pl_prd'));
   const [wasRunning, setWasRunning] = useState(false);
   const [showReport, setShowReport] = useState(false);
   const [showMetrics, setShowMetrics] = useState(false);
-  const [activeTab, setActiveTab] = useState<'terminal' | 'metrics'>('terminal');
-  const [selectedProvider, setSelectedProvider] = useState('claude');
-  const [viewingSession, setViewingSession] = useState<SessionDetail | null>(null);
+  const [activeTab, setActiveTab] = useState<'terminal' | 'metrics'>(
+    () => (sessionStorage.getItem('pl_tab') as 'terminal' | 'metrics') || 'terminal'
+  );
+  const [selectedProvider, setSelectedProvider] = useState(
+    () => sessionStorage.getItem('pl_provider') || 'claude'
+  );
 
   // Primary state -- populated by WebSocket state_update pushes
   const [wsStatus, setWsStatus] = useState<StatusResponse | null>(null);
   const [wsAgents, setWsAgents] = useState<Agent[] | null>(null);
   const [wsLogs, setWsLogs] = useState<LogEntry[] | null>(null);
 
-  // Called by WebSocket hook when a state_update message arrives.
-  // A null update means the WebSocket disconnected -- clear stale data.
   const handleStateUpdate = useCallback((update: StateUpdate) => {
     if (!update) {
       setWsStatus(null);
@@ -56,11 +71,9 @@ export default function App() {
 
   const { connected, subscribe } = useWebSocket(handleStateUpdate);
 
-  // Fallback HTTP poll for status (30s) -- only when WebSocket is disconnected
   const fetchStatus = useCallback(() => api.getStatus(), []);
   const { data: httpStatus } = usePolling(fetchStatus, 30000, !connected);
 
-  // Sync isRunning and status from HTTP fallback when WebSocket has no data
   useEffect(() => {
     if (wsStatus === null && httpStatus !== null) {
       setIsRunning(httpStatus.running ?? false);
@@ -68,14 +81,18 @@ export default function App() {
     }
   }, [httpStatus, wsStatus]);
 
-  // Persist isRunning to sessionStorage so refresh doesn't flash landing page
+  // Persist state to sessionStorage
   useEffect(() => {
     sessionStorage.setItem('pl_running', isRunning ? '1' : '0');
     if (isRunning) setWasRunning(true);
   }, [isRunning]);
+  useEffect(() => {
+    if (currentPrd) sessionStorage.setItem('pl_prd', currentPrd);
+    else sessionStorage.removeItem('pl_prd');
+  }, [currentPrd]);
+  useEffect(() => { sessionStorage.setItem('pl_provider', selectedProvider); }, [selectedProvider]);
+  useEffect(() => { sessionStorage.setItem('pl_tab', activeTab); }, [activeTab]);
 
-  // Rarely-changing data: memory, checklist, files -- slow HTTP polls (30s)
-  // These are not pushed over WebSocket since they change infrequently
   const fetchMemory = useCallback(() => api.getMemorySummary(), []);
   const fetchChecklist = useCallback(() => api.getChecklist(), []);
   const fetchFiles = useCallback(() => api.getFiles(), []);
@@ -84,7 +101,6 @@ export default function App() {
   const { data: checklist, loading: checklistLoading } = usePolling(fetchChecklist, 30000, isRunning);
   const { data: files, loading: filesLoading } = usePolling(fetchFiles, 30000, isRunning);
 
-  // Resolve status/agents/logs: prefer WebSocket push, fall back to HTTP
   const status = wsStatus ?? httpStatus;
   const agents = wsAgents;
   const logs = wsLogs;
@@ -111,81 +127,48 @@ export default function App() {
         setIsRunning(false);
         setIsPaused(false);
         setCurrentPrd(null);
-        // Clear WS state so stale data doesn't linger
         setWsStatus(null);
         setWsAgents(null);
         setWsLogs(null);
       }
     } catch {
-      // Force UI to stopped state even on error -- process likely died
       setIsRunning(false);
       setIsPaused(false);
       setCurrentPrd(null);
     }
+    sessionStorage.removeItem('pl_running');
+    sessionStorage.removeItem('pl_prd');
+    sessionStorage.removeItem('pl_tab');
   }, []);
 
-  const handleLoadSession = useCallback(async (item: { id: string }) => {
-    try {
-      const detail = await api.getSessionDetail(item.id);
-      setViewingSession(detail);
-    } catch {
-      // Session detail not available
-    }
-  }, []);
+  const handleLoadSession = useCallback((item: { id: string }) => {
+    navigate(`/project/${item.id}`);
+  }, [navigate]);
 
   const handleProviderChange = useCallback((provider: string) => {
     setSelectedProvider(provider);
   }, []);
 
   const handlePause = useCallback(async () => {
-    try {
-      await api.pauseSession();
-      setIsPaused(true);
-    } catch {
-      // pause not supported or failed -- ignore
-    }
+    try { await api.pauseSession(); setIsPaused(true); } catch { /* ignore */ }
   }, []);
 
   const handleResume = useCallback(async () => {
-    try {
-      await api.resumeSession();
-      setIsPaused(false);
-    } catch {
-      // resume not supported or failed -- ignore
-    }
+    try { await api.resumeSession(); setIsPaused(false); } catch { /* ignore */ }
   }, []);
 
-  // Derive a PRD summary from the first non-blank line
   const prdSummary = currentPrd
     ? currentPrd.replace(/^#+\s*/gm, '').split('\n').find(l => l.trim().length > 0) || null
     : null;
 
-  // Full-screen project workspace when viewing a session
-  if (viewingSession) {
-    return (
-      <div className="h-screen bg-background flex flex-col">
-        <Header status={status} wsConnected={connected} onProviderChange={handleProviderChange} selectedProvider={selectedProvider} />
-        <div className="flex-1 min-h-0">
-          <ErrorBoundary name="ProjectWorkspace">
-            <ProjectWorkspace session={viewingSession} onClose={() => setViewingSession(null)} />
-          </ErrorBoundary>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className="min-h-screen bg-background relative">
-      {/* Background pattern */}
       <div className="pattern-circles" />
-
       <Header status={status} wsConnected={connected} onProviderChange={handleProviderChange} selectedProvider={selectedProvider} />
 
       <main className="max-w-[1920px] mx-auto px-6 py-6 relative z-10">
         {!isRunning ? (
-          /* ========== LANDING STATE: PRD Input is the hero ========== */
           <div className="flex flex-col items-center">
-            {/* Hero section */}
             <div className="text-center mt-8 mb-8">
               <h2 className="text-3xl font-bold text-charcoal tracking-tight">
                 Describe it. Build it. Ship it.
@@ -196,7 +179,6 @@ export default function App() {
               </p>
             </div>
 
-            {/* PRD Input -- full width, prominent */}
             <div className="w-full max-w-3xl">
               <PRDInput
                 onSubmit={handleStartBuild}
@@ -207,19 +189,13 @@ export default function App() {
               />
             </div>
 
-            {/* Post-build: view project, report, metrics */}
             {wasRunning && !isRunning && (
               <div className="w-full max-w-3xl mt-4 flex flex-col gap-4">
-                {/* Primary CTA: view what was built */}
                 <button
                   onClick={async () => {
-                    // Load most recent session
                     try {
                       const sessions = await api.getSessionsHistory();
-                      if (sessions.length > 0) {
-                        const detail = await api.getSessionDetail(sessions[0].id);
-                        setViewingSession(detail);
-                      }
+                      if (sessions.length > 0) navigate(`/project/${sessions[0].id}`);
                     } catch { /* ignore */ }
                   }}
                   className="w-full px-6 py-4 rounded-2xl text-base font-bold bg-accent-product text-white hover:bg-accent-product/90 transition-all shadow-lg shadow-accent-product/20"
@@ -227,17 +203,13 @@ export default function App() {
                   View Project -- Browse Files and Preview
                 </button>
                 <div className="flex items-center gap-3">
-                  <button
-                    onClick={() => setShowReport(!showReport)}
-                    className="px-4 py-2 rounded-xl text-sm font-semibold border border-accent-product/30 text-accent-product hover:bg-accent-product/5 transition-all"
-                  >
-                    {showReport ? 'Hide Report Panel' : 'Report'}
+                  <button onClick={() => setShowReport(!showReport)}
+                    className="px-4 py-2 rounded-xl text-sm font-semibold border border-accent-product/30 text-accent-product hover:bg-accent-product/5 transition-all">
+                    {showReport ? 'Hide Report' : 'Report'}
                   </button>
-                  <button
-                    onClick={() => setShowMetrics(!showMetrics)}
-                    className="px-4 py-2 rounded-xl text-sm font-semibold border border-white/30 text-slate hover:text-charcoal hover:bg-white/30 transition-all"
-                  >
-                    {showMetrics ? 'Hide Metrics' : 'View Metrics'}
+                  <button onClick={() => setShowMetrics(!showMetrics)}
+                    className="px-4 py-2 rounded-xl text-sm font-semibold border border-white/30 text-slate hover:text-charcoal hover:bg-white/30 transition-all">
+                    {showMetrics ? 'Hide Metrics' : 'Metrics'}
                   </button>
                 </div>
                 <ReportPanel visible={showReport} />
@@ -245,72 +217,43 @@ export default function App() {
               </div>
             )}
 
-            {/* Session history */}
             <div className="w-full max-w-3xl mt-4">
               <SessionHistory onLoadSession={handleLoadSession} />
             </div>
 
-            {/* Connection status hint */}
             <div className="mt-6 text-xs text-slate flex items-center gap-2">
               <div className={`w-2 h-2 rounded-full ${connected ? 'bg-success' : 'bg-danger'}`} />
               {connected ? 'Connected to Purple Lab backend' : 'Waiting for backend connection...'}
             </div>
           </div>
         ) : (
-          /* ========== RUNNING STATE: Monitoring panels ========== */
           <>
-            {/* Status bar with stop/pause/resume buttons */}
             <ErrorBoundary name="ControlBar">
-              <ControlBar
-                status={status}
-                prdSummary={prdSummary}
-                onStop={handleStopBuild}
-                onPause={handlePause}
-                onResume={handleResume}
-                isPaused={isPaused}
-              />
+              <ControlBar status={status} prdSummary={prdSummary} onStop={handleStopBuild}
+                onPause={handlePause} onResume={handleResume} isPaused={isPaused} />
             </ErrorBoundary>
 
-            {/* Stats overview */}
             <div className="mt-4">
               <ErrorBoundary name="StatusOverview">
                 <StatusOverview status={status} />
               </ErrorBoundary>
             </div>
 
-            {/* Main layout: 3-column grid */}
             <div className="mt-4 grid grid-cols-12 gap-6" style={{ height: 'calc(100vh - 340px)', minHeight: '400px' }}>
-              {/* Left column: Phase */}
               <div className="col-span-3 flex flex-col gap-6">
                 <ErrorBoundary name="PhaseVisualizer">
-                  <PhaseVisualizer
-                    currentPhase={status?.phase || 'idle'}
-                    iteration={status?.iteration || 0}
-                  />
+                  <PhaseVisualizer currentPhase={status?.phase || 'idle'} iteration={status?.iteration || 0} />
                 </ErrorBoundary>
               </div>
 
-              {/* Center column: Terminal Output + Metrics tab */}
               <div className="col-span-5 flex flex-col gap-0 min-h-0">
                 <div className="flex items-center gap-1 mb-2 flex-shrink-0">
-                  <button
-                    onClick={() => setActiveTab('terminal')}
-                    className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all ${
-                      activeTab === 'terminal'
-                        ? 'bg-accent-product text-white'
-                        : 'text-slate hover:text-charcoal hover:bg-white/30'
-                    }`}
-                  >
+                  <button onClick={() => setActiveTab('terminal')}
+                    className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all ${activeTab === 'terminal' ? 'bg-accent-product text-white' : 'text-slate hover:text-charcoal hover:bg-white/30'}`}>
                     Terminal
                   </button>
-                  <button
-                    onClick={() => setActiveTab('metrics')}
-                    className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all ${
-                      activeTab === 'metrics'
-                        ? 'bg-accent-product text-white'
-                        : 'text-slate hover:text-charcoal hover:bg-white/30'
-                    }`}
-                  >
+                  <button onClick={() => setActiveTab('metrics')}
+                    className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all ${activeTab === 'metrics' ? 'bg-accent-product text-white' : 'text-slate hover:text-charcoal hover:bg-white/30'}`}>
                     Metrics
                   </button>
                 </div>
@@ -325,7 +268,6 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Right column: Agents + Quality Gates */}
               <div className="col-span-4 flex flex-col gap-6 overflow-y-auto">
                 <ErrorBoundary name="AgentDashboard">
                   <AgentDashboard agents={agents} loading={agentsLoading} />
@@ -336,7 +278,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* Bottom row: File Browser + Memory Viewer */}
             <div className="mt-6 grid grid-cols-12 gap-6">
               <div className="col-span-6">
                 <ErrorBoundary name="FileBrowser">

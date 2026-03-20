@@ -1140,6 +1140,48 @@ async def get_session_file(session_id: str, path: str = "") -> JSONResponse:
     return JSONResponse(content={"content": content})
 
 
+@app.get("/api/sessions/{session_id}/preview/{file_path:path}")
+async def preview_session_file(session_id: str, file_path: str = "index.html") -> FileResponse:
+    """Serve a file from a past session's project directory with correct MIME type.
+
+    This enables live preview of built projects -- HTML files can load their
+    relative CSS, JS, and image assets correctly.
+    """
+    import re
+    import mimetypes
+    if not re.match(r"^[a-zA-Z0-9._-]+$", session_id):
+        return JSONResponse(status_code=400, content={"error": "Invalid session ID"})
+
+    search_dirs = [
+        Path.home() / "purple-lab-projects",
+        Path.home() / ".loki-sessions",
+        Path.home() / ".loki" / "sessions",
+    ]
+    target: Optional[Path] = None
+    for base_dir in search_dirs:
+        candidate = base_dir / session_id
+        if candidate.is_dir():
+            target = candidate
+            break
+
+    if target is None:
+        return JSONResponse(status_code=404, content={"error": "Session not found"})
+
+    if not file_path:
+        file_path = "index.html"
+
+    resolved = _safe_resolve(target, file_path)
+    if resolved is None or not resolved.is_file():
+        return JSONResponse(status_code=404, content={"error": "File not found"})
+
+    # Determine MIME type
+    mime_type, _ = mimetypes.guess_type(str(resolved))
+    if mime_type is None:
+        mime_type = "application/octet-stream"
+
+    return FileResponse(str(resolved), media_type=mime_type)
+
+
 @app.post("/api/session/onboard")
 async def onboard_session(req: OnboardRequest) -> JSONResponse:
     """Run loki onboard on a path and return CLAUDE.md content."""
