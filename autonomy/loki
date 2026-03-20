@@ -3212,24 +3212,26 @@ cmd_web_stop() {
 
     rm -f "$PURPLE_LAB_PID_FILE" "${LOKI_DIR}/purple-lab/port" 2>/dev/null || true
 
-    # Kill orphaned loki-run processes and their entire process trees
-    # This catches claude/codex/gemini child processes that survive parent death
-    local orphan_pids
-    orphan_pids=$(pgrep -f "loki-run-" 2>/dev/null || true)
-    if [ -n "$orphan_pids" ]; then
-        echo "Cleaning up orphaned build processes..."
-        for opid in $orphan_pids; do
-            # Kill the entire process tree rooted at this PID
-            pkill -TERM -P "$opid" 2>/dev/null || true
-            kill -TERM "$opid" 2>/dev/null || true
-        done
-        sleep 2
-        # SIGKILL any survivors
-        for opid in $orphan_pids; do
-            pkill -9 -P "$opid" 2>/dev/null || true
-            kill -9 "$opid" 2>/dev/null || true
-        done
-        echo "Orphaned build processes cleaned up."
+    # Kill only processes that Purple Lab started (tracked in child-pids.json)
+    # External loki sessions (started via "loki start" from terminal) are NOT touched
+    local pids_file="${LOKI_DIR}/purple-lab/child-pids.json"
+    if [ -f "$pids_file" ]; then
+        local tracked_pids
+        tracked_pids=$(python3 -c "import json; [print(p) for p in json.load(open('$pids_file'))]" 2>/dev/null || true)
+        if [ -n "$tracked_pids" ]; then
+            echo "Cleaning up Purple Lab build processes..."
+            for opid in $tracked_pids; do
+                pkill -TERM -P "$opid" 2>/dev/null || true
+                kill -TERM "$opid" 2>/dev/null || true
+            done
+            sleep 2
+            for opid in $tracked_pids; do
+                pkill -9 -P "$opid" 2>/dev/null || true
+                kill -9 "$opid" 2>/dev/null || true
+            done
+            echo "Purple Lab build processes cleaned up."
+        fi
+        rm -f "$pids_file" 2>/dev/null || true
     fi
 }
 

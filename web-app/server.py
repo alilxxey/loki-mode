@@ -109,45 +109,84 @@ class SessionState:
         self.log_lines = []
 
 
-def _kill_orphan_loki_processes(project_dir: str = "") -> None:
-    """Kill any orphaned loki-run processes."""
+def _kill_tracked_child_processes() -> None:
+    """Kill only processes that Purple Lab started, not external loki sessions."""
     import subprocess as _sp
-    patterns: list[str] = []
-    if project_dir:
-        patterns.append(f"loki-run.*{project_dir}")
-    patterns.append("loki-run-")
+    tracked = _get_tracked_child_pids()
+    if not tracked:
+        return
 
-    killed_pids: set[int] = set()
-    for pattern in patterns:
+    for pid in tracked:
         try:
-            result = _sp.run(
-                ["pgrep", "-f", pattern],
-                capture_output=True, text=True, timeout=5,
-            )
-            if result.returncode == 0:
-                for pid_str in result.stdout.strip().splitlines():
-                    try:
-                        pid = int(pid_str.strip())
-                        if pid not in killed_pids:
-                            os.kill(pid, signal.SIGTERM)
-                            killed_pids.add(pid)
-                    except (ValueError, ProcessLookupError, PermissionError):
-                        pass
-        except Exception:
+            # Kill the entire process tree (children first, then parent)
+            _sp.run(["pkill", "-TERM", "-P", str(pid)],
+                     capture_output=True, timeout=5)
+            os.kill(pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, OSError):
             pass
 
-    # Wait briefly then SIGKILL any survivors
-    if killed_pids:
-        import time as _time
-        _time.sleep(2)
-        for pid in killed_pids:
-            try:
-                os.kill(pid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError, OSError):
-                pass
+    # Wait briefly then SIGKILL survivors
+    import time as _time
+    _time.sleep(2)
+    for pid in tracked:
+        try:
+            _sp.run(["pkill", "-9", "-P", str(pid)],
+                     capture_output=True, timeout=5)
+            os.kill(pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+
+    _clear_tracked_pids()
 
 
 session = SessionState()
+
+# Track PIDs of sessions started by Purple Lab (not by external loki CLI)
+_PURPLE_LAB_PIDS_FILE = SCRIPT_DIR.parent / ".loki" / "purple-lab" / "child-pids.json"
+
+
+def _track_child_pid(pid: int) -> None:
+    """Record a PID started by Purple Lab so loki web stop can clean it up."""
+    _PURPLE_LAB_PIDS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    pids: list[int] = []
+    if _PURPLE_LAB_PIDS_FILE.exists():
+        try:
+            pids = json.loads(_PURPLE_LAB_PIDS_FILE.read_text())
+        except (json.JSONDecodeError, OSError):
+            pids = []
+    if pid not in pids:
+        pids.append(pid)
+    _PURPLE_LAB_PIDS_FILE.write_text(json.dumps(pids))
+
+
+def _untrack_child_pid(pid: int) -> None:
+    """Remove a PID from tracking after it exits."""
+    if not _PURPLE_LAB_PIDS_FILE.exists():
+        return
+    try:
+        pids = json.loads(_PURPLE_LAB_PIDS_FILE.read_text())
+        pids = [p for p in pids if p != pid]
+        _PURPLE_LAB_PIDS_FILE.write_text(json.dumps(pids))
+    except (json.JSONDecodeError, OSError):
+        pass
+
+
+def _get_tracked_child_pids() -> list[int]:
+    """Get all PIDs started by Purple Lab."""
+    if not _PURPLE_LAB_PIDS_FILE.exists():
+        return []
+    try:
+        return json.loads(_PURPLE_LAB_PIDS_FILE.read_text())
+    except (json.JSONDecodeError, OSError):
+        return []
+
+
+def _clear_tracked_pids() -> None:
+    """Clear all tracked PIDs."""
+    try:
+        _PURPLE_LAB_PIDS_FILE.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 # ---------------------------------------------------------------------------
 # Request / Response models
@@ -409,6 +448,9 @@ async def start_session(req: StartRequest) -> JSONResponse:
         session.project_dir = project_dir
         session.start_time = time.time()
 
+        # Track this PID so loki web stop knows it's ours
+        _track_child_pid(proc.pid)
+
         # Start background output reader
         session._reader_task = asyncio.create_task(_read_process_output())
 
@@ -485,7 +527,7 @@ async def stop_session() -> JSONResponse:
         # Kill any orphaned loki-run processes for this project
         if session.project_dir:
             await asyncio.get_running_loop().run_in_executor(
-                None, _kill_orphan_loki_processes, session.project_dir
+                None, _kill_tracked_child_processes
             )
 
         await _broadcast({"type": "session_end", "data": {"message": "Session stopped by user"}})
