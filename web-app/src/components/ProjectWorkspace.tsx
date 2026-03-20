@@ -168,6 +168,22 @@ function FileTree({
   );
 }
 
+interface OpenTab {
+  path: string;
+  name: string;
+  content: string;
+  modified: boolean;
+}
+
+function flattenFiles(nodes: FileNode[], prefix = ''): { path: string; name: string }[] {
+  const result: { path: string; name: string }[] = [];
+  for (const n of nodes) {
+    if (n.type === 'file') result.push({ path: n.path, name: n.name });
+    if (n.children) result.push(...flattenFiles(n.children, n.path + '/'));
+  }
+  return result;
+}
+
 export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [selectedFileName, setSelectedFileName] = useState<string>('');
@@ -179,6 +195,12 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
   const [isSaving, setIsSaving] = useState(false);
   const [sessionData, setSessionData] = useState<SessionDetail>(session);
   const editorRef = useRef<unknown>(null);
+  const [openTabs, setOpenTabs] = useState<OpenTab[]>([]);
+  const [showQuickOpen, setShowQuickOpen] = useState(false);
+  const [quickOpenQuery, setQuickOpenQuery] = useState('');
+  const quickOpenRef = useRef<HTMLInputElement>(null);
+  const previewRef = useRef<HTMLIFrameElement>(null);
+  const [previewKey, setPreviewKey] = useState(0);
 
   const canPreview = hasHtmlFile(sessionData.files);
   const previewUrl = `/api/sessions/${encodeURIComponent(sessionData.id)}/preview/index.html`;
@@ -193,10 +215,22 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
   }, [sessionData.id]);
 
   const handleFileSelect = useCallback(async (path: string, name: string) => {
-    // Warn about unsaved changes
-    if (isModified) {
-      const discard = window.confirm('Unsaved changes. Discard?');
-      if (!discard) return;
+    // Save current tab state before switching
+    if (isModified && selectedFile && editorContent !== null) {
+      setOpenTabs(prev => prev.map(t =>
+        t.path === selectedFile ? { ...t, content: editorContent, modified: true } : t
+      ));
+    }
+
+    // Check if already open in a tab
+    const existingTab = openTabs.find(t => t.path === path);
+    if (existingTab) {
+      setSelectedFile(path);
+      setSelectedFileName(name);
+      setFileContent(existingTab.content);
+      setEditorContent(existingTab.content);
+      setIsModified(existingTab.modified);
+      return;
     }
 
     setSelectedFile(path);
@@ -209,13 +243,15 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
         : await api.getFileContent(path);
       setFileContent(result.content);
       setEditorContent(result.content);
+      // Add to open tabs
+      setOpenTabs(prev => [...prev, { path, name, content: result.content, modified: false }]);
     } catch {
       setFileContent('[Error loading file]');
       setEditorContent('[Error loading file]');
     } finally {
       setFileLoading(false);
     }
-  }, [sessionData.id, isModified]);
+  }, [sessionData.id, isModified, selectedFile, editorContent, openTabs]);
 
   const handleSave = useCallback(async () => {
     if (!selectedFile || editorContent === null || !sessionData.id) return;
@@ -224,6 +260,15 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
       await api.saveSessionFile(sessionData.id, selectedFile, editorContent);
       setFileContent(editorContent);
       setIsModified(false);
+      // Update tab state
+      setOpenTabs(prev => prev.map(t =>
+        t.path === selectedFile ? { ...t, content: editorContent, modified: false } : t
+      ));
+      // Refresh preview if an HTML/CSS/JS file was saved
+      const ext = selectedFile.split('.').pop()?.toLowerCase() || '';
+      if (['html', 'css', 'js', 'jsx', 'ts', 'tsx'].includes(ext)) {
+        setPreviewKey(k => k + 1);
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Unknown error';
       window.alert(`Save failed: ${msg}`);
@@ -232,19 +277,60 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
     }
   }, [selectedFile, editorContent, sessionData.id]);
 
-  // Cmd/Ctrl+S keyboard shortcut
+  const handleCloseTab = useCallback((path: string) => {
+    const tab = openTabs.find(t => t.path === path);
+    if (tab?.modified) {
+      if (!window.confirm('Unsaved changes. Close anyway?')) return;
+    }
+    setOpenTabs(prev => prev.filter(t => t.path !== path));
+    if (selectedFile === path) {
+      const remaining = openTabs.filter(t => t.path !== path);
+      if (remaining.length > 0) {
+        const next = remaining[remaining.length - 1];
+        setSelectedFile(next.path);
+        setSelectedFileName(next.name);
+        setFileContent(next.content);
+        setEditorContent(next.content);
+        setIsModified(next.modified);
+      } else {
+        setSelectedFile(null);
+        setSelectedFileName('');
+        setFileContent(null);
+        setEditorContent(null);
+        setIsModified(false);
+      }
+    }
+  }, [openTabs, selectedFile]);
+
+  // Cmd/Ctrl+S to save, Cmd/Ctrl+P to quick open
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 's') {
         e.preventDefault();
-        if (isModified && selectedFile) {
-          handleSave();
-        }
+        if (isModified && selectedFile) handleSave();
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key === 'p') {
+        e.preventDefault();
+        setShowQuickOpen(prev => !prev);
+        setQuickOpenQuery('');
+      }
+      if (e.key === 'Escape' && showQuickOpen) {
+        setShowQuickOpen(false);
       }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [isModified, selectedFile, handleSave]);
+  }, [isModified, selectedFile, handleSave, showQuickOpen]);
+
+  // Focus quick open input when shown
+  useEffect(() => {
+    if (showQuickOpen && quickOpenRef.current) quickOpenRef.current.focus();
+  }, [showQuickOpen]);
+
+  const allFiles = flattenFiles(sessionData.files);
+  const filteredFiles = quickOpenQuery
+    ? allFiles.filter(f => f.path.toLowerCase().includes(quickOpenQuery.toLowerCase()))
+    : allFiles;
 
   // Auto-select index.html on mount
   useEffect(() => {
@@ -390,18 +476,42 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
           {/* Editor */}
           <Panel defaultSize={showPreview ? 50 : 80} minSize={25}>
             <div className="h-full flex flex-col min-w-0">
+              {/* Tab bar */}
+              {openTabs.length > 0 && (
+                <div className="flex items-center border-b border-white/10 bg-white/10 overflow-x-auto flex-shrink-0">
+                  {openTabs.map(tab => (
+                    <button
+                      key={tab.path}
+                      onClick={() => handleFileSelect(tab.path, tab.name)}
+                      className={`flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-mono border-r border-white/10 whitespace-nowrap transition-colors ${
+                        tab.path === selectedFile
+                          ? 'bg-white/40 text-charcoal'
+                          : 'text-slate hover:text-charcoal hover:bg-white/20'
+                      }`}
+                    >
+                      <span className={`text-[9px] font-bold ${getLanguageClass(tab.name)}`}>
+                        {getFileIcon(tab.name, 'file')}
+                      </span>
+                      {tab.name}
+                      {tab.modified && <span className="w-1.5 h-1.5 rounded-full bg-accent-product" />}
+                      <span
+                        role="button"
+                        tabIndex={-1}
+                        onClick={(e) => { e.stopPropagation(); handleCloseTab(tab.path); }}
+                        onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); handleCloseTab(tab.path); } }}
+                        className="text-slate/30 hover:text-danger ml-1 cursor-pointer"
+                      >
+                        x
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+
               {selectedFile ? (
                 <>
-                  <div className="px-4 py-2 border-b border-white/10 flex items-center gap-2 flex-shrink-0 bg-white/20">
-                    <span className={`text-[10px] font-bold ${getLanguageClass(selectedFileName)}`}>
-                      {getFileIcon(selectedFileName, 'file')}
-                    </span>
-                    <span className="text-xs font-mono text-charcoal truncate">
-                      {selectedFile}
-                    </span>
-                    {isModified && (
-                      <span className="w-2 h-2 rounded-full bg-accent-product flex-shrink-0" title="Unsaved changes" />
-                    )}
+                  <div className="px-4 py-1.5 border-b border-white/10 flex items-center gap-2 flex-shrink-0 bg-white/20">
+                    <span className="text-xs font-mono text-charcoal/60 truncate">{selectedFile}</span>
                     {isSaving && (
                       <span className="text-[10px] text-accent-product animate-pulse flex-shrink-0">Saving...</span>
                     )}
@@ -466,6 +576,8 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
                   </div>
                   <div className="flex-1 bg-white">
                     <iframe
+                      key={previewKey}
+                      ref={previewRef}
                       src={previewUrl}
                       title="Project Preview"
                       className="w-full h-full border-0"
@@ -478,6 +590,50 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
           )}
         </PanelGroup>
       </div>
+
+      {/* Quick Open modal (Cmd+P) */}
+      {showQuickOpen && (
+        <div className="fixed inset-0 z-50 flex items-start justify-center pt-[20vh]" onClick={() => setShowQuickOpen(false)}>
+          <div className="bg-white rounded-xl shadow-2xl border border-white/20 w-full max-w-lg" onClick={e => e.stopPropagation()}>
+            <input
+              ref={quickOpenRef}
+              type="text"
+              value={quickOpenQuery}
+              onChange={e => setQuickOpenQuery(e.target.value)}
+              placeholder="Search files by name..."
+              className="w-full px-4 py-3 text-sm font-mono border-b border-white/10 outline-none rounded-t-xl bg-transparent"
+              onKeyDown={e => {
+                if (e.key === 'Enter' && filteredFiles.length > 0) {
+                  handleFileSelect(filteredFiles[0].path, filteredFiles[0].name);
+                  setShowQuickOpen(false);
+                }
+                if (e.key === 'Escape') setShowQuickOpen(false);
+              }}
+            />
+            <div className="max-h-64 overflow-y-auto">
+              {filteredFiles.slice(0, 20).map(f => (
+                <button
+                  key={f.path}
+                  onClick={() => {
+                    handleFileSelect(f.path, f.name);
+                    setShowQuickOpen(false);
+                  }}
+                  className="w-full text-left px-4 py-2 text-xs font-mono hover:bg-accent-product/5 flex items-center gap-2"
+                >
+                  <span className={`text-[10px] font-bold ${getLanguageClass(f.name)}`}>
+                    {getFileIcon(f.name, 'file')}
+                  </span>
+                  <span className="text-charcoal">{f.name}</span>
+                  <span className="text-slate/40 ml-auto truncate text-[10px]">{f.path}</span>
+                </button>
+              ))}
+              {filteredFiles.length === 0 && (
+                <div className="px-4 py-3 text-xs text-slate">No matching files</div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -5,6 +5,14 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [6.41.0] - 2026-03-19
+
+### Added
+- Tab system: open multiple files simultaneously, click tabs to switch, close tabs with unsaved changes warning, modified indicator dot on tabs
+- Quick Open (Cmd/Ctrl+P): fuzzy file search modal -- type to filter, Enter to open, Escape to close
+- Preview auto-refresh: saving HTML/CSS/JS files automatically reloads the preview iframe
+- File tree flattening utility for quick open search index
+
 ## [6.40.0] - 2026-03-19
 
 ### Added
