@@ -5,6 +5,18 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [6.44.1] - 2026-03-20
+
+### Fixed
+- Start Build does nothing: add setIsRunning(true) after startSession so the UI enters running state immediately
+- File DELETE API: send path in JSON body instead of query param (was causing 422 Unprocessable Entity)
+- File SAVE API: include path in request body alongside content (was missing, causing 422)
+- Config tab provider buttons: add onClick handler, api.setProvider call, and active state highlighting
+- _kill_orphan_loki_processes: run via executor to avoid blocking the event loop
+
+### Removed
+- Header.tsx: deleted as dead code (unused component)
+
 ## [6.44.0] - 2026-03-20
 
 ### Added
