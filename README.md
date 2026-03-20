@@ -10,11 +10,11 @@
 [![Autonomi](https://img.shields.io/badge/Autonomi-autonomi.dev-5B4EEA)](https://www.autonomi.dev/)
 [![Docker Pulls](https://img.shields.io/docker/pulls/asklokesh/loki-mode)](https://hub.docker.com/r/asklokesh/loki-mode)
 
-**Current Version: v6.36.1**
+**Current Version: v6.43.0**
 
 ### Traction
 
-**744 stars** | **151 forks** | **12,700+ Docker pulls** | **477 npm downloads (last 7d)** | **641 commits** | **285+ releases published** | **30+ releases in 72 hours (March 17-19, 2026)**
+![GitHub stars](https://img.shields.io/github/stars/asklokesh/loki-mode?style=flat-square&label=stars) ![GitHub forks](https://img.shields.io/github/forks/asklokesh/loki-mode?style=flat-square&label=forks) ![Docker Pulls](https://img.shields.io/docker/pulls/asklokesh/loki-mode?style=flat-square&label=docker%20pulls) ![npm downloads](https://img.shields.io/npm/dw/loki-mode?style=flat-square&label=npm%20downloads%2Fwk) ![GitHub commit activity](https://img.shields.io/github/commit-activity/t/asklokesh/loki-mode?style=flat-square&label=commits) ![GitHub Release](https://img.shields.io/github/v/release/asklokesh/loki-mode?style=flat-square&label=latest%20release) ![GitHub releases](https://img.shields.io/github/release-date/asklokesh/loki-mode?style=flat-square&label=last%20release)
 
 ---
 
