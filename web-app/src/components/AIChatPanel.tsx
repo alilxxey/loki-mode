@@ -43,12 +43,24 @@ export function AIChatPanel({ sessionId, defaultMode }: AIChatPanelProps) {
     setSending(true);
 
     try {
-      const result = await api.chatMessage(sessionId, trimmed, mode);
+      const { task_id } = await api.chatStart(sessionId, trimmed, mode);
+      // Poll until complete (max 5 min timeout)
+      let poll: { complete: boolean; output_lines: string[]; files_changed: string[]; returncode: number };
+      const maxPolls = 150; // 150 * 2s = 5 min
+      let pollCount = 0;
+      do {
+        await new Promise(r => setTimeout(r, 2000));
+        poll = await api.chatPoll(sessionId, task_id);
+        pollCount++;
+        if (pollCount >= maxPolls) {
+          poll = { complete: true, output_lines: ['Build timed out after 5 minutes.'], files_changed: [], returncode: 1 };
+        }
+      } while (!poll.complete);
       const systemMsg: ChatMessage = {
         role: 'system',
-        content: result.output || 'Done.',
+        content: poll.output_lines.join('\n') || 'Done.',
         timestamp: new Date().toISOString(),
-        filesChanged: result.files_changed,
+        filesChanged: poll.files_changed,
       };
       setMessages(prev => [...prev, systemMsg]);
     } catch (err) {

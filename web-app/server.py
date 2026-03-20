@@ -12,10 +12,12 @@ import asyncio
 import inspect
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -242,6 +244,11 @@ class ChatRequest(BaseModel):
     message: str
     mode: str = "quick"  # "quick" or "standard"
 
+
+class SecretRequest(BaseModel):
+    key: str
+    value: str
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -367,6 +374,48 @@ def _build_file_tree(root: Path, max_depth: int = 4, _depth: int = 0) -> list[di
         entries.append(node)
     return entries
 
+
+# ---------------------------------------------------------------------------
+# Secrets management (plaintext -- this is a local dev tool, not a vault)
+# ---------------------------------------------------------------------------
+
+_SECRETS_FILE = SCRIPT_DIR.parent / ".loki" / "purple-lab" / "secrets.json"
+
+
+def _load_secrets() -> dict[str, str]:
+    """Load secrets from disk."""
+    if _SECRETS_FILE.exists():
+        try:
+            data = json.loads(_SECRETS_FILE.read_text())
+            if isinstance(data, dict):
+                return data
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {}
+
+
+def _save_secrets(secrets: dict[str, str]) -> None:
+    """Save secrets to disk. WARNING: stored in plaintext."""
+    _SECRETS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _SECRETS_FILE.write_text(json.dumps(secrets, indent=2))
+
+
+# ---------------------------------------------------------------------------
+# Chat task tracking (non-blocking chat via polling)
+# ---------------------------------------------------------------------------
+
+
+class ChatTask:
+    def __init__(self) -> None:
+        self.id = str(uuid.uuid4())[:8]
+        self.output_lines: list[str] = []
+        self.complete = False
+        self.returncode: int = -1
+        self.files_changed: list[str] = []
+
+
+_chat_tasks: dict[str, ChatTask] = {}
+
 # ---------------------------------------------------------------------------
 # API endpoints
 # ---------------------------------------------------------------------------
@@ -417,6 +466,10 @@ async def start_session(req: StartRequest) -> JSONResponse:
             ]
 
         try:
+            # Load secrets and inject as env vars
+            build_env = {**os.environ, "LOKI_DIR": os.path.join(project_dir, ".loki")}
+            build_env.update(_load_secrets())
+
             proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
@@ -424,7 +477,7 @@ async def start_session(req: StartRequest) -> JSONResponse:
                 stdin=subprocess.DEVNULL,
                 text=True,
                 cwd=project_dir,
-                env={**os.environ, "LOKI_DIR": os.path.join(project_dir, ".loki")},
+                env=build_env,
                 **({"start_new_session": True} if sys.platform != "win32"
                    else {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}),
             )
@@ -1600,44 +1653,61 @@ async def onboard_session(req: OnboardRequest) -> JSONResponse:
 
 @app.post("/api/sessions/{session_id}/chat")
 async def chat_session(session_id: str, req: ChatRequest) -> JSONResponse:
-    """Run iterative chat command on a project."""
-    import re
+    """Start a chat command (non-blocking). Returns task_id for polling."""
     if not re.match(r"^[a-zA-Z0-9._-]+$", session_id):
         return JSONResponse(status_code=400, content={"error": "Invalid session ID"})
-
-    # Find project directory
     target = _find_session_dir(session_id)
-
     if target is None:
         return JSONResponse(status_code=404, content={"error": "Session not found"})
 
-    # Build command based on mode
-    if req.mode == "quick":
-        cmd_args = ["quick", req.message]
-    else:
-        cmd_args = ["start", "--provider", "claude", str(target / "PRD.md")]
+    task = ChatTask()
+    _chat_tasks[task.id] = task
 
-    rc, output = await asyncio.get_running_loop().run_in_executor(
-        None, lambda: _run_loki_cmd(cmd_args, cwd=str(target), timeout=300)
-    )
-
-    # Detect changed files
-    files_changed: list[str] = []
-    try:
-        import subprocess as _sp
-        result = _sp.run(
-            ["git", "diff", "--name-only", "HEAD~1"],
-            cwd=str(target), capture_output=True, text=True, timeout=10
+    async def run_chat() -> None:
+        loop = asyncio.get_running_loop()
+        if req.mode == "quick":
+            cmd_args = ["quick", req.message]
+        else:
+            cmd_args = ["start", "--provider", "claude", str(target / "PRD.md")]
+        rc, output = await loop.run_in_executor(
+            None, lambda: _run_loki_cmd(cmd_args, cwd=str(target), timeout=300)
         )
-        if result.returncode == 0:
-            files_changed = [f for f in result.stdout.strip().splitlines() if f]
-    except Exception:
-        pass
+        task.output_lines = output.splitlines()
+        task.returncode = rc
+        # Detect changed files
+        try:
+            import subprocess as _sp
+            result = _sp.run(
+                ["git", "diff", "--name-only", "HEAD~1"],
+                cwd=str(target), capture_output=True, text=True, timeout=10
+            )
+            if result.returncode == 0:
+                task.files_changed = [f for f in result.stdout.strip().splitlines() if f]
+        except Exception:
+            pass
+        task.complete = True
+
+    asyncio.create_task(run_chat())
 
     return JSONResponse(content={
-        "output": output,
-        "files_changed": files_changed,
-        "returncode": rc,
+        "task_id": task.id,
+        "status": "running",
+    })
+
+
+@app.get("/api/sessions/{session_id}/chat/{task_id}")
+async def get_chat_status(session_id: str, task_id: str) -> JSONResponse:
+    """Poll chat task status and get partial output."""
+    task = _chat_tasks.get(task_id)
+    if task is None:
+        return JSONResponse(status_code=404, content={"error": "Task not found"})
+    return JSONResponse(content={
+        "task_id": task.id,
+        "status": "complete" if task.complete else "running",
+        "output_lines": task.output_lines,
+        "returncode": task.returncode,
+        "files_changed": task.files_changed,
+        "complete": task.complete,
     })
 
 
@@ -1699,6 +1769,41 @@ async def export_session(session_id: str) -> JSONResponse:
         None, lambda: _run_loki_cmd(["export", "json"], cwd=str(target), timeout=60)
     )
     return JSONResponse(content={"output": output, "returncode": rc})
+
+
+# ---------------------------------------------------------------------------
+# Secrets management endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/secrets")
+async def get_secrets() -> JSONResponse:
+    """List secret keys (values masked)."""
+    secrets = _load_secrets()
+    masked = {k: "***" for k in secrets}
+    return JSONResponse(content=masked)
+
+
+@app.post("/api/secrets")
+async def set_secret(req: SecretRequest) -> JSONResponse:
+    """Set or update a secret."""
+    if not re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', req.key):
+        return JSONResponse(status_code=400, content={"error": "Invalid key. Use ENV_VAR style names."})
+    secrets = _load_secrets()
+    secrets[req.key] = req.value
+    _save_secrets(secrets)
+    return JSONResponse(content={"set": True, "key": req.key})
+
+
+@app.delete("/api/secrets/{key}")
+async def delete_secret(key: str) -> JSONResponse:
+    """Delete a secret."""
+    secrets = _load_secrets()
+    if key not in secrets:
+        return JSONResponse(status_code=404, content={"error": "Secret not found"})
+    del secrets[key]
+    _save_secrets(secrets)
+    return JSONResponse(content={"deleted": True, "key": key})
 
 
 # ---------------------------------------------------------------------------

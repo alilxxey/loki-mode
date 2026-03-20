@@ -212,11 +212,39 @@ export const api = {
   exportProject: (sessionId: string) =>
     fetchJSON<{ output: string; returncode: number }>(`/sessions/${encodeURIComponent(sessionId)}/export`, { method: 'POST' }),
 
+  // Deprecated: use chatStart + chatPoll instead (non-blocking)
   chatMessage: (sessionId: string, message: string, mode: string = 'quick') =>
-    fetchJSON<{ output: string; files_changed: string[]; returncode: number }>(
+    fetchJSON<{ task_id: string; status: string }>(
       `/sessions/${encodeURIComponent(sessionId)}/chat`,
       { method: 'POST', body: JSON.stringify({ message, mode }) },
     ),
+
+  // Chat (non-blocking - returns task_id)
+  chatStart: (sessionId: string, message: string, mode: string = 'quick') =>
+    fetchJSON<{ task_id: string; status: string }>(
+      `/sessions/${encodeURIComponent(sessionId)}/chat`,
+      { method: 'POST', body: JSON.stringify({ message, mode }) },
+    ),
+
+  chatPoll: (sessionId: string, taskId: string) =>
+    fetchJSON<{ task_id: string; status: string; output_lines: string[]; returncode: number; files_changed: string[]; complete: boolean }>(
+      `/sessions/${encodeURIComponent(sessionId)}/chat/${encodeURIComponent(taskId)}`,
+    ),
+
+  // Secrets
+  getSecrets: () =>
+    fetchJSON<Record<string, string>>('/secrets'),
+
+  setSecret: (key: string, value: string) =>
+    fetchJSON<{ set: boolean; key: string }>('/secrets', {
+      method: 'POST',
+      body: JSON.stringify({ key, value }),
+    }),
+
+  deleteSecret: (key: string) =>
+    fetchJSON<{ deleted: boolean; key: string }>(`/secrets/${encodeURIComponent(key)}`, {
+      method: 'DELETE',
+    }),
 };
 
 export class PurpleLabWebSocket {

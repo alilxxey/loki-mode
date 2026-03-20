@@ -7,9 +7,10 @@ import {
   X, FilePlus, FolderPlus,
   ArrowLeft as PreviewBack, ArrowRight as PreviewForward,
   RotateCw, ExternalLink,
-  Eye, TestTube2, BookOpen, Trash2,
+  Eye, EyeOff, TestTube2, BookOpen, Trash2, Plus,
   Square, Pause, Play,
   Code2, Eye as PreviewIcon, Settings2, KeyRound, FileText as PrdIcon,
+  AlertTriangle,
 } from 'lucide-react';
 import { api } from '../api/client';
 import { IconButton } from './ui/IconButton';
@@ -205,6 +206,180 @@ function flattenFiles(nodes: FileNode[], prefix = ''): { path: string; name: str
 
 type WorkspaceTab = 'code' | 'preview' | 'config' | 'secrets' | 'prd';
 
+function SecretsPanel() {
+  const [secrets, setSecrets] = useState<Record<string, string>>({});
+  const [newKey, setNewKey] = useState('');
+  const [newValue, setNewValue] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [showValues, setShowValues] = useState<Set<string>>(new Set());
+
+  const fetchSecrets = useCallback(async () => {
+    try {
+      const data = await api.getSecrets();
+      setSecrets(data);
+    } catch {
+      // ignore fetch errors
+    }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { fetchSecrets(); }, [fetchSecrets]);
+
+  const handleAdd = async () => {
+    const trimmedKey = newKey.trim();
+    if (!trimmedKey) return;
+    if (!/^[A-Z_][A-Z0-9_]*$/.test(trimmedKey)) {
+      setError('Key must be a valid ENV_VAR name (uppercase letters, digits, underscores)');
+      return;
+    }
+    setError(null);
+    try {
+      await api.setSecret(trimmedKey, newValue);
+      setNewKey('');
+      setNewValue('');
+      await fetchSecrets();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to set secret');
+    }
+  };
+
+  const handleDelete = async (key: string) => {
+    if (!window.confirm(`Delete secret "${key}"?`)) return;
+    try {
+      await api.deleteSecret(key);
+      await fetchSecrets();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to delete secret');
+    }
+  };
+
+  const toggleShow = (key: string) => {
+    setShowValues(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  const secretKeys = Object.keys(secrets);
+
+  if (loading) {
+    return (
+      <div className="p-6">
+        <div className="text-sm text-muted animate-pulse">Loading secrets...</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-full flex flex-col">
+      <div className="p-6 overflow-y-auto">
+        <h3 className="text-h3 font-heading text-ink mb-2">Environment Secrets</h3>
+
+        {/* Warning banner */}
+        <div className="flex items-start gap-2 px-4 py-3 rounded-btn border border-warning/30 bg-warning/5 mb-6">
+          <AlertTriangle size={16} className="text-warning flex-shrink-0 mt-0.5" />
+          <p className="text-xs text-warning leading-relaxed">
+            Secrets are stored locally in plaintext and injected as environment variables during builds.
+            They are never committed to the project repository.
+          </p>
+        </div>
+
+        {/* Existing secrets table */}
+        {secretKeys.length > 0 && (
+          <div className="card mb-6">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border">
+                  <th className="text-left px-4 py-2 text-xs font-semibold text-muted-accessible uppercase tracking-wider">Key</th>
+                  <th className="text-left px-4 py-2 text-xs font-semibold text-muted-accessible uppercase tracking-wider">Value</th>
+                  <th className="w-20 px-4 py-2" />
+                </tr>
+              </thead>
+              <tbody>
+                {secretKeys.map(key => (
+                  <tr key={key} className="border-b border-border last:border-b-0">
+                    <td className="px-4 py-2.5 font-mono text-xs text-ink">{key}</td>
+                    <td className="px-4 py-2.5 font-mono text-xs text-muted-accessible">
+                      <span className="flex items-center gap-2">
+                        <span>{showValues.has(key) ? secrets[key] : '***'}</span>
+                        <button
+                          onClick={() => toggleShow(key)}
+                          className="text-muted hover:text-ink transition-colors"
+                          title={showValues.has(key) ? 'Hide value' : 'Show value'}
+                        >
+                          {showValues.has(key) ? <EyeOff size={14} /> : <Eye size={14} />}
+                        </button>
+                      </span>
+                    </td>
+                    <td className="px-4 py-2.5 text-right">
+                      <button
+                        onClick={() => handleDelete(key)}
+                        className="text-muted hover:text-danger transition-colors"
+                        title="Delete secret"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {secretKeys.length === 0 && (
+          <div className="card p-4 mb-6">
+            <p className="text-sm text-muted-accessible text-center py-4">
+              No secrets configured yet. Add your first secret below.
+            </p>
+          </div>
+        )}
+
+        {/* Add secret form */}
+        <div className="card p-4">
+          <label className="block text-xs font-semibold text-muted-accessible uppercase tracking-wider mb-3">Add Secret</label>
+          {error && (
+            <div className="text-xs text-danger mb-3 px-1">{error}</div>
+          )}
+          <div className="flex items-end gap-3">
+            <div className="flex-1">
+              <label className="block text-xs text-muted-accessible mb-1">Key</label>
+              <input
+                type="text"
+                value={newKey}
+                onChange={e => setNewKey(e.target.value.toUpperCase())}
+                placeholder="API_KEY"
+                className="w-full px-3 py-2 text-sm font-mono bg-hover border border-border rounded-btn text-ink placeholder:text-muted"
+              />
+            </div>
+            <div className="flex-1">
+              <label className="block text-xs text-muted-accessible mb-1">Value</label>
+              <input
+                type="password"
+                value={newValue}
+                onChange={e => setNewValue(e.target.value)}
+                placeholder="secret value"
+                className="w-full px-3 py-2 text-sm font-mono bg-hover border border-border rounded-btn text-ink placeholder:text-muted"
+              />
+            </div>
+            <button
+              onClick={handleAdd}
+              disabled={!newKey.trim()}
+              className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium rounded-btn border border-primary bg-primary/10 text-primary hover:bg-primary/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <Plus size={14} />
+              Add
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [selectedFileName, setSelectedFileName] = useState<string>('');
@@ -232,7 +407,12 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
   const [buildMode, setBuildMode] = useState<'quick' | 'standard' | 'max'>('standard');
   const [selectedProvider, setSelectedProvider] = useState('claude');
   const [actionOutput, setActionOutput] = useState<string | null>(null);
-  const [actionLoading, setActionLoading] = useState(false);
+  const [actionState, setActionState] = useState<{
+    type: 'review' | 'test' | 'explain';
+    loading: boolean;
+    startTime: number;
+    elapsed: number;
+  } | null>(null);
   const [isBuilding, setIsBuilding] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
 
@@ -258,19 +438,29 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
     } catch { /* ignore */ }
   }, []);
 
-  // Poll session status for build controls
+  // Poll session status for build controls and provider
   useEffect(() => {
     const check = async () => {
       try {
         const status = await api.getStatus();
         setIsBuilding(status.running);
         setIsPaused(status.paused);
+        if (status.provider) setSelectedProvider(status.provider);
       } catch { /* ignore */ }
     };
     check();
     const interval = setInterval(check, 10000);
     return () => clearInterval(interval);
   }, []);
+
+  // Elapsed time counter for action progress
+  useEffect(() => {
+    if (!actionState?.loading) return;
+    const interval = setInterval(() => {
+      setActionState(prev => prev ? { ...prev, elapsed: Math.floor((Date.now() - prev.startTime) / 1000) } : null);
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [actionState?.loading]);
 
   const canPreview = hasHtmlFile(sessionData.files);
   const previewUrl = `/api/sessions/${encodeURIComponent(sessionData.id)}/preview/index.html`;
@@ -321,38 +511,41 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
   }, [currentPreviewUrl]);
 
   const handleReview = useCallback(async () => {
-    setActionLoading(true);
+    setActionState({ type: 'review', loading: true, startTime: Date.now(), elapsed: 0 });
+    setActionOutput(null);
     try {
       const result = await api.reviewProject(sessionData.id);
       setActionOutput(result.output);
     } catch (e) {
       setActionOutput(`Error: ${e instanceof Error ? e.message : 'Unknown'}`);
     } finally {
-      setActionLoading(false);
+      setActionState(null);
     }
   }, [sessionData.id]);
 
   const handleTest = useCallback(async () => {
-    setActionLoading(true);
+    setActionState({ type: 'test', loading: true, startTime: Date.now(), elapsed: 0 });
+    setActionOutput(null);
     try {
       const result = await api.testProject(sessionData.id);
       setActionOutput(result.output);
     } catch (e) {
       setActionOutput(`Error: ${e instanceof Error ? e.message : 'Unknown'}`);
     } finally {
-      setActionLoading(false);
+      setActionState(null);
     }
   }, [sessionData.id]);
 
   const handleExplain = useCallback(async () => {
-    setActionLoading(true);
+    setActionState({ type: 'explain', loading: true, startTime: Date.now(), elapsed: 0 });
+    setActionOutput(null);
     try {
       const result = await api.explainProject(sessionData.id);
       setActionOutput(result.output);
     } catch (e) {
       setActionOutput(`Error: ${e instanceof Error ? e.message : 'Unknown'}`);
     } finally {
-      setActionLoading(false);
+      setActionState(null);
     }
   }, [sessionData.id]);
 
@@ -589,9 +782,9 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
         )}
 
         {/* Action buttons */}
-        <IconButton icon={Eye} label="Review project" size="sm" onClick={handleReview} disabled={actionLoading} />
-        <IconButton icon={TestTube2} label="Run tests" size="sm" onClick={handleTest} disabled={actionLoading} />
-        <IconButton icon={BookOpen} label="Explain project" size="sm" onClick={handleExplain} disabled={actionLoading} />
+        <IconButton icon={Eye} label="Review project" size="sm" onClick={handleReview} disabled={!!actionState?.loading} />
+        <IconButton icon={TestTube2} label="Run tests" size="sm" onClick={handleTest} disabled={!!actionState?.loading} />
+        <IconButton icon={BookOpen} label="Explain project" size="sm" onClick={handleExplain} disabled={!!actionState?.loading} />
       </div>
 
       {/* Workspace: vertical split - top: editor, bottom: activity panel */}
@@ -801,6 +994,7 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
                           <div className="space-y-4">
                             <div className="card p-4">
                               <label className="block text-xs font-semibold text-muted-accessible uppercase tracking-wider mb-2">Provider</label>
+                              <p className="text-xs text-muted mb-2">Current session: <span className="font-semibold text-ink capitalize">{selectedProvider}</span></p>
                               <div className="flex gap-2">
                                 {['claude', 'codex', 'gemini'].map(p => (
                                   <button
@@ -860,24 +1054,7 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
                     )}
 
                     {activeWorkspaceTab === 'secrets' && (
-                      <div className="h-full flex flex-col">
-                        <div className="p-6 overflow-y-auto">
-                          <h3 className="text-h3 font-heading text-ink mb-2">Environment Secrets</h3>
-                          <p className="text-sm text-muted mb-6">
-                            Secrets are stored locally and injected as environment variables during builds.
-                            They are never committed to the project repository.
-                          </p>
-                          <div className="card p-4">
-                            <div className="text-sm text-muted-accessible text-center py-8">
-                              Secret management coming soon.
-                              <br />
-                              <span className="text-xs mt-2 block">
-                                For now, set environment variables before running <code className="font-mono bg-hover px-1.5 py-0.5 rounded text-primary">loki start</code>
-                              </span>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
+                      <SecretsPanel />
                     )}
 
                     {activeWorkspaceTab === 'prd' && (
@@ -916,6 +1093,19 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
           </Panel>
         </PanelGroup>
       </div>
+
+      {/* Action progress indicator */}
+      {actionState?.loading && (
+        <div className="absolute inset-x-0 bottom-0 z-20 bg-card border-t border-border p-4">
+          <div className="flex items-center gap-3">
+            <div className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+            <span className="text-sm font-medium text-ink">
+              {actionState.type === 'review' ? 'Reviewing project' : actionState.type === 'test' ? 'Generating tests' : 'Analyzing project'}...
+            </span>
+            <span className="text-xs font-mono text-muted">{actionState.elapsed}s</span>
+          </div>
+        </div>
+      )}
 
       {/* Action output overlay */}
       {actionOutput && (
