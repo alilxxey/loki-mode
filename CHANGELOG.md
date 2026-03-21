@@ -5,6 +5,26 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [6.57.2] - 2026-03-21 - Docker-first dev server, multi-select delete, Expo QR, 7 framework detections
+
+### Added
+- Docker Compose detection as highest-priority dev server strategy (isolated containers, no port conflicts)
+- Multi-select delete for projects: checkbox on hover, Select All / Clear / Delete(N) bulk actions, red ring highlight on selected cards
+- Delete projects from Projects page (trash icon, confirmation dialog, full cleanup: files, node_modules, processes, PTY, dev server)
+- Expo/React Native QR code preview for Expo Go mobile testing
+- Java/Spring Boot detection (Maven + Gradle with wrapper support)
+- Ruby on Rails detection
+- PHP/Laravel detection
+- Elixir/Phoenix detection
+- Swift/Vapor detection
+- Static HTML fallback (python3 -m http.server)
+- Port detection patterns for Tomcat, Rails, Laravel, Phoenix
+- LLM instructed to generate Dockerfile + docker-compose.yml for all new projects
+
+### Changed
+- Delete and select buttons always visible on project cards (not just on hover)
+- Preview URL bar shows path only, not full localhost URL
+
 ## [6.57.1] - 2026-03-21 - Remove beforeunload warning on PRD page refresh
 
 ### Fixed
