@@ -5,6 +5,12 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [6.58.1] - 2026-03-21 - fix: persist config selections, hide empty activity tabs
+
+### Fixed
+- Persist config selections across sessions
+- Hide empty activity tabs in dashboard UI
+
 ## [6.58.0] - 2026-03-21 - 3-dot project menu, static file fix, Docker-first, UI polish
 
 ### Added
