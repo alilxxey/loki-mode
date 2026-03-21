@@ -404,8 +404,12 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
     name: string;
     type: 'file' | 'directory';
   } | null>(null);
-  const [buildMode, setBuildMode] = useState<'quick' | 'standard' | 'max'>('standard');
-  const [selectedProvider, setSelectedProvider] = useState('claude');
+  const [buildMode, setBuildMode] = useState<'quick' | 'standard' | 'max'>(() => {
+    return (sessionStorage.getItem(`pl_buildmode_${sessionData.id}`) as 'quick' | 'standard' | 'max') || 'standard';
+  });
+  const [selectedProvider, setSelectedProvider] = useState(() => {
+    return sessionStorage.getItem(`pl_provider_${sessionData.id}`) || 'claude';
+  });
   const [actionOutput, setActionOutput] = useState<string | null>(null);
   const [actionState, setActionState] = useState<{
     type: 'review' | 'test' | 'explain';
@@ -1390,6 +1394,7 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
                                     key={p}
                                     onClick={() => {
                                       setSelectedProvider(p);
+                                      sessionStorage.setItem(`pl_provider_${sessionData.id}`, p);
                                       api.setProvider(p).catch(() => {});
                                     }}
                                     className={`px-4 py-2 rounded-btn text-sm font-medium border transition-colors capitalize ${
@@ -1409,7 +1414,7 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
                                 {(['quick', 'standard', 'max'] as const).map(m => (
                                   <button
                                     key={m}
-                                    onClick={() => setBuildMode(m)}
+                                    onClick={() => { setBuildMode(m); sessionStorage.setItem(`pl_buildmode_${sessionData.id}`, m); }}
                                     className={`px-4 py-2 rounded-btn text-sm font-medium border transition-colors capitalize ${
                                       buildMode === m
                                         ? 'border-primary bg-primary/10 text-primary'
@@ -1478,6 +1483,7 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
                 agents={null}
                 checklist={null}
                 sessionId={session.id}
+                isRunning={sessionData.status === 'running' || sessionData.status === 'in_progress'}
                 buildMode={buildMode}
               />
             </ErrorBoundary>
