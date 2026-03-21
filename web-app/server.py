@@ -557,7 +557,20 @@ class DevServerManager:
         if session_id in self.servers:
             await self.stop(session_id)
 
+        # Try to detect dev command -- check root first, then subdirectories
         detected = await self.detect_dev_command(project_dir)
+        actual_dir = project_dir
+        if not detected:
+            # Check immediate subdirectories for a project with package.json
+            root = Path(project_dir)
+            if root.is_dir():
+                for subdir in sorted(root.iterdir()):
+                    if subdir.is_dir() and not subdir.name.startswith('.'):
+                        sub_detected = await self.detect_dev_command(str(subdir))
+                        if sub_detected:
+                            detected = sub_detected
+                            actual_dir = str(subdir)
+                            break
         if not command and not detected:
             return {"status": "error", "message": "No dev command detected. Provide one explicitly."}
 
@@ -576,7 +589,7 @@ class DevServerManager:
                 stderr=subprocess.STDOUT,
                 stdin=subprocess.DEVNULL,
                 text=True,
-                cwd=project_dir,
+                cwd=actual_dir,
                 env=build_env,
                 **({"start_new_session": True} if sys.platform != "win32"
                    else {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}),
