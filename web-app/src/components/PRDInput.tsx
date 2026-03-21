@@ -85,16 +85,8 @@ export function PRDInput({ onSubmit, running, error, provider: providerProp, onP
     }
   }, [prd]);
 
-  // Warn on page close if PRD has unsaved content
-  useEffect(() => {
-    const handler = (e: BeforeUnloadEvent) => {
-      if (prd.trim()) {
-        e.preventDefault();
-      }
-    };
-    window.addEventListener('beforeunload', handler);
-    return () => window.removeEventListener('beforeunload', handler);
-  }, [prd]);
+  // PRD content is persisted to sessionStorage by the parent component,
+  // so no need to warn on page reload -- content is preserved automatically.
 
   const handleTemplateSelect = useCallback(async (filename: string, name: string) => {
     setSelectedTemplate(name);
