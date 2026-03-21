@@ -279,6 +279,7 @@ export const api = {
         url?: string;
         message?: string;
         output?: string[];
+        portless_url?: string;
       }>(`/sessions/${encodeURIComponent(sessionId)}/devserver/start`, {
         method: 'POST',
         body: JSON.stringify({ command: command || null }),
@@ -298,6 +299,7 @@ export const api = {
         url: string | null;
         framework: string | null;
         output: string[];
+        portless_url?: string;
       }>(`/sessions/${encodeURIComponent(sessionId)}/devserver/status`),
   },
 

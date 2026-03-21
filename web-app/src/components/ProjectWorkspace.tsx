@@ -500,6 +500,7 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
     url: string | null;
     framework: string | null;
     output: string[];
+    portless_url?: string;
   } | null>(null);
   const [devServerStarting, setDevServerStarting] = useState(false);
   const [devServerError, setDevServerError] = useState<string | null>(null);
@@ -1223,7 +1224,10 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
                               devServer.status === 'error' ? 'bg-red-500' :
                               'bg-gray-400'
                             }`} />
-                            {devServer.running && devServer.port && (
+                            {devServer.running && devServer.portless_url && (
+                              <span>Running at {devServer.portless_url}</span>
+                            )}
+                            {devServer.running && devServer.port && !devServer.portless_url && (
                               <span>Running on port {devServer.port}</span>
                             )}
                             {devServer.status === 'starting' && (

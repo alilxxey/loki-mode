@@ -482,6 +482,60 @@ class DevServerManager:
 
     def __init__(self) -> None:
         self.servers: Dict[str, dict] = {}
+        self._portless_available: Optional[bool] = None
+        self._portless_proxy_started = False
+
+    def _has_portless(self) -> bool:
+        """Check if portless CLI is installed (cached)."""
+        if self._portless_available is None:
+            try:
+                subprocess.run(
+                    ["portless", "--version"],
+                    capture_output=True, timeout=5,
+                )
+                self._portless_available = True
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                self._portless_available = False
+        return self._portless_available
+
+    def _portless_app_name(self, session_id: str) -> str:
+        """Generate a deterministic short app name from session_id."""
+        clean = re.sub(r"[^a-zA-Z0-9]", "", session_id)
+        return f"lab-{clean[:6].lower()}"
+
+    def _ensure_portless_proxy(self) -> bool:
+        """Start the portless proxy if not already running.
+
+        Returns True if the proxy is available, False otherwise.
+        """
+        if self._portless_proxy_started:
+            return True
+        # Check if port 1355 is already listening
+        import socket
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(1)
+        try:
+            s.connect(("127.0.0.1", 1355))
+            s.close()
+            self._portless_proxy_started = True
+            return True
+        except (ConnectionRefusedError, OSError):
+            s.close()
+        # Try to start the proxy
+        try:
+            subprocess.Popen(
+                ["portless", "proxy", "start"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+            )
+            # Give it a moment to start
+            import time as _time
+            _time.sleep(1)
+            self._portless_proxy_started = True
+            return True
+        except (FileNotFoundError, OSError):
+            return False
 
     async def detect_dev_command(self, project_dir: str) -> Optional[dict]:
         """Detect the dev command from project files."""
@@ -578,12 +632,33 @@ class DevServerManager:
         expected_port = detected["expected_port"] if detected else 3000
         framework = detected["framework"] if detected else "unknown"
 
+        # Auto-install dependencies if needed
+        actual_path = Path(actual_dir)
+        needs_npm = (actual_path / "package.json").exists() and not (actual_path / "node_modules").exists()
+        needs_pip = (actual_path / "requirements.txt").exists() and not (actual_path / "venv").exists()
+        if needs_npm:
+            # Prepend npm install to the command
+            cmd_str = f"npm install && {cmd_str}"
+        if needs_pip:
+            cmd_str = f"pip install -r requirements.txt && {cmd_str}"
+
+        # Check if portless is available and proxy is running
+        use_portless = False
+        portless_app_name = None
+        if self._has_portless() and self._ensure_portless_proxy():
+            portless_app_name = self._portless_app_name(session_id)
+            use_portless = True
+            # Wrap the command with portless
+            effective_cmd = f"portless {portless_app_name} {cmd_str}"
+        else:
+            effective_cmd = cmd_str
+
         build_env = {**os.environ}
         build_env.update(_load_secrets())
 
         try:
             proc = subprocess.Popen(
-                cmd_str,
+                effective_cmd,
                 shell=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
@@ -601,12 +676,15 @@ class DevServerManager:
             "process": proc,
             "port": None,
             "expected_port": expected_port,
-            "command": cmd_str,
+            "command": effective_cmd,
+            "original_command": cmd_str,
             "framework": framework,
             "status": "starting",
             "pid": proc.pid,
             "project_dir": project_dir,
             "output_lines": [],
+            "use_portless": use_portless,
+            "portless_app_name": portless_app_name,
         }
         self.servers[session_id] = server_info
 
@@ -625,16 +703,22 @@ class DevServerManager:
                     "output": info["output_lines"][-10:] if info["output_lines"] else [],
                 }
             if info["port"] is not None:
-                health_ok = await self._health_check(info["port"])
+                # For portless, also verify the portless proxy can reach the app
+                check_port = info["port"]
+                health_ok = await self._health_check(check_port)
                 if health_ok:
                     info["status"] = "running"
-                    return {
+                    result = {
                         "status": "running",
                         "port": info["port"],
-                        "command": cmd_str,
+                        "command": effective_cmd,
                         "pid": proc.pid,
                         "url": f"/proxy/{session_id}/",
                     }
+                    if use_portless and portless_app_name:
+                        result["portless_url"] = f"http://{portless_app_name}.localhost:1355/"
+                        result["port"] = 1355
+                    return result
 
         if proc.poll() is not None:
             server_info["status"] = "error"
@@ -648,24 +732,32 @@ class DevServerManager:
         if health_ok:
             server_info["port"] = expected_port
             server_info["status"] = "running"
-            return {
+            result = {
                 "status": "running",
                 "port": expected_port,
-                "command": cmd_str,
+                "command": effective_cmd,
                 "pid": proc.pid,
                 "url": f"/proxy/{session_id}/",
             }
+            if use_portless and portless_app_name:
+                result["portless_url"] = f"http://{portless_app_name}.localhost:1355/"
+                result["port"] = 1355
+            return result
 
         server_info["status"] = "starting"
         server_info["port"] = expected_port
-        return {
+        result = {
             "status": "starting",
             "message": "Server started but port not yet confirmed",
             "port": expected_port,
-            "command": cmd_str,
+            "command": effective_cmd,
             "pid": proc.pid,
             "url": f"/proxy/{session_id}/",
         }
+        if use_portless and portless_app_name:
+            result["portless_url"] = f"http://{portless_app_name}.localhost:1355/"
+            result["port"] = 1355
+        return result
 
     async def _monitor_output(self, session_id: str) -> None:
         """Background task: read dev server stdout and detect port."""
@@ -779,7 +871,7 @@ class DevServerManager:
         if not alive and info["status"] in ("running", "starting"):
             info["status"] = "error"
 
-        return {
+        result = {
             "running": alive and info["status"] == "running",
             "status": info["status"],
             "port": info.get("port"),
@@ -789,6 +881,12 @@ class DevServerManager:
             "framework": info.get("framework"),
             "output": info.get("output_lines", [])[-20:],
         }
+        if info.get("use_portless") and info.get("portless_app_name"):
+            app_name = info["portless_app_name"]
+            result["portless_url"] = f"http://{app_name}.localhost:1355/"
+            if alive:
+                result["port"] = 1355
+        return result
 
     async def stop_all(self) -> None:
         """Stop all dev servers (used on shutdown)."""
@@ -2729,8 +2827,12 @@ async def start_devserver(session_id: str, req: DevServerStartRequest) -> JSONRe
     target = _find_session_dir(session_id)
     if target is None:
         return JSONResponse(status_code=404, content={"error": "Session not found"})
-    result = await dev_server_manager.start(session_id, str(target), req.command)
-    status_code = 200 if result.get("status") != "error" else 500
+    try:
+        result = await dev_server_manager.start(session_id, str(target), req.command)
+    except Exception as e:
+        logger.error("Dev server start failed: %s", e)
+        result = {"status": "error", "message": str(e)}
+    status_code = 200 if result.get("status") != "error" else 400
     return JSONResponse(content=result, status_code=status_code)
 
 
@@ -2774,8 +2876,17 @@ async def proxy_to_devserver(session_id: str, path: str, request: Request):
             status_code=503,
         )
 
-    target_port = server["port"]
-    target_url = f"http://127.0.0.1:{target_port}/{path}"
+    # Determine target: portless URL or direct port
+    if server.get("use_portless") and server.get("portless_app_name"):
+        app_name = server["portless_app_name"]
+        target_host = f"{app_name}.localhost"
+        target_port = 1355
+        target_url = f"http://{target_host}:{target_port}/{path}"
+    else:
+        target_port = server["port"]
+        target_host = f"127.0.0.1:{target_port}"
+        target_url = f"http://127.0.0.1:{target_port}/{path}"
+
     if request.url.query:
         target_url += f"?{request.url.query}"
 
@@ -2786,7 +2897,7 @@ async def proxy_to_devserver(session_id: str, path: str, request: Request):
         k: v for k, v in request.headers.items()
         if k.lower() not in skip_headers
     }
-    fwd_headers["host"] = f"127.0.0.1:{target_port}"
+    fwd_headers["host"] = target_host
 
     body = await request.body()
 
@@ -2858,9 +2969,13 @@ async def proxy_websocket(websocket: WebSocket, session_id: str, path: str):
         await websocket.close(code=1008, reason="Dev server not running")
         return
 
-    target_port = server["port"]
-    # Forward the exact sub-path to the upstream dev server
-    ws_url = f"ws://127.0.0.1:{target_port}/{path}"
+    # Determine WebSocket target: portless or direct
+    if server.get("use_portless") and server.get("portless_app_name"):
+        app_name = server["portless_app_name"]
+        ws_url = f"ws://{app_name}.localhost:1355/{path}"
+    else:
+        target_port = server["port"]
+        ws_url = f"ws://127.0.0.1:{target_port}/{path}"
 
     await websocket.accept()
 
