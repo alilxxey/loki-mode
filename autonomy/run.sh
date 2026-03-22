@@ -8798,10 +8798,24 @@ populate_prd_queue() {
         return 0
     fi
 
+    # Prefer the original project PRD over generated quick-prd.md
+    # quick-prd.md contains boilerplate that produces garbage tasks
+    local effective_prd="$prd_file"
+    if [[ "$prd_file" == *"quick-prd.md" ]] || [[ "$prd_file" == *"chat-prd.md" ]]; then
+        # Look for the real PRD in the project root
+        for candidate in "PRD.md" "prd.md" "requirements.md" "REQUIREMENTS.md" "spec.md" "SPEC.md"; do
+            if [[ -f "$candidate" ]]; then
+                effective_prd="$candidate"
+                log_info "Using project PRD ($candidate) instead of generated $prd_file"
+                break
+            fi
+        done
+    fi
+
     log_step "Parsing PRD into structured tasks..."
     mkdir -p ".loki/queue"
 
-    LOKI_PRD_FILE="$prd_file" python3 << 'PRD_PARSE_EOF'
+    LOKI_PRD_FILE="$effective_prd" python3 << 'PRD_PARSE_EOF'
 import json, re, os, sys
 
 prd_path = os.environ.get("LOKI_PRD_FILE", "")
@@ -8836,17 +8850,67 @@ for line in content.split("\n"):
         project_name = m.group(1).strip()
         break
 
-# Find feature/requirement sections
+# Helper: strip numbered prefixes like "4." or "4.1" or "6.3.2" from section names
+def strip_numbering(name):
+    return re.sub(r'^\d+(\.\d+)*\.?\s*', '', name).strip()
+
+# Find feature/requirement sections -- expanded keywords for real-world PRDs
 feature_keywords = [
     "features", "requirements", "key features", "core features",
     "functional requirements", "user stories", "deliverables",
-    "scope", "functionality", "capabilities", "modules"
+    "project scope", "functionality", "capabilities", "modules",
+    # Real-world PRD section names:
+    "specification", "backend", "frontend", "api", "endpoints",
+    "components", "services", "implementation", "architecture",
+    "build instructions", "interface", "phase",
+    "database", "data model", "workflow",
+    "screens", "routes", "views", "controllers", "models",
+    "pipeline", "integration", "scaffolding", "deploy",
 ]
 
-# Extract features from bullet points in feature sections
+# Meta sections to skip (applied after stripping numbered prefixes).
+# Skip check runs BEFORE keyword matching so meta sections are never extracted.
+skip_keywords = {
+    "table of contents", "overview", "introduction", "summary",
+    "executive summary", "appendix", "references", "changelog",
+    "future roadmap", "out of scope", "environment variables",
+    "risks", "mitigations", "success metrics", "timeline",
+    "glossary", "terminology", "revision history",
+    "target audience", "tech stack", "technology", "deployment",
+    "non-functional", "problem statement", "value proposition",
+    "background", "metrics", "roadmap",
+}
+
+def is_skip_section(name):
+    """Check if a section name (after stripping numbers) matches a meta/skip section."""
+    clean = strip_numbering(name).lower()
+    if clean in skip_keywords:
+        return True
+    # Also check substring match for skip keywords
+    for sk in skip_keywords:
+        if sk in clean:
+            return True
+    return False
+
+# Also skip the document title (H1 heading captured as a section name)
+h1_title = None
+for line in content.split("\n"):
+    m = re.match(r'^#\s+(.+)', line)
+    if m:
+        h1_title = m.group(1).strip()
+        break
+
+# Extract features from bullet points in feature sections (keyword-matched)
 features = []
 for section_name, section_content in sections.items():
-    is_feature_section = any(kw in section_name.lower() for kw in feature_keywords)
+    # Skip meta sections first (takes priority over keyword match)
+    if is_skip_section(section_name):
+        continue
+    # Skip the document title section
+    if h1_title and section_name == h1_title:
+        continue
+    clean_name = strip_numbering(section_name).lower()
+    is_feature_section = any(kw in clean_name for kw in feature_keywords)
     if is_feature_section:
         # Extract numbered items or bullet points
         for line in section_content.split("\n"):
@@ -8859,22 +8923,71 @@ for section_name, section_content in sections.items():
                 if raw_line and raw_line[0] in (' ', '\t'):
                     continue
                 feature_text = m.group(1).strip()
+                # Skip boilerplate template lines
+                boilerplate = {
+                    "complete the task described above",
+                    "follow existing code patterns and conventions",
+                    "write tests if applicable",
+                    "do not break existing functionality",
+                    "task is completed as described",
+                    "no errors or regressions introduced",
+                    "code follows project conventions",
+                    "keep changes minimal and focused",
+                    "do not refactor unrelated code",
+                }
+                if feature_text.lower() in boilerplate:
+                    continue
                 if len(feature_text) > 10:  # Skip very short lines
                     features.append({
                         "title": feature_text,
                         "section": section_name,
                     })
 
-# If no bullet features found, extract from ## headings that look like features
+# Also extract ### sub-headings from feature sections as tasks
+for section_name, section_content in sections.items():
+    if is_skip_section(section_name):
+        continue
+    if h1_title and section_name == h1_title:
+        continue
+    clean_name = strip_numbering(section_name).lower()
+    is_feature_section = any(kw in clean_name for kw in feature_keywords)
+    if is_feature_section:
+        for line in section_content.split("\n"):
+            sub_match = re.match(r'^###\s+(.+)', line)
+            if sub_match:
+                sub_title = strip_numbering(sub_match.group(1).strip())
+                if len(sub_title) > 5:
+                    # Avoid duplicates
+                    if not any(f["title"] == sub_title for f in features):
+                        features.append({"title": sub_title, "section": section_name})
+
+# Fallback: if no features found via keyword matching, extract ### sub-headings
+# from ALL non-meta sections
 if not features:
-    skip_sections = {"overview", "introduction", "summary", "target audience",
-                     "tech stack", "technology", "deployment", "timeline",
-                     "out of scope", "non-functional", "appendix", "references",
-                     "problem statement", "value proposition", "background"}
     for section_name, section_content in sections.items():
-        if section_name.lower() not in skip_sections and len(section_content) > 20:
+        if is_skip_section(section_name):
+            continue
+        if h1_title and section_name == h1_title:
+            continue
+        for line in section_content.split("\n"):
+            sub_match = re.match(r'^###\s+(.+)', line)
+            if sub_match:
+                sub_title = strip_numbering(sub_match.group(1).strip())
+                if len(sub_title) > 5:
+                    if not any(f["title"] == sub_title for f in features):
+                        features.append({"title": sub_title, "section": section_name})
+
+# Final fallback: extract from ## headings that are non-meta sections
+if not features:
+    for section_name, section_content in sections.items():
+        if is_skip_section(section_name):
+            continue
+        if h1_title and section_name == h1_title:
+            continue
+        clean_name = strip_numbering(section_name)
+        if len(section_content) > 20 and len(clean_name) > 5:
             features.append({
-                "title": section_name,
+                "title": clean_name,
                 "section": "Requirements",
             })
 

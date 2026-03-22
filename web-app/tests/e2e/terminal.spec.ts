@@ -50,12 +50,14 @@ test.describe('Terminal Panel', () => {
     }
   });
 
-  test('Build Log tab still exists alongside Terminal', async ({ page }) => {
+  test('Build Log tab shown conditionally alongside Terminal', async ({ page }) => {
     test.skip(!sessionId, 'No sessions available');
     await page.goto(`/project/${sessionId}`);
-    // Both tabs should exist in the ActivityPanel
+    // Terminal tab is always visible
     await expect(page.locator('button:has-text("Terminal")')).toBeVisible({ timeout: 10000 });
-    await expect(page.locator('button:has-text("Build Log")')).toBeVisible();
+    // Build Log tab is conditionally visible -- only when there are logs or a build is running.
+    // AI Chat tab is always visible alongside Terminal.
+    await expect(page.locator('button:has-text("AI Chat")')).toBeVisible();
   });
 
   test('Terminal connects via WebSocket (DOM check)', async ({ page }) => {

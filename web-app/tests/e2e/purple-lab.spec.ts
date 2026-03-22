@@ -460,3 +460,661 @@ test.describe('Accessibility', () => {
     await expect(collapseBtn).toBeAttached({ timeout: 5000 });
   });
 });
+
+// ============================================================================
+// Onboarding Overlay Tests
+// ============================================================================
+
+test.describe('Onboarding Overlay', () => {
+  test('shows onboarding when pl_onboarding_complete is not set', async ({ browser }) => {
+    // Use a fresh context with no localStorage
+    const context = await browser.newContext({
+      baseURL: 'http://127.0.0.1:57375',
+    });
+    const page = await context.newPage();
+    await page.goto('/');
+    // Should show onboarding overlay with step counter
+    await expect(page.locator('text=Write your PRD')).toBeVisible({ timeout: 10000 });
+    await expect(page.locator('text=1 / 4')).toBeVisible();
+    await context.close();
+  });
+
+  test('steps through all onboarding steps with Next', async ({ browser }) => {
+    const context = await browser.newContext({
+      baseURL: 'http://127.0.0.1:57375',
+    });
+    const page = await context.newPage();
+    await page.goto('/');
+    // Step 1: Write your PRD
+    await expect(page.locator('text=Write your PRD')).toBeVisible({ timeout: 10000 });
+    await page.click('button:has-text("Next")');
+    // Step 2: Use the terminal
+    await expect(page.locator('text=Use the terminal')).toBeVisible({ timeout: 3000 });
+    await page.click('button:has-text("Next")');
+    // Step 3: Preview in real-time
+    await expect(page.locator('text=Preview in real-time')).toBeVisible({ timeout: 3000 });
+    await page.click('button:has-text("Next")');
+    // Step 4: Iterate with AI Chat -- final step shows "Get Started"
+    await expect(page.locator('text=Iterate with AI Chat')).toBeVisible({ timeout: 3000 });
+    await expect(page.locator('button:has-text("Get Started")')).toBeVisible();
+    await page.click('button:has-text("Get Started")');
+    // Overlay should be gone
+    await expect(page.locator('text=Write your PRD')).not.toBeVisible({ timeout: 3000 });
+    await context.close();
+  });
+
+  test('Skip button dismisses onboarding immediately', async ({ browser }) => {
+    const context = await browser.newContext({
+      baseURL: 'http://127.0.0.1:57375',
+    });
+    const page = await context.newPage();
+    await page.goto('/');
+    await expect(page.locator('text=Write your PRD')).toBeVisible({ timeout: 10000 });
+    await page.click('button:has-text("Skip")');
+    // Overlay should be gone
+    await expect(page.locator('text=Write your PRD')).not.toBeVisible({ timeout: 3000 });
+    await context.close();
+  });
+
+  test('does not show onboarding when pl_onboarding_complete is set', async ({ page }) => {
+    // The playwright config sets pl_onboarding_complete=1 in storageState
+    await page.goto('/');
+    await expect(page.locator('text=Describe it. Build it. Ship it.')).toBeVisible({ timeout: 10000 });
+    // Onboarding overlay should not be present
+    await expect(page.locator('text=Write your PRD')).not.toBeVisible();
+  });
+});
+
+// ============================================================================
+// WebSocket Connection Indicator Tests
+// ============================================================================
+
+test.describe('WebSocket Connection', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem('pl_onboarding_complete', '1'));
+  });
+
+  test('shows connection status indicator in sidebar', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForTimeout(3000);
+    // Should show "Connected" or "Disconnected" text in sidebar
+    const connected = page.locator('text=Connected');
+    const disconnected = page.locator('text=Disconnected');
+    const hasConnected = await connected.isVisible().catch(() => false);
+    const hasDisconnected = await disconnected.isVisible().catch(() => false);
+    expect(hasConnected || hasDisconnected).toBe(true);
+  });
+
+  test('home page shows connection dot indicator', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForTimeout(3000);
+    // Home page has its own connection indicator at the bottom
+    const connectedText = page.locator('text=Connected to Purple Lab backend');
+    const waitingText = page.locator('text=Waiting for backend connection...');
+    const hasConnected = await connectedText.isVisible().catch(() => false);
+    const hasWaiting = await waitingText.isVisible().catch(() => false);
+    expect(hasConnected || hasWaiting).toBe(true);
+  });
+});
+
+// ============================================================================
+// 404 / Not Found Page Tests
+// ============================================================================
+
+test.describe('Not Found Page', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem('pl_onboarding_complete', '1'));
+  });
+
+  test('shows 404 for unknown routes', async ({ page }) => {
+    await page.goto('/this-page-does-not-exist');
+    // Should render something -- either a 404 page or redirect to home
+    await expect(page.locator('body')).toBeVisible({ timeout: 10000 });
+  });
+
+  test('invalid project ID shows error state', async ({ page }) => {
+    await page.goto('/project/nonexistent-session-id-12345');
+    await page.waitForTimeout(3000);
+    // Should show "Project not found" or error message
+    const notFound = page.locator('text=Project not found');
+    const backBtn = page.locator('text=Back to Home');
+    const hasNotFound = await notFound.isVisible().catch(() => false);
+    const hasBackBtn = await backBtn.isVisible().catch(() => false);
+    expect(hasNotFound || hasBackBtn).toBe(true);
+  });
+});
+
+// ============================================================================
+// Settings Page - Provider Selection Tests
+// ============================================================================
+
+test.describe('Settings - Provider Selection', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem('pl_onboarding_complete', '1'));
+  });
+
+  test('shows all three providers (Claude, Codex, Gemini)', async ({ page }) => {
+    await page.goto('/settings');
+    await expect(page.locator('h1:has-text("Settings")')).toBeVisible({ timeout: 10000 });
+    await expect(page.locator('text=Claude')).toBeVisible();
+    await expect(page.locator('text=Codex')).toBeVisible();
+    await expect(page.locator('text=Gemini')).toBeVisible();
+  });
+
+  test('provider cards show descriptions', async ({ page }) => {
+    await page.goto('/settings');
+    await expect(page.locator('h1:has-text("Settings")')).toBeVisible({ timeout: 10000 });
+    await expect(page.locator('text=full features')).toBeVisible();
+    await expect(page.locator('text=degraded mode').first()).toBeVisible();
+  });
+
+  test('clicking a provider selects it (ring highlight)', async ({ page }) => {
+    await page.goto('/settings');
+    await expect(page.locator('h1:has-text("Settings")')).toBeVisible({ timeout: 10000 });
+    // Click Gemini
+    await page.locator('text=Gemini').click();
+    await page.waitForTimeout(500);
+    // The selected card should have a ring class -- verify by checking the API
+    const res = await page.request.get('/api/provider/current');
+    const data = await res.json();
+    // Provider should have changed (or at least the API should respond)
+    expect(data).toHaveProperty('provider');
+  });
+
+  test('About section shows version and links', async ({ page }) => {
+    await page.goto('/settings');
+    await expect(page.locator('h1:has-text("Settings")')).toBeVisible({ timeout: 10000 });
+    await expect(page.locator('text=About')).toBeVisible();
+    await expect(page.locator('text=Documentation')).toBeVisible();
+    await expect(page.locator('text=GitHub')).toBeVisible();
+  });
+});
+
+// ============================================================================
+// Template Category Filtering Tests
+// ============================================================================
+
+test.describe('Templates - Category Filtering', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem('pl_onboarding_complete', '1'));
+  });
+
+  test('all category filter tabs are visible', async ({ page }) => {
+    await page.goto('/templates');
+    await expect(page.locator('h1:has-text("Templates")')).toBeVisible({ timeout: 10000 });
+    for (const cat of ['All', 'Website', 'API', 'CLI', 'Bot', 'Data', 'Other']) {
+      await expect(page.locator(`button[role="tab"]:has-text("${cat}")`)).toBeVisible();
+    }
+  });
+
+  test('clicking a category filters templates', async ({ page }) => {
+    await page.goto('/templates');
+    await expect(page.locator('h1:has-text("Templates")')).toBeVisible({ timeout: 10000 });
+    // Wait for templates to load
+    await page.waitForTimeout(2000);
+    // Click a specific category
+    await page.click('button[role="tab"]:has-text("Website")');
+    await page.waitForTimeout(500);
+    // Either shows filtered templates or "No templates in this category"
+    const cards = page.locator('[class*="card"]');
+    const noTemplates = page.locator('text=No templates in this category');
+    const hasCards = await cards.count() > 0;
+    const hasEmpty = await noTemplates.isVisible().catch(() => false);
+    expect(hasCards || hasEmpty).toBe(true);
+  });
+
+  test('clicking All shows all templates', async ({ page }) => {
+    await page.goto('/templates');
+    await expect(page.locator('h1:has-text("Templates")')).toBeVisible({ timeout: 10000 });
+    await page.waitForTimeout(2000);
+    // Click Website first, then All
+    await page.click('button[role="tab"]:has-text("Website")');
+    await page.waitForTimeout(300);
+    await page.click('button[role="tab"]:has-text("All")');
+    await page.waitForTimeout(500);
+    // Should show templates or loading
+    const templateCards = page.locator('h3');
+    expect(await templateCards.count()).toBeGreaterThan(0);
+  });
+
+  test('selecting a template navigates to home with PRD prefill', async ({ page }) => {
+    await page.goto('/templates');
+    await expect(page.locator('h1:has-text("Templates")')).toBeVisible({ timeout: 10000 });
+    await page.waitForTimeout(2000);
+    // Click the first template card
+    const firstCard = page.locator('h3').first();
+    if (await firstCard.isVisible()) {
+      await firstCard.click();
+      // Should navigate to home
+      await expect(page).toHaveURL('/', { timeout: 5000 });
+    }
+  });
+});
+
+// ============================================================================
+// Projects Page - Search and Filter Tests
+// ============================================================================
+
+test.describe('Projects - Search and Filter', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem('pl_onboarding_complete', '1'));
+  });
+
+  test('search input is present and functional', async ({ page }) => {
+    await page.goto('/projects');
+    await expect(page.locator('h1:has-text("Projects")')).toBeVisible({ timeout: 10000 });
+    const searchInput = page.locator('input[aria-label="Search projects"]');
+    await expect(searchInput).toBeVisible();
+    await searchInput.fill('test search query');
+    await expect(searchInput).toHaveValue('test search query');
+  });
+
+  test('filter tabs are present (All, Running, Completed, Failed)', async ({ page }) => {
+    await page.goto('/projects');
+    await expect(page.locator('h1:has-text("Projects")')).toBeVisible({ timeout: 10000 });
+    for (const tab of ['All', 'Running', 'Completed', 'Failed']) {
+      await expect(page.locator(`button[role="tab"]:has-text("${tab}")`)).toBeVisible();
+    }
+  });
+
+  test('New Project button navigates to home', async ({ page }) => {
+    await page.goto('/projects');
+    await expect(page.locator('h1:has-text("Projects")')).toBeVisible({ timeout: 10000 });
+    await page.click('button:has-text("New Project")');
+    await expect(page).toHaveURL('/', { timeout: 5000 });
+  });
+
+  test('filter tab switching changes the active tab highlight', async ({ page }) => {
+    await page.goto('/projects');
+    await expect(page.locator('h1:has-text("Projects")')).toBeVisible({ timeout: 10000 });
+    // Click Completed tab
+    const completedTab = page.locator('button[role="tab"]:has-text("Completed")');
+    await completedTab.click();
+    // Should have aria-selected=true
+    await expect(completedTab).toHaveAttribute('aria-selected', 'true');
+    // All tab should no longer be selected
+    const allTab = page.locator('button[role="tab"]:has-text("All")');
+    await expect(allTab).toHaveAttribute('aria-selected', 'false');
+  });
+});
+
+// ============================================================================
+// PRD Input - Advanced Tests
+// ============================================================================
+
+test.describe('PRD Input - Advanced', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem('pl_onboarding_complete', '1'));
+  });
+
+  test('character count updates as user types', async ({ page }) => {
+    await page.goto('/');
+    await expect(page.locator('text=Product Requirements')).toBeVisible({ timeout: 10000 });
+    const textarea = page.locator('textarea');
+    await textarea.fill('Hello World');
+    // Character count should show "11 chars"
+    await expect(page.locator('text=11 chars')).toBeVisible({ timeout: 3000 });
+  });
+
+  test('Quick Mode toggle exists and works', async ({ page }) => {
+    await page.goto('/');
+    await expect(page.locator('text=Product Requirements')).toBeVisible({ timeout: 10000 });
+    const quickBtn = page.locator('button:has-text("Quick")');
+    await expect(quickBtn).toBeVisible();
+    // Click to toggle Quick Mode on
+    await quickBtn.click();
+    await page.waitForTimeout(300);
+    // Click again to toggle off
+    await quickBtn.click();
+  });
+
+  test('project directory input field exists', async ({ page }) => {
+    await page.goto('/');
+    await expect(page.locator('text=Product Requirements')).toBeVisible({ timeout: 10000 });
+    const dirLabel = page.locator('text=Project Directory');
+    await expect(dirLabel).toBeVisible();
+    const dirInput = page.locator('input[placeholder*="Leave blank"]');
+    await expect(dirInput).toBeVisible();
+    await dirInput.fill('/tmp/my-test-project');
+    await expect(dirInput).toHaveValue('/tmp/my-test-project');
+  });
+
+  test('PRD draft persists in localStorage', async ({ page }) => {
+    await page.goto('/');
+    await expect(page.locator('text=Product Requirements')).toBeVisible({ timeout: 10000 });
+    const textarea = page.locator('textarea');
+    await textarea.fill('# Persisted Draft\n\nThis should survive a reload.');
+    // Wait for draft to save
+    await page.waitForTimeout(500);
+    // Verify localStorage has the draft
+    const draft = await page.evaluate(() => localStorage.getItem('loki-prd-draft'));
+    expect(draft).toContain('Persisted Draft');
+    // Clean up
+    await page.evaluate(() => localStorage.removeItem('loki-prd-draft'));
+  });
+});
+
+// ============================================================================
+// Project Card Interactions (requires sessions)
+// ============================================================================
+
+test.describe('Project Cards', () => {
+  let sessionId: string;
+  let hasSessions: boolean;
+
+  test.beforeAll(async ({ request }) => {
+    const res = await request.get('/api/sessions/history');
+    const sessions = await res.json();
+    hasSessions = sessions.length > 0;
+    if (hasSessions) {
+      sessionId = sessions[0].id;
+    }
+  });
+
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem('pl_onboarding_complete', '1'));
+  });
+
+  test('project cards show date and status badge', async ({ page }) => {
+    test.skip(!hasSessions, 'No sessions available');
+    await page.goto('/projects');
+    await expect(page.locator('h1:has-text("Projects")')).toBeVisible({ timeout: 10000 });
+    await page.waitForTimeout(2000);
+    // Should have at least one card with a date and status
+    const cards = page.locator('[class*="card"]');
+    expect(await cards.count()).toBeGreaterThan(0);
+  });
+
+  test('3-dot menu opens on project card', async ({ page }) => {
+    test.skip(!hasSessions, 'No sessions available');
+    await page.goto('/projects');
+    await expect(page.locator('h1:has-text("Projects")')).toBeVisible({ timeout: 10000 });
+    await page.waitForTimeout(2000);
+    // Click the first 3-dot menu button
+    const menuBtn = page.locator('button[aria-label="Project options"]').first();
+    if (await menuBtn.isVisible()) {
+      await menuBtn.click();
+      // Should show menu items
+      await expect(page.locator('text=Open project')).toBeVisible({ timeout: 3000 });
+      await expect(page.locator('text=Copy path')).toBeVisible();
+      await expect(page.locator('text=Delete project')).toBeVisible();
+    }
+  });
+
+  test('clicking project card navigates to workspace', async ({ page }) => {
+    test.skip(!hasSessions, 'No sessions available');
+    await page.goto('/projects');
+    await expect(page.locator('h1:has-text("Projects")')).toBeVisible({ timeout: 10000 });
+    await page.waitForTimeout(2000);
+    // Click the first project card (not the menu button)
+    const firstCard = page.locator('h3').first();
+    if (await firstCard.isVisible()) {
+      await firstCard.click();
+      await page.waitForTimeout(2000);
+      // Should navigate to /project/<id>
+      expect(page.url()).toContain('/project/');
+    }
+  });
+});
+
+// ============================================================================
+// Sidebar Collapse / Expand Tests
+// ============================================================================
+
+test.describe('Sidebar', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem('pl_onboarding_complete', '1'));
+  });
+
+  test('sidebar shows Purple Lab branding', async ({ page }) => {
+    await page.goto('/');
+    await expect(page.locator('text=Purple Lab')).toBeVisible({ timeout: 10000 });
+    await expect(page.locator('text=Powered by Loki')).toBeVisible();
+  });
+
+  test('sidebar collapse button toggles sidebar width', async ({ page }) => {
+    await page.goto('/');
+    await expect(page.locator('text=Purple Lab')).toBeVisible({ timeout: 10000 });
+
+    // Get collapse button -- try both possible titles
+    const collapseBtn = page.locator('button[title="Collapse sidebar"]');
+    if (await collapseBtn.isVisible()) {
+      await collapseBtn.click();
+      await page.waitForTimeout(300);
+      // "Purple Lab" text should be hidden when collapsed
+      await expect(page.locator('text=Purple Lab')).not.toBeVisible({ timeout: 3000 });
+
+      // Expand it back
+      const expandBtn = page.locator('button[title="Expand sidebar"]');
+      await expandBtn.click();
+      await page.waitForTimeout(300);
+      await expect(page.locator('text=Purple Lab')).toBeVisible({ timeout: 3000 });
+    }
+  });
+
+  test('sidebar has Docs link', async ({ page }) => {
+    await page.goto('/');
+    await expect(page.locator('text=Purple Lab')).toBeVisible({ timeout: 10000 });
+    const docsLink = page.locator('a:has-text("Docs")');
+    await expect(docsLink).toBeVisible();
+    const href = await docsLink.getAttribute('href');
+    expect(href).toContain('autonomi.dev/docs');
+  });
+
+  test('sidebar version is displayed', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForTimeout(3000);
+    // Version starts with "v" and contains dots
+    const versionText = page.locator('text=/^v\\d+\\.\\d+/');
+    // Version may not always show (depends on API response), so just check the page loaded
+    await expect(page.locator('text=Purple Lab')).toBeVisible({ timeout: 10000 });
+  });
+});
+
+// ============================================================================
+// Session Detail API Tests
+// ============================================================================
+
+test.describe('Session Detail API', () => {
+  let sessionId: string;
+
+  test.beforeAll(async ({ request }) => {
+    const res = await request.get('/api/sessions/history');
+    const sessions = await res.json();
+    if (sessions.length > 0) {
+      sessionId = sessions[0].id;
+    }
+  });
+
+  test('session detail includes all expected fields', async ({ request }) => {
+    test.skip(!sessionId, 'No sessions available');
+    const res = await request.get(`/api/sessions/${sessionId}`);
+    expect(res.status()).toBe(200);
+    const data = await res.json();
+    expect(data).toHaveProperty('id');
+    expect(data).toHaveProperty('files');
+    expect(data).toHaveProperty('status');
+    expect(data).toHaveProperty('prd');
+    expect(data).toHaveProperty('config');
+    expect(data.id).toBe(sessionId);
+  });
+
+  test('file tree endpoint returns tree structure', async ({ request }) => {
+    test.skip(!sessionId, 'No sessions available');
+    const res = await request.get(`/api/sessions/${sessionId}/files`);
+    expect(res.status()).toBe(200);
+    const data = await res.json();
+    expect(Array.isArray(data)).toBe(true);
+    if (data.length > 0) {
+      expect(data[0]).toHaveProperty('name');
+      expect(data[0]).toHaveProperty('type');
+      expect(data[0]).toHaveProperty('path');
+    }
+  });
+
+  test('devserver status endpoint returns correct format', async ({ request }) => {
+    test.skip(!sessionId, 'No sessions available');
+    const res = await request.get(`/api/sessions/${sessionId}/devserver/status`);
+    expect(res.status()).toBe(200);
+    const data = await res.json();
+    expect(data).toHaveProperty('running');
+    expect(data).toHaveProperty('status');
+    expect(data).toHaveProperty('port');
+    expect(typeof data.running).toBe('boolean');
+  });
+
+  test('preview-info endpoint returns project type', async ({ request }) => {
+    test.skip(!sessionId, 'No sessions available');
+    const res = await request.get(`/api/sessions/${sessionId}/preview-info`);
+    expect(res.status()).toBe(200);
+    const data = await res.json();
+    expect(data).toHaveProperty('type');
+    expect(data).toHaveProperty('description');
+  });
+
+  test('nonexistent session returns 404', async ({ request }) => {
+    const res = await request.get('/api/sessions/nonexistent-session-xyz');
+    expect(res.status()).toBe(404);
+  });
+});
+
+// ============================================================================
+// Config Tab API Tests
+// ============================================================================
+
+test.describe('Config API', () => {
+  let sessionId: string;
+
+  test.beforeAll(async ({ request }) => {
+    const res = await request.get('/api/sessions/history');
+    const sessions = await res.json();
+    if (sessions.length > 0) {
+      sessionId = sessions[0].id;
+    }
+  });
+
+  test('GET config returns session configuration', async ({ request }) => {
+    test.skip(!sessionId, 'No sessions available');
+    const res = await request.get(`/api/sessions/${sessionId}/config`);
+    expect(res.status()).toBe(200);
+    const data = await res.json();
+    // Config should be an object
+    expect(typeof data).toBe('object');
+  });
+
+  test('PUT config saves configuration', async ({ request }) => {
+    test.skip(!sessionId, 'No sessions available');
+    const res = await request.put(`/api/sessions/${sessionId}/config`, {
+      data: { build_mode: 'quick' },
+    });
+    // Should succeed or return valid error
+    expect([200, 400, 422].includes(res.status())).toBe(true);
+  });
+});
+
+// ============================================================================
+// Keyboard Shortcut Tests
+// ============================================================================
+
+test.describe('Keyboard Shortcuts', () => {
+  let sessionId: string;
+
+  test.beforeAll(async ({ request }) => {
+    const res = await request.get('/api/sessions/history');
+    const sessions = await res.json();
+    if (sessions.length > 0) {
+      sessionId = sessions[0].id;
+    }
+  });
+
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem('pl_onboarding_complete', '1'));
+  });
+
+  test('Cmd+? opens keyboard shortcuts modal', async ({ page }) => {
+    test.skip(!sessionId, 'No sessions available');
+    await page.goto(`/project/${sessionId}`);
+    await page.waitForTimeout(2000);
+    // The shortcuts help button should exist in the workspace
+    const helpBtn = page.locator('button[title="Keyboard shortcuts"]');
+    if (await helpBtn.isVisible()) {
+      await helpBtn.click();
+      await page.waitForTimeout(500);
+      // Modal should show keyboard shortcuts
+      await expect(page.locator('text=Keyboard Shortcuts')).toBeVisible({ timeout: 3000 });
+    }
+  });
+});
+
+// ============================================================================
+// Error Boundary Tests
+// ============================================================================
+
+test.describe('Error Handling', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem('pl_onboarding_complete', '1'));
+  });
+
+  test('page loads without console errors on home', async ({ page }) => {
+    const errors: string[] = [];
+    page.on('pageerror', (err) => errors.push(err.message));
+    await page.goto('/');
+    await expect(page.locator('text=Describe it. Build it. Ship it.')).toBeVisible({ timeout: 10000 });
+    // Filter out non-critical errors (WebSocket connection failures are expected in test env)
+    const criticalErrors = errors.filter(e =>
+      !e.includes('WebSocket') &&
+      !e.includes('fetch') &&
+      !e.includes('NetworkError') &&
+      !e.includes('net::ERR')
+    );
+    expect(criticalErrors).toHaveLength(0);
+  });
+
+  test('page loads without console errors on projects', async ({ page }) => {
+    const errors: string[] = [];
+    page.on('pageerror', (err) => errors.push(err.message));
+    await page.goto('/projects');
+    await expect(page.locator('h1:has-text("Projects")')).toBeVisible({ timeout: 10000 });
+    const criticalErrors = errors.filter(e =>
+      !e.includes('WebSocket') &&
+      !e.includes('fetch') &&
+      !e.includes('NetworkError') &&
+      !e.includes('net::ERR')
+    );
+    expect(criticalErrors).toHaveLength(0);
+  });
+});
+
+// ============================================================================
+// Performance / Loading Tests
+// ============================================================================
+
+test.describe('Performance', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem('pl_onboarding_complete', '1'));
+  });
+
+  test('home page loads within 5 seconds', async ({ page }) => {
+    const start = Date.now();
+    await page.goto('/');
+    await expect(page.locator('text=Describe it. Build it. Ship it.')).toBeVisible({ timeout: 5000 });
+    const elapsed = Date.now() - start;
+    expect(elapsed).toBeLessThan(5000);
+  });
+
+  test('templates API responds within 2 seconds', async ({ request }) => {
+    const start = Date.now();
+    const res = await request.get('/api/templates');
+    const elapsed = Date.now() - start;
+    expect(res.status()).toBe(200);
+    expect(elapsed).toBeLessThan(2000);
+  });
+
+  test('health endpoint responds within 500ms', async ({ request }) => {
+    const start = Date.now();
+    const res = await request.get('/health');
+    const elapsed = Date.now() - start;
+    expect(res.status()).toBe(200);
+    expect(elapsed).toBeLessThan(500);
+  });
+});

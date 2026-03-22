@@ -39,8 +39,8 @@ test.describe('Streaming Chat Panel', () => {
     const chatTab = page.locator('button:has-text("AI Chat")');
     await expect(chatTab).toBeVisible({ timeout: 10000 });
     await chatTab.click();
-    // Input field should exist
-    const input = page.locator('input[placeholder*="Ask AI"]');
+    // Input field is a textarea (not input)
+    const input = page.locator('textarea[placeholder*="Ask AI"]');
     await expect(input).toBeVisible({ timeout: 5000 });
     // Send button (with Send icon or aria-label)
     const sendBtn = page.locator('button[aria-label="Send message"]');
@@ -64,12 +64,9 @@ test.describe('Streaming Chat Panel', () => {
     await expect(chatTab).toBeVisible({ timeout: 10000 });
     await chatTab.click();
     // The chat uses <pre> with font-mono class for message content
-    // Verify the CSS class exists in the component structure
-    const preElements = page.locator('.font-mono');
-    // Even in empty state, the input itself uses font-mono for the placeholder
-    // When messages exist, pre tags with font-mono will be present
+    // The input is a textarea, not an input element
     // Just verify the component loaded properly
-    await expect(page.locator('input[placeholder*="Ask AI"]')).toBeVisible({ timeout: 5000 });
+    await expect(page.locator('textarea[placeholder*="Ask AI"]')).toBeVisible({ timeout: 5000 });
   });
 
   test('Chat input supports Enter to send', async ({ page }) => {
@@ -78,7 +75,8 @@ test.describe('Streaming Chat Panel', () => {
     const chatTab = page.locator('button:has-text("AI Chat")');
     await expect(chatTab).toBeVisible({ timeout: 10000 });
     await chatTab.click();
-    const input = page.locator('input[placeholder*="Ask AI"]');
+    // The chat input is a textarea element
+    const input = page.locator('textarea[placeholder*="Ask AI"]');
     await expect(input).toBeVisible({ timeout: 5000 });
     // Type something and verify the input accepts text
     await input.fill('test message');
