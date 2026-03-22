@@ -5,6 +5,15 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [6.62.1] - 2026-03-22 - State Manager Fixes, CI Stability, Config Mappings
+
+### Fixed
+- **State Manager** (7 bugs): ABBA deadlock prevention in refresh_cache, atomic read-modify-write in update_state, correct concurrent_with semantics, singleton race condition with double-checked locking, version cleanup filters orphan temp files, optimistic_update uses deepcopy, _merge_values handles unhashable types
+- **Parallel Workflows**: 12 workflow fixes verified and applied (branch naming, merge, signal files)
+- **CI Test Stability**: Remove cross-test pkill in memory test suites that killed parallel test runs on CI
+- **CI Failures**: Fix memory/engine.py store_pattern (undefined pattern_dict), MCP import check, shellcheck SC2034/SC2064/SC2088, hooks config for all event types
+- **Config**: Add 7 missing settings.json -> env var mappings
+
 ## [6.62.0] - 2026-03-22 - 215-Bug Mega-Fix: Full Codebase Audit Resolution
 
 ### Fixed (215 bugs across 20 components)
