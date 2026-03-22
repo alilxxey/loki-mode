@@ -1160,3 +1160,366 @@ class TestBugDS013_PortUpdateFromMonitor:
         # The old code had: if info["port"] is None:
         # The new code should unconditionally set info["port"]
         assert 'if info["port"] is None' not in source
+
+
+# ============================================================================
+# Test Full-Stack Multi-Service Detection
+# ============================================================================
+
+
+class TestFullStackDetection:
+    """Tests for full-stack project detection (frontend + backend subdirs)."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self):
+        from server import DevServerManager
+        self.manager = DevServerManager()
+
+    @pytest.mark.asyncio
+    async def test_detect_nextjs_fastapi(self, tmp_path):
+        """Detect Next.js frontend + FastAPI backend as full-stack."""
+        fe = tmp_path / "frontend"
+        fe.mkdir()
+        (fe / "package.json").write_text(json.dumps({
+            "scripts": {"dev": "next dev"},
+            "dependencies": {"next": "^14.0.0", "react": "^18.0.0"},
+        }))
+        be = tmp_path / "backend"
+        be.mkdir()
+        (be / "main.py").write_text("from fastapi import FastAPI\napp = FastAPI()")
+
+        result = await self.manager.detect_dev_command(str(tmp_path))
+        assert result is not None
+        assert result["framework"] == "full-stack"
+        assert result["multi_service"] is True
+        assert result["frontend_framework"] == "next"
+        assert result["backend_framework"] == "fastapi"
+        assert result["expected_port"] == 3000
+        assert result["backend_port"] == 8000
+        assert "frontend" in result["frontend_command"]
+        assert "backend" in result["command"]
+
+    @pytest.mark.asyncio
+    async def test_detect_vite_flask(self, tmp_path):
+        """Detect Vite frontend + Flask backend as full-stack."""
+        fe = tmp_path / "client"
+        fe.mkdir()
+        (fe / "package.json").write_text(json.dumps({
+            "scripts": {"dev": "vite"},
+            "devDependencies": {"vite": "^5.0.0"},
+        }))
+        be = tmp_path / "server"
+        be.mkdir()
+        (be / "app.py").write_text("from flask import Flask\napp = Flask(__name__)")
+
+        result = await self.manager.detect_dev_command(str(tmp_path))
+        assert result is not None
+        assert result["framework"] == "full-stack"
+        assert result["multi_service"] is True
+        assert result["frontend_framework"] == "vite"
+        assert result["backend_framework"] == "flask"
+        assert result["expected_port"] == 5173
+        assert result["backend_port"] == 5000
+
+    @pytest.mark.asyncio
+    async def test_detect_react_express(self, tmp_path):
+        """Detect React frontend + Express backend as full-stack."""
+        fe = tmp_path / "web"
+        fe.mkdir()
+        (fe / "package.json").write_text(json.dumps({
+            "scripts": {"start": "react-scripts start"},
+            "dependencies": {"react": "^18.0.0"},
+        }))
+        be = tmp_path / "api"
+        be.mkdir()
+        (be / "package.json").write_text(json.dumps({
+            "scripts": {"dev": "nodemon index.js"},
+            "dependencies": {"express": "^4.18.0"},
+        }))
+
+        result = await self.manager.detect_dev_command(str(tmp_path))
+        assert result is not None
+        assert result["framework"] == "full-stack"
+        assert result["multi_service"] is True
+        assert result["frontend_framework"] == "node"
+        assert result["backend_framework"] == "express"
+        assert result["backend_port"] == 3001
+
+    @pytest.mark.asyncio
+    async def test_detect_frontend_with_go_backend(self, tmp_path):
+        """Detect frontend + Go backend as full-stack."""
+        fe = tmp_path / "ui"
+        fe.mkdir()
+        (fe / "package.json").write_text(json.dumps({
+            "scripts": {"dev": "vite"},
+            "devDependencies": {"vite": "^5.0.0"},
+        }))
+        be = tmp_path / "backend"
+        be.mkdir()
+        (be / "go.mod").write_text("module example.com/app\n\ngo 1.21")
+
+        result = await self.manager.detect_dev_command(str(tmp_path))
+        assert result is not None
+        assert result["framework"] == "full-stack"
+        assert result["backend_framework"] == "go"
+        assert result["backend_port"] == 8080
+
+    @pytest.mark.asyncio
+    async def test_detect_static_html_frontend(self, tmp_path):
+        """Detect static HTML frontend + Python backend as full-stack."""
+        fe = tmp_path / "frontend"
+        fe.mkdir()
+        (fe / "index.html").write_text("<html><body>Hello</body></html>")
+        be = tmp_path / "backend"
+        be.mkdir()
+        (be / "app.py").write_text("from fastapi import FastAPI\napp = FastAPI()")
+
+        result = await self.manager.detect_dev_command(str(tmp_path))
+        assert result is not None
+        assert result["framework"] == "full-stack"
+        assert result["frontend_framework"] == "static"
+        assert result["backend_framework"] == "fastapi"
+
+    @pytest.mark.asyncio
+    async def test_no_fullstack_frontend_only(self, tmp_path):
+        """Only frontend dir, no backend -- should NOT detect as full-stack."""
+        fe = tmp_path / "frontend"
+        fe.mkdir()
+        (fe / "package.json").write_text(json.dumps({
+            "scripts": {"dev": "next dev"},
+            "dependencies": {"next": "^14.0.0"},
+        }))
+
+        result = await self.manager.detect_dev_command(str(tmp_path))
+        # Should return None -- root has no dev command, and it's not full-stack
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_no_fullstack_backend_only(self, tmp_path):
+        """Only backend dir, no frontend -- should NOT detect as full-stack."""
+        be = tmp_path / "backend"
+        be.mkdir()
+        (be / "app.py").write_text("from fastapi import FastAPI\napp = FastAPI()")
+
+        result = await self.manager.detect_dev_command(str(tmp_path))
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_no_fullstack_empty_dirs(self, tmp_path):
+        """Frontend/backend dirs exist but have no project files."""
+        (tmp_path / "frontend").mkdir()
+        (tmp_path / "backend").mkdir()
+
+        result = await self.manager.detect_dev_command(str(tmp_path))
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_docker_compose_preferred_over_fullstack(self, tmp_path):
+        """Docker Compose should be preferred over full-stack detection."""
+        # Create docker-compose.yml
+        (tmp_path / "docker-compose.yml").write_text(
+            "services:\n"
+            "  web:\n"
+            "    build: ./frontend\n"
+            '    ports:\n'
+            '      - "3000:3000"\n'
+            "  api:\n"
+            "    build: ./backend\n"
+            '    ports:\n'
+            '      - "8000:8000"\n'
+        )
+        # Also create full-stack dirs
+        fe = tmp_path / "frontend"
+        fe.mkdir()
+        (fe / "package.json").write_text(json.dumps({
+            "scripts": {"dev": "next dev"},
+            "dependencies": {"next": "^14.0.0"},
+        }))
+        be = tmp_path / "backend"
+        be.mkdir()
+        (be / "app.py").write_text("from fastapi import FastAPI\napp = FastAPI()")
+
+        result = await self.manager.detect_dev_command(str(tmp_path))
+        assert result is not None
+        # Docker should win
+        assert result["framework"] == "docker"
+
+    @pytest.mark.asyncio
+    async def test_fullstack_returns_dir_paths(self, tmp_path):
+        """Full-stack result should include absolute directory paths."""
+        fe = tmp_path / "frontend"
+        fe.mkdir()
+        (fe / "package.json").write_text(json.dumps({
+            "scripts": {"dev": "vite"},
+            "devDependencies": {"vite": "^5.0.0"},
+        }))
+        be = tmp_path / "backend"
+        be.mkdir()
+        (be / "main.py").write_text("from fastapi import FastAPI\napp = FastAPI()")
+
+        result = await self.manager.detect_dev_command(str(tmp_path))
+        assert result is not None
+        assert result["frontend_dir"] == str(fe)
+        assert result["backend_dir"] == str(be)
+
+    @pytest.mark.asyncio
+    async def test_fullstack_backend_with_requirements_txt(self, tmp_path):
+        """Backend detected via requirements.txt + run.py."""
+        fe = tmp_path / "frontend"
+        fe.mkdir()
+        (fe / "package.json").write_text(json.dumps({
+            "scripts": {"dev": "vite"},
+            "devDependencies": {"vite": "^5.0.0"},
+        }))
+        be = tmp_path / "backend"
+        be.mkdir()
+        (be / "requirements.txt").write_text("fastapi\nuvicorn\n")
+        (be / "run.py").write_text("print('starting server')")
+
+        result = await self.manager.detect_dev_command(str(tmp_path))
+        assert result is not None
+        assert result["framework"] == "full-stack"
+        assert result["backend_framework"] == "python"
+        assert "run.py" in result["command"]
+
+
+class TestDockerComposeServiceParsing:
+    """Tests for Docker Compose service enumeration."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self):
+        from server import DevServerManager
+        self.manager = DevServerManager()
+
+    @pytest.mark.asyncio
+    async def test_services_parsed_from_compose(self, tmp_path):
+        """Docker Compose detection should list all services with ports."""
+        (tmp_path / "docker-compose.yml").write_text(
+            "services:\n"
+            "  web:\n"
+            "    build: .\n"
+            '    ports:\n'
+            '      - "3000:3000"\n'
+            "  api:\n"
+            "    build: ./api\n"
+            '    ports:\n'
+            '      - "8000:8000"\n'
+            "  db:\n"
+            "    image: postgres:16\n"
+            '    ports:\n'
+            '      - "5432:5432"\n'
+        )
+        result = await self.manager.detect_dev_command(str(tmp_path))
+        assert result is not None
+        assert result["framework"] == "docker"
+        assert "services" in result
+        services = result["services"]
+        assert len(services) == 3
+        svc_names = [s["name"] for s in services]
+        assert "web" in svc_names
+        assert "api" in svc_names
+        assert "db" in svc_names
+        # First exposed port should be the expected_port
+        assert result["expected_port"] == 3000
+
+    @pytest.mark.asyncio
+    async def test_services_with_no_ports(self, tmp_path):
+        """Services without ports should still be listed."""
+        (tmp_path / "docker-compose.yml").write_text(
+            "services:\n"
+            "  worker:\n"
+            "    build: .\n"
+            "  redis:\n"
+            "    image: redis:7\n"
+        )
+        result = await self.manager.detect_dev_command(str(tmp_path))
+        assert result is not None
+        assert "services" in result
+        assert len(result["services"]) == 2
+        # No ports exposed, should fall back to default
+        assert result["expected_port"] == 3000
+
+    @pytest.mark.asyncio
+    async def test_services_port_selection(self, tmp_path):
+        """Expected port should come from the first service with an exposed port."""
+        (tmp_path / "docker-compose.yml").write_text(
+            "services:\n"
+            "  db:\n"
+            "    image: postgres:16\n"
+            "  api:\n"
+            "    build: .\n"
+            '    ports:\n'
+            '      - "9090:80"\n'
+        )
+        result = await self.manager.detect_dev_command(str(tmp_path))
+        assert result is not None
+        assert result["expected_port"] == 9090
+
+    @pytest.mark.asyncio
+    async def test_services_has_build_flag(self, tmp_path):
+        """Service entries should indicate whether they use build or image."""
+        (tmp_path / "docker-compose.yml").write_text(
+            "services:\n"
+            "  web:\n"
+            "    build: .\n"
+            '    ports:\n'
+            '      - "3000:3000"\n'
+            "  db:\n"
+            "    image: postgres:16\n"
+        )
+        result = await self.manager.detect_dev_command(str(tmp_path))
+        assert result is not None
+        services = result["services"]
+        web_svc = next(s for s in services if s["name"] == "web")
+        db_svc = next(s for s in services if s["name"] == "db")
+        assert web_svc["has_build"] is True
+        assert db_svc["has_build"] is False
+        assert db_svc["image"] == "postgres:16"
+
+
+class TestMultiServiceStatus:
+    """Tests for multi-service status reporting."""
+
+    def test_status_method_handles_multi_service(self):
+        """Verify the status method includes multi_service fields."""
+        import server
+        import inspect
+        source = inspect.getsource(server.DevServerManager.status)
+        assert "multi_service" in source
+        assert "services" in source
+        assert "backend_process" in source
+        assert "frontend_framework" in source
+        assert "backend_framework" in source
+
+    def test_stop_method_handles_backend_process(self):
+        """Verify the stop method kills backend process for multi-service."""
+        import server
+        import inspect
+        source = inspect.getsource(server.DevServerManager.stop)
+        assert "backend_process" in source
+
+    def test_start_method_handles_multi_service(self):
+        """Verify the start method handles multi_service detected projects."""
+        import server
+        import inspect
+        source = inspect.getsource(server.DevServerManager.start)
+        assert "multi_service" in source
+        assert "backend_process" in source
+        assert "frontend_command" in source
+        assert "_monitor_backend_output" in source
+
+    def test_monitor_backend_output_exists(self):
+        """Verify _monitor_backend_output method exists."""
+        import server
+        assert hasattr(server.DevServerManager, "_monitor_backend_output")
+        import inspect
+        assert inspect.iscoroutinefunction(server.DevServerManager._monitor_backend_output)
+
+    def test_install_pip_deps_helper_exists(self):
+        """Verify _install_pip_deps helper was extracted."""
+        import server
+        assert hasattr(server.DevServerManager, "_install_pip_deps")
+        import inspect
+        source = inspect.getsource(server.DevServerManager._install_pip_deps)
+        assert "requirements.txt" in source
+        assert "venv" in source

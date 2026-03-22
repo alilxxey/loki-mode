@@ -5,6 +5,15 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [6.63.0] - 2026-03-22 - PRD-to-Task Parser with Rich Task Details
+
+### Added
+- `populate_prd_queue()` function in `autonomy/run.sh` -- extracts features/requirements from plain PRD markdown into structured task entries with title, description, acceptance criteria, user stories, priority, and project name
+- PRD parser runs once (idempotent via `.prd-populated` sentinel) and skips if BMAD/OpenSpec/MiroFish adapters already populated tasks
+- Dashboard task API (`GET /api/tasks`) now passes through `acceptance_criteria`, `user_story`, `project`, and `source` fields from queue files
+- `track_iteration_start()` enriched to read next pending task and populate iteration entries with current task context (title, description, acceptance criteria, user story)
+- `load_queue_tasks()` enhanced to produce rich prompt injection for PRD-sourced tasks including description, acceptance criteria, and user stories (legacy payload format still supported)
+
 ## [6.62.1] - 2026-03-22 - State Manager Fixes, CI Stability, Config Mappings
 
 ### Fixed

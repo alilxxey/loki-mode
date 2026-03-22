@@ -1085,7 +1085,7 @@ async def list_tasks(
                                 # Skip if already in all_tasks
                                 if any(t["id"] == tid for t in all_tasks):
                                     continue
-                                all_tasks.append({
+                                task_entry = {
                                     "id": tid,
                                     "title": item.get("title", item.get("action", "Task")),
                                     "description": item.get("description", ""),
@@ -1093,7 +1093,16 @@ async def list_tasks(
                                     "priority": item.get("priority", "medium"),
                                     "type": item.get("type", "task"),
                                     "position": i,
-                                })
+                                }
+                                if item.get("acceptance_criteria"):
+                                    task_entry["acceptance_criteria"] = item["acceptance_criteria"]
+                                if item.get("user_story"):
+                                    task_entry["user_story"] = item["user_story"]
+                                if item.get("project"):
+                                    task_entry["project"] = item["project"]
+                                if item.get("source"):
+                                    task_entry["source"] = item["source"]
+                                all_tasks.append(task_entry)
                 except (json.JSONDecodeError, KeyError):
                     pass
 

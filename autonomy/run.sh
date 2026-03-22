@@ -3517,10 +3517,66 @@ track_iteration_start() {
             "provider=${PROVIDER_NAME:-claude}"
     fi
 
+    # Read next pending task for context (enrich iteration with PRD task details)
+    local next_task_context=""
+    if [[ -f ".loki/queue/pending.json" ]]; then
+        next_task_context=$(python3 -c "
+import json
+try:
+    with open('.loki/queue/pending.json') as f:
+        tasks = json.load(f)
+    if isinstance(tasks, dict):
+        tasks = tasks.get('tasks', [])
+    pending = [t for t in tasks if isinstance(t, dict) and t.get('status','pending') == 'pending']
+    if pending:
+        t = pending[0]
+        print(json.dumps({
+            'current_task': t.get('title',''),
+            'description': t.get('description',''),
+            'acceptance_criteria': t.get('acceptance_criteria', []),
+            'user_story': t.get('user_story', ''),
+            'source': t.get('source', ''),
+            'project': t.get('project', '')
+        }))
+except: pass
+" 2>/dev/null || true)
+    fi
+
     # Create task entry (escape PRD path for safe JSON embedding)
     local prd_escaped
     prd_escaped=$(printf '%s' "${prd:-Codebase Analysis}" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g')
-    local task_json=$(cat <<EOF
+
+    # Build enriched task JSON with pending task context
+    local task_json
+    if [[ -n "$next_task_context" ]]; then
+        task_json=$(python3 -c "
+import json, sys
+ctx = json.loads('''$next_task_context''')
+task = {
+    'id': 'iteration-$iteration',
+    'type': 'iteration',
+    'title': ctx.get('current_task') or 'Iteration $iteration',
+    'description': ctx.get('description') or 'PRD: ${prd_escaped}',
+    'status': 'in_progress',
+    'priority': 'medium',
+    'startedAt': '$(date -u +%Y-%m-%dT%H:%M:%SZ)',
+    'provider': '${PROVIDER_NAME:-claude}'
+}
+if ctx.get('acceptance_criteria'):
+    task['acceptance_criteria'] = ctx['acceptance_criteria']
+if ctx.get('user_story'):
+    task['user_story'] = ctx['user_story']
+if ctx.get('source'):
+    task['source'] = ctx['source']
+if ctx.get('project'):
+    task['project'] = ctx['project']
+print(json.dumps(task, indent=2))
+" 2>/dev/null)
+    fi
+
+    # Fallback to basic task JSON if enrichment failed
+    if [[ -z "$task_json" ]]; then
+        task_json=$(cat <<EOF
 {
   "id": "$task_id",
   "type": "iteration",
@@ -3533,6 +3589,7 @@ track_iteration_start() {
 }
 EOF
 )
+    fi
 
     # Add to in-progress queue
     # BUG-XC-003: Use flock for atomic queue modification
@@ -7906,11 +7963,12 @@ load_state() {
 
 # Load tasks from queue files for prompt injection
 # Supports both array format [...] and object format {"tasks": [...]}
+# Enhanced in v6.63.0 to include rich task details (description, acceptance criteria, user stories)
 load_queue_tasks() {
     local task_injection=""
 
-    # Helper Python script to extract and format tasks
-    # Handles both formats, truncates long actions, normalizes newlines
+    # Helper Python script to extract and format tasks with rich details
+    # Handles both formats, includes description, acceptance criteria, and user stories
     local extract_script='
 import json
 import sys
@@ -7928,23 +7986,45 @@ def extract_tasks(filepath, prefix):
             if not isinstance(task, dict):
                 continue
             task_id = task.get("id") or "unknown"
-            task_type = task.get("type") or "unknown"
-            payload = task.get("payload", {})
+            source = task.get("source", "")
 
-            # Extract action from payload
-            if isinstance(payload, dict):
-                action = payload.get("action") or payload.get("goal") or ""
+            # Rich PRD-sourced tasks (v6.63.0)
+            if source == "prd" or task_id.startswith("prd-"):
+                title = task.get("title", "Task")
+                lines = [f"{prefix}[{i+1}] {task_id}: {title}"]
+                desc = task.get("description", "")
+                if desc and desc != title:
+                    # First 300 chars of description, normalized
+                    desc_short = desc.replace("\n", " ").replace("\r", "")[:300]
+                    if len(desc) > 300:
+                        desc_short += "..."
+                    lines.append(f"  Description: {desc_short}")
+                criteria = task.get("acceptance_criteria", [])
+                if criteria:
+                    criteria_str = "; ".join(str(c) for c in criteria[:5])
+                    lines.append(f"  Acceptance: {criteria_str}")
+                story = task.get("user_story", "")
+                if story:
+                    lines.append(f"  User Story: {story}")
+                results.append("\n".join(lines))
             else:
-                action = str(payload) if payload else ""
+                # Legacy format: extract action from payload
+                task_type = task.get("type") or "unknown"
+                payload = task.get("payload", {})
+                if isinstance(payload, dict):
+                    action = payload.get("action") or payload.get("goal") or ""
+                else:
+                    action = str(payload) if payload else ""
+                # Also check top-level title/description for non-payload tasks
+                if not action:
+                    action = task.get("title", task.get("description", ""))
+                # Normalize: remove newlines, truncate to 500 chars
+                action = str(action).replace("\n", " ").replace("\r", "")[:500]
+                if len(str(action)) > 500:
+                    action += "..."
+                results.append(f"{prefix}[{i+1}] id={task_id} type={task_type}: {action}")
 
-            # Normalize: remove newlines, truncate to 500 chars
-            action = str(action).replace("\n", " ").replace("\r", "")[:500]
-            if len(str(task.get("payload", {}).get("action", ""))) > 500:
-                action += "..."
-
-            results.append(f"{prefix}[{i+1}] id={task_id} type={task_type}: {action}")
-
-        return " ".join(results)
+        return "\n".join(results)
     except:
         return ""
 
@@ -7954,11 +8034,11 @@ pending = extract_tasks(".loki/queue/pending.json", "PENDING")
 
 output = []
 if in_progress:
-    output.append(f"IN-PROGRESS TASKS (EXECUTE THESE): {in_progress}")
+    output.append(f"IN-PROGRESS TASKS (EXECUTE THESE):\n{in_progress}")
 if pending:
-    output.append(f"PENDING: {pending}")
+    output.append(f"PENDING:\n{pending}")
 
-print(" | ".join(output))
+print("\n---\n".join(output))
 '
 
     # First check in-progress tasks (highest priority)
@@ -8700,6 +8780,212 @@ MIROFISH_QUEUE_EOF
     log_info "MiroFish queue population complete"
 }
 
+# Populate task queue from plain PRD markdown (if no adapter populated tasks)
+# Extracts features/requirements from markdown structure into rich task entries
+populate_prd_queue() {
+    local prd_file="${1:-}"
+    if [[ -z "$prd_file" ]] || [[ ! -f "$prd_file" ]]; then
+        return 0
+    fi
+    # Skip if already populated
+    if [[ -f ".loki/queue/.prd-populated" ]]; then
+        return 0
+    fi
+    # Skip if OpenSpec, BMAD, or MiroFish already populated tasks
+    if [[ -f ".loki/queue/.openspec-populated" ]] || [[ -f ".loki/queue/.bmad-populated" ]] || [[ -f ".loki/queue/.mirofish-populated" ]]; then
+        log_info "Task queue already populated by adapter, skipping PRD parsing"
+        return 0
+    fi
+
+    log_step "Parsing PRD into structured tasks..."
+    mkdir -p ".loki/queue"
+
+    LOKI_PRD_FILE="$prd_file" python3 << 'PRD_PARSE_EOF'
+import json, re, os, sys
+
+prd_path = os.environ.get("LOKI_PRD_FILE", "")
+if not prd_path or not os.path.isfile(prd_path):
+    sys.exit(0)
+
+with open(prd_path, "r", errors="replace") as f:
+    content = f.read()
+
+# Parse PRD structure
+sections = {}
+current_section = "Overview"
+current_content = []
+
+for line in content.split("\n"):
+    heading_match = re.match(r'^#{1,3}\s+(.+)', line)
+    if heading_match:
+        if current_content:
+            sections[current_section] = "\n".join(current_content).strip()
+        current_section = heading_match.group(1).strip()
+        current_content = []
+    else:
+        current_content.append(line)
+if current_content:
+    sections[current_section] = "\n".join(current_content).strip()
+
+# Extract project name from first H1
+project_name = "Project"
+for line in content.split("\n"):
+    m = re.match(r'^#\s+(.+)', line)
+    if m:
+        project_name = m.group(1).strip()
+        break
+
+# Find feature/requirement sections
+feature_keywords = [
+    "features", "requirements", "key features", "core features",
+    "functional requirements", "user stories", "deliverables",
+    "scope", "functionality", "capabilities", "modules"
+]
+
+# Extract features from bullet points in feature sections
+features = []
+for section_name, section_content in sections.items():
+    is_feature_section = any(kw in section_name.lower() for kw in feature_keywords)
+    if is_feature_section:
+        # Extract numbered items or bullet points
+        for line in section_content.split("\n"):
+            line = line.strip()
+            # Match: "1. Feature name" or "- Feature name" or "* Feature name"
+            m = re.match(r'^(?:\d+[\.\)]\s*|\-\s+|\*\s+)(.+)', line)
+            if m:
+                feature_text = m.group(1).strip()
+                if len(feature_text) > 10:  # Skip very short lines
+                    features.append({
+                        "title": feature_text,
+                        "section": section_name,
+                    })
+
+# If no bullet features found, extract from ## headings that look like features
+if not features:
+    skip_sections = {"overview", "introduction", "summary", "target audience",
+                     "tech stack", "technology", "deployment", "timeline",
+                     "out of scope", "non-functional", "appendix", "references",
+                     "problem statement", "value proposition", "background"}
+    for section_name, section_content in sections.items():
+        if section_name.lower() not in skip_sections and len(section_content) > 20:
+            features.append({
+                "title": section_name,
+                "section": "Requirements",
+            })
+
+if not features:
+    print("No features extracted from PRD", file=sys.stderr)
+    sys.exit(0)
+
+# Build acceptance criteria from section content
+def extract_acceptance_criteria(section_name, sections):
+    """Extract testable criteria from section content."""
+    criteria = []
+    content = sections.get(section_name, "")
+    for line in content.split("\n"):
+        line = line.strip()
+        if line.startswith(("- ", "* ", "  - ", "  * ")):
+            text = re.sub(r'^[\-\*]\s+', '', line).strip()
+            if len(text) > 5:
+                criteria.append(text)
+    # Also check for acceptance criteria section
+    for key in ["acceptance criteria", "success criteria", "definition of done"]:
+        for sname, scontent in sections.items():
+            if key in sname.lower():
+                for cline in scontent.split("\n"):
+                    cline = cline.strip()
+                    m = re.match(r'^(?:\d+[\.\)]\s*|\-\s+|\*\s+|\[.\]\s*)(.+)', cline)
+                    if m:
+                        criteria.append(m.group(1).strip())
+    return criteria[:10]  # Cap at 10
+
+# Determine priority based on position (earlier = higher)
+def get_priority(index, total):
+    if total <= 3:
+        return "high"
+    third = total / 3
+    if index < third:
+        return "high"
+    elif index < 2 * third:
+        return "medium"
+    return "low"
+
+# Build task queue entries
+pending_path = ".loki/queue/pending.json"
+existing = []
+if os.path.exists(pending_path):
+    try:
+        with open(pending_path, "r") as f:
+            data = json.load(f)
+            if isinstance(data, list):
+                existing = data
+            elif isinstance(data, dict) and "tasks" in data:
+                existing = data["tasks"]
+    except (json.JSONDecodeError, FileNotFoundError):
+        existing = []
+
+existing_ids = {t.get("id") for t in existing if isinstance(t, dict)}
+added = 0
+
+for i, feat in enumerate(features):
+    task_id = f"prd-{i+1:03d}"
+    if task_id in existing_ids:
+        continue
+
+    criteria = extract_acceptance_criteria(feat["section"], sections)
+
+    # Build a rich description
+    section_content = sections.get(feat["section"], "")
+    desc_parts = [feat["title"]]
+    if section_content and len(section_content) > len(feat["title"]):
+        # Include relevant context (first 500 chars of section)
+        desc_parts.append(section_content[:500])
+
+    task = {
+        "id": task_id,
+        "title": feat["title"],
+        "description": "\n".join(desc_parts),
+        "priority": get_priority(i, len(features)),
+        "status": "pending",
+        "source": "prd",
+        "project": project_name,
+    }
+
+    if criteria:
+        task["acceptance_criteria"] = criteria
+
+    # Add user story format
+    # Try to extract target audience for user story
+    audience = "a user"
+    for key in ["target audience", "users", "user personas", "audience"]:
+        for sname in sections:
+            if key in sname.lower():
+                # Extract first line
+                first_line = sections[sname].split("\n")[0].strip()
+                if first_line:
+                    audience = first_line[:100]
+                    break
+
+    task["user_story"] = f"As {audience}, I want to {feat['title'].lower().rstrip('.')}, so that the product delivers its core value."
+
+    existing.append(task)
+    added += 1
+
+with open(pending_path, "w") as f:
+    json.dump(existing, f, indent=2)
+
+print(f"Extracted {added} tasks from PRD ({len(features)} features found)", file=sys.stderr)
+PRD_PARSE_EOF
+
+    if [[ $? -ne 0 ]]; then
+        log_warn "Failed to parse PRD into tasks"
+        return 0
+    fi
+
+    touch ".loki/queue/.prd-populated"
+    log_info "PRD task parsing complete"
+}
+
 #===============================================================================
 # Main Autonomous Loop
 #===============================================================================
@@ -8811,6 +9097,9 @@ run_autonomous() {
 
     # Populate task queue from MiroFish advisory (if present, runs once)
     populate_mirofish_queue
+
+    # Populate task queue from PRD (if no adapters already populated, runs once)
+    populate_prd_queue "$prd_path"
 
     # Check max iterations before starting
     if check_max_iterations; then

@@ -627,25 +627,32 @@ class DevServerManager:
                     subprocess.run(["docker", "--version"], capture_output=True, timeout=5)
                 except (FileNotFoundError, subprocess.TimeoutExpired):
                     break  # Docker not installed -- fall through to other detection
-                # Parse compose file to detect exposed port
+                # Parse compose file to detect exposed port and enumerate services
                 port = 3000  # default
+                services_info: list = []
                 try:
                     import yaml
                     with open(root / compose_file) as f:
                         compose = yaml.safe_load(f)
                     if compose and "services" in compose:
-                        for svc in compose["services"].values():
-                            ports = svc.get("ports", [])
-                            for p in ports:
+                        for svc_name, svc in compose["services"].items():
+                            svc_ports: list = []
+                            for p in svc.get("ports", []):
                                 p_str = str(p)
                                 if ":" in p_str:
-                                    # Handle IP:host:container (e.g. "127.0.0.1:8080:80")
-                                    # and host:container (e.g. "8080:80")
                                     parts = p_str.split(":")
-                                    host_port = parts[-2]  # second-to-last is always host port
-                                    port = int(host_port)
-                                    break
-                            if port != 3000:
+                                    host_port = int(parts[-2])
+                                    svc_ports.append(host_port)
+                            services_info.append({
+                                "name": svc_name,
+                                "ports": svc_ports,
+                                "image": svc.get("image"),
+                                "has_build": "build" in svc,
+                            })
+                        # Use the first exposed host port as the primary port
+                        for svc_entry in services_info:
+                            if svc_entry["ports"]:
+                                port = svc_entry["ports"][0]
                                 break
                 except ImportError:
                     # yaml not available -- fall back to regex parsing
@@ -654,11 +661,149 @@ class DevServerManager:
                         port_match = re.search(r'"?(\d+):(\d+)"?', content)
                         if port_match:
                             port = int(port_match.group(1))
+                        # Extract service names via regex
+                        for m in re.finditer(r'^  (\w[\w-]*):\s*$', content, re.MULTILINE):
+                            services_info.append({"name": m.group(1), "ports": []})
                     except Exception:
                         pass
                 except Exception:
                     pass
-                return {"command": f"docker compose -f {compose_file} up --build", "expected_port": port, "framework": "docker"}
+                result_dict: dict = {
+                    "command": f"docker compose -f {compose_file} up --build",
+                    "expected_port": port,
+                    "framework": "docker",
+                }
+                if services_info:
+                    result_dict["services"] = services_info
+                return result_dict
+
+        # -- Full-stack project detection (frontend + backend in subdirectories) --
+        frontend_dir_names = ["frontend", "client", "web", "app", "ui", "web-app", "webapp"]
+        backend_dir_names = ["backend", "server", "api", "service"]
+
+        frontend_dir: Optional[Path] = None
+        backend_dir: Optional[Path] = None
+
+        for d in frontend_dir_names:
+            candidate = root / d
+            if candidate.is_dir():
+                # Verify it is actually a frontend (has package.json or index.html)
+                if (candidate / "package.json").exists() or (candidate / "index.html").exists():
+                    frontend_dir = candidate
+                    break
+
+        for d in backend_dir_names:
+            candidate = root / d
+            if candidate.is_dir():
+                has_py = any(candidate.glob("*.py"))
+                has_pkg = (candidate / "package.json").exists()
+                has_go = (candidate / "go.mod").exists()
+                has_requirements = (candidate / "requirements.txt").exists()
+                has_cargo = (candidate / "Cargo.toml").exists()
+                if has_py or has_pkg or has_go or has_requirements or has_cargo:
+                    backend_dir = candidate
+                    break
+
+        if frontend_dir and backend_dir:
+            # Detect frontend framework and command
+            fe_cmd = "npm run dev"
+            fe_port = 3000
+            fe_framework = "node"
+            fe_pkg = frontend_dir / "package.json"
+            if fe_pkg.exists():
+                try:
+                    pkg = json.loads(fe_pkg.read_text(errors="replace"))
+                    fe_scripts = pkg.get("scripts", {})
+                    fe_deps = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
+                    if "next" in fe_deps:
+                        fe_framework = "next"
+                        fe_port = 3000
+                        fe_cmd = "npm run dev"
+                    elif "vite" in fe_deps:
+                        fe_framework = "vite"
+                        fe_port = 5173
+                        fe_cmd = "npm run dev"
+                    elif "dev" in fe_scripts:
+                        fe_cmd = "npm run dev"
+                    elif "start" in fe_scripts:
+                        fe_cmd = "npm start"
+                except Exception:
+                    pass
+            elif (frontend_dir / "index.html").exists():
+                fe_framework = "static"
+                fe_cmd = "python3 -m http.server 3000"
+                fe_port = 3000
+
+            # Detect backend framework and command
+            be_cmd: Optional[str] = None
+            be_port = 8000
+            be_framework = "unknown"
+
+            if (backend_dir / "manage.py").exists():
+                be_cmd = "python manage.py runserver"
+                be_port = 8000
+                be_framework = "django"
+            else:
+                for py_entry in ("app.py", "main.py", "server.py"):
+                    py_file = backend_dir / py_entry
+                    if py_file.exists():
+                        try:
+                            src = py_file.read_text(errors="replace")[:4096]
+                            if "fastapi" in src.lower() or "FastAPI" in src:
+                                module = py_entry[:-3]
+                                be_cmd = f"uvicorn {module}:app --reload --port 8000"
+                                be_port = 8000
+                                be_framework = "fastapi"
+                                break
+                            if "flask" in src.lower() or "Flask" in src:
+                                be_cmd = "flask run --port 5000"
+                                be_port = 5000
+                                be_framework = "flask"
+                                break
+                        except OSError:
+                            pass
+                if be_cmd is None and (backend_dir / "package.json").exists():
+                    try:
+                        be_pkg = json.loads((backend_dir / "package.json").read_text(errors="replace"))
+                        be_scripts = be_pkg.get("scripts", {})
+                        be_deps = {**be_pkg.get("dependencies", {}), **be_pkg.get("devDependencies", {})}
+                        if "express" in be_deps:
+                            be_framework = "express"
+                        else:
+                            be_framework = "node"
+                        be_port = 3001
+                        if "dev" in be_scripts:
+                            be_cmd = "npm run dev"
+                        elif "start" in be_scripts:
+                            be_cmd = "npm start"
+                    except Exception:
+                        pass
+                if be_cmd is None and (backend_dir / "go.mod").exists():
+                    be_cmd = "go run ."
+                    be_port = 8080
+                    be_framework = "go"
+                if be_cmd is None and (backend_dir / "requirements.txt").exists():
+                    # Generic Python backend with requirements.txt
+                    for py_entry in ("app.py", "main.py", "server.py", "run.py"):
+                        if (backend_dir / py_entry).exists():
+                            be_cmd = f"python {py_entry}"
+                            be_port = 8000
+                            be_framework = "python"
+                            break
+
+            if be_cmd:
+                return {
+                    "framework": "full-stack",
+                    "command": f"cd {backend_dir.name} && {be_cmd}",
+                    "frontend_command": f"cd {frontend_dir.name} && {fe_cmd}",
+                    "expected_port": fe_port,
+                    "backend_port": be_port,
+                    "multi_service": True,
+                    "frontend_dir": str(frontend_dir),
+                    "backend_dir": str(backend_dir),
+                    "frontend_framework": fe_framework,
+                    "backend_framework": be_framework,
+                }
 
         pkg_json = root / "package.json"
         if pkg_json.exists():
@@ -767,6 +912,36 @@ class DevServerManager:
                     return port
         return None
 
+    def _install_pip_deps(self, project_path: Path, build_env: dict) -> None:
+        """Install pip dependencies into a project venv (creates one if needed)."""
+        if not (project_path / "requirements.txt").exists():
+            return
+        venv_dir = None
+        for venv_name in ("venv", ".venv", "env"):
+            candidate = project_path / venv_name
+            if candidate.is_dir() and (candidate / "bin" / "pip").exists():
+                venv_dir = candidate
+                break
+        if venv_dir is None:
+            try:
+                subprocess.run(
+                    [sys.executable, "-m", "venv", str(project_path / "venv")],
+                    capture_output=True, timeout=60,
+                )
+                venv_dir = project_path / "venv"
+            except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+                logger.warning("venv creation failed: %s", exc)
+        pip_executable = str(venv_dir / "bin" / "pip") if venv_dir else "pip"
+        try:
+            subprocess.run(
+                [pip_executable, "install", "-r", "requirements.txt"],
+                cwd=str(project_path),
+                capture_output=True,
+                timeout=120,
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+            logger.warning("pip install failed: %s", exc)
+
     async def start(self, session_id: str, project_dir: str, command: Optional[str] = None) -> dict:
         """Start dev server. Auto-detect command if not provided."""
         if session_id in self.servers:
@@ -792,14 +967,176 @@ class DevServerManager:
         cmd_str = command or (detected["command"] if detected else "")
         expected_port = detected["expected_port"] if detected else 3000
         framework = detected["framework"] if detected else "unknown"
+        is_multi_service = detected.get("multi_service", False) if detected else False
+
+        build_env = {**os.environ}
+        build_env.update(_load_secrets())
+
+        # -- Multi-service full-stack startup --
+        if is_multi_service and not command:
+            be_dir = detected.get("backend_dir", actual_dir)
+            fe_dir = detected.get("frontend_dir", actual_dir)
+            be_cmd_str = detected.get("command", "")
+            fe_cmd_str = detected.get("frontend_command", "")
+            be_port = detected.get("backend_port", 8000)
+            fe_port = detected.get("expected_port", 3000)
+
+            # Install deps in both directories
+            for svc_dir_str in (be_dir, fe_dir):
+                svc_path = Path(svc_dir_str)
+                if (svc_path / "package.json").exists() and not (svc_path / "node_modules").exists():
+                    try:
+                        subprocess.run(["npm", "install"], cwd=svc_dir_str, capture_output=True, timeout=120, env=build_env)
+                    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+                        logger.warning("npm install failed in %s: %s", svc_dir_str, exc)
+                if (svc_path / "requirements.txt").exists():
+                    self._install_pip_deps(svc_path, build_env)
+
+            popen_kwargs = (
+                {"start_new_session": True} if sys.platform != "win32"
+                else {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+            )
+
+            # Start backend process (uses shell=True because command contains 'cd ...')
+            try:
+                be_proc = subprocess.Popen(
+                    be_cmd_str, shell=True,
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                    text=True, cwd=actual_dir, env=build_env, **popen_kwargs,
+                )
+            except Exception as e:
+                return {"status": "error", "message": f"Failed to start backend: {e}"}
+            _track_child_pid(be_proc.pid)
+
+            # Start frontend process
+            try:
+                fe_proc = subprocess.Popen(
+                    fe_cmd_str, shell=True,
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                    text=True, cwd=actual_dir, env=build_env, **popen_kwargs,
+                )
+            except Exception as e:
+                # Kill backend if frontend fails to start
+                try:
+                    be_proc.terminate()
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
+                _untrack_child_pid(be_proc.pid)
+                return {"status": "error", "message": f"Failed to start frontend: {e}"}
+            _track_child_pid(fe_proc.pid)
+
+            server_info: dict = {
+                "process": fe_proc,  # Primary process is frontend (user-facing)
+                "backend_process": be_proc,
+                "port": None,
+                "expected_port": fe_port,
+                "backend_port": be_port,
+                "command": fe_cmd_str,
+                "original_command": cmd_str,
+                "framework": framework,
+                "status": "starting",
+                "pid": fe_proc.pid,
+                "backend_pid": be_proc.pid,
+                "project_dir": project_dir,
+                "output_lines": [],
+                "backend_output_lines": [],
+                "multi_service": True,
+                "frontend_framework": detected.get("frontend_framework", "unknown"),
+                "backend_framework": detected.get("backend_framework", "unknown"),
+                "frontend_dir": fe_dir,
+                "backend_dir": be_dir,
+                "use_portless": False,
+                "portless_app_name": None,
+            }
+            self.servers[session_id] = server_info
+
+            asyncio.create_task(self._monitor_output(session_id))
+            asyncio.create_task(self._monitor_backend_output(session_id))
+
+            # Wait for either frontend or backend port (up to 30s)
+            for _ in range(60):
+                await asyncio.sleep(0.5)
+                info = self.servers.get(session_id)
+                if not info:
+                    return {"status": "error", "message": "Server entry disappeared"}
+                if info["status"] == "error":
+                    return {
+                        "status": "error",
+                        "message": "Dev server crashed",
+                        "output": info["output_lines"][-10:] if info["output_lines"] else [],
+                    }
+                if info["port"] is not None:
+                    health_ok = await self._health_check(info["port"])
+                    if health_ok:
+                        info["status"] = "running"
+                        services = [
+                            {
+                                "name": "frontend",
+                                "framework": info.get("frontend_framework", "unknown"),
+                                "port": fe_port,
+                                "status": "running",
+                            },
+                            {
+                                "name": "backend",
+                                "framework": info.get("backend_framework", "unknown"),
+                                "port": be_port,
+                                "status": "running" if be_proc.poll() is None else "error",
+                            },
+                        ]
+                        return {
+                            "status": "running",
+                            "port": info["port"],
+                            "command": fe_cmd_str,
+                            "pid": fe_proc.pid,
+                            "url": f"/proxy/{session_id}/",
+                            "multi_service": True,
+                            "framework": "full-stack",
+                            "services": services,
+                        }
+
+            # Timeout -- report whatever state we have
+            if fe_proc.poll() is not None and be_proc.poll() is not None:
+                server_info["status"] = "error"
+                return {
+                    "status": "error",
+                    "message": "Both frontend and backend exited before port was detected",
+                    "output": server_info["output_lines"][-10:],
+                }
+
+            # Fallback to expected port
+            health_ok = await self._health_check(fe_port)
+            if health_ok:
+                server_info["port"] = fe_port
+                server_info["status"] = "running"
+                return {
+                    "status": "running",
+                    "port": fe_port,
+                    "command": fe_cmd_str,
+                    "pid": fe_proc.pid,
+                    "url": f"/proxy/{session_id}/",
+                    "multi_service": True,
+                    "framework": "full-stack",
+                }
+
+            server_info["status"] = "starting"
+            server_info["port"] = fe_port
+            return {
+                "status": "starting",
+                "message": "Server started but port not yet confirmed",
+                "port": fe_port,
+                "command": fe_cmd_str,
+                "pid": fe_proc.pid,
+                "url": f"/proxy/{session_id}/",
+                "multi_service": True,
+                "framework": "full-stack",
+            }
+
+        # -- Single-service startup (original path) --
 
         # Auto-install dependencies before starting the dev server
         actual_path = Path(actual_dir)
         needs_npm = (actual_path / "package.json").exists() and not (actual_path / "node_modules").exists()
         needs_pip = (actual_path / "requirements.txt").exists() and not (actual_path / "venv").exists()
-
-        build_env = {**os.environ}
-        build_env.update(_load_secrets())
 
         if needs_npm:
             try:
@@ -814,34 +1151,7 @@ class DevServerManager:
                 logger.warning("npm install failed: %s", exc)
 
         if needs_pip:
-            # Use project venv if available, otherwise create one to avoid
-            # installing into the server's own Python environment.
-            venv_dir = None
-            for venv_name in ("venv", ".venv", "env"):
-                candidate = actual_path / venv_name
-                if candidate.is_dir() and (candidate / "bin" / "pip").exists():
-                    venv_dir = candidate
-                    break
-            if venv_dir is None:
-                # Create a virtual environment for the project
-                try:
-                    subprocess.run(
-                        [sys.executable, "-m", "venv", str(actual_path / "venv")],
-                        capture_output=True, timeout=60,
-                    )
-                    venv_dir = actual_path / "venv"
-                except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
-                    logger.warning("venv creation failed: %s", exc)
-            pip_executable = str(venv_dir / "bin" / "pip") if venv_dir else "pip"
-            try:
-                subprocess.run(
-                    [pip_executable, "install", "-r", "requirements.txt"],
-                    cwd=actual_dir,
-                    capture_output=True,
-                    timeout=120,
-                )
-            except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
-                logger.warning("pip install failed: %s", exc)
+            self._install_pip_deps(actual_path, build_env)
 
         # Check if portless is available and proxy is running
         use_portless = False
@@ -875,7 +1185,7 @@ class DevServerManager:
         _track_child_pid(proc.pid)
 
         effective_cmd = " ".join(cmd_parts)
-        server_info: dict = {
+        server_info = {
             "process": proc,
             "port": None,
             "expected_port": expected_port,
@@ -1015,6 +1325,39 @@ class DevServerManager:
                         info["_auto_fix_task"] = task
                     except Exception:
                         logger.warning("Failed to schedule auto-fix for session %s", session_id, exc_info=True)
+
+    async def _monitor_backend_output(self, session_id: str) -> None:
+        """Background task: read backend dev server stdout for multi-service setups."""
+        info = self.servers.get(session_id)
+        if not info or not info.get("multi_service"):
+            return
+        be_proc = info.get("backend_process")
+        if not be_proc or not be_proc.stdout:
+            return
+        loop = asyncio.get_running_loop()
+        try:
+            while be_proc.poll() is None:
+                line = await loop.run_in_executor(None, be_proc.stdout.readline)
+                if not line:
+                    break
+                text = line.rstrip("\n")
+                be_lines = info.get("backend_output_lines", [])
+                be_lines.append(text)
+                if len(be_lines) > 200:
+                    be_lines = be_lines[-200:]
+                info["backend_output_lines"] = be_lines
+                # Also detect backend port from output
+                detected_port = self._parse_port(text)
+                if detected_port:
+                    info["backend_port"] = detected_port
+        except Exception:
+            logger.error("Backend monitor failed for session %s", session_id, exc_info=True)
+        finally:
+            if be_proc.poll() is not None and info.get("status") in ("starting", "running"):
+                # Only mark error if frontend is also dead
+                fe_proc = info.get("process")
+                if fe_proc and fe_proc.poll() is not None:
+                    info["status"] = "error"
 
     async def _auto_fix(self, session_id: str, error_context: str) -> None:
         """Auto-fix a crashed dev server by invoking loki quick with the error."""
@@ -1169,6 +1512,34 @@ class DevServerManager:
                         pass
 
         _untrack_child_pid(proc.pid)
+
+        # For multi-service setups, also kill the backend process
+        be_proc = info.get("backend_process")
+        if be_proc:
+            if be_proc.poll() is None:
+                if sys.platform != "win32":
+                    try:
+                        pgid = os.getpgid(be_proc.pid)
+                        os.killpg(pgid, signal.SIGTERM)
+                    except (ProcessLookupError, PermissionError, OSError):
+                        try:
+                            be_proc.terminate()
+                        except (ProcessLookupError, PermissionError, OSError):
+                            pass
+                else:
+                    try:
+                        be_proc.terminate()
+                    except (ProcessLookupError, PermissionError, OSError):
+                        pass
+                try:
+                    be_proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    try:
+                        be_proc.kill()
+                    except (ProcessLookupError, PermissionError, OSError):
+                        pass
+            _untrack_child_pid(be_proc.pid)
+
         return {"stopped": True, "message": "Dev server stopped"}
 
     async def status(self, session_id: str) -> dict:
@@ -1203,6 +1574,29 @@ class DevServerManager:
             "auto_fix_status": info.get("auto_fix_status"),
             "auto_fix_attempts": info.get("auto_fix_attempts", 0),
         }
+
+        # Multi-service status reporting
+        if info.get("multi_service"):
+            be_proc = info.get("backend_process")
+            be_alive = be_proc.poll() is None if be_proc else False
+            result["multi_service"] = True
+            result["framework"] = "full-stack"
+            result["services"] = [
+                {
+                    "name": "frontend",
+                    "framework": info.get("frontend_framework", "unknown"),
+                    "port": info.get("expected_port"),
+                    "status": "running" if alive else "error",
+                },
+                {
+                    "name": "backend",
+                    "framework": info.get("backend_framework", "unknown"),
+                    "port": info.get("backend_port"),
+                    "status": "running" if be_alive else "error",
+                },
+            ]
+            result["backend_output"] = info.get("backend_output_lines", [])[-20:]
+
         if info.get("use_portless") and info.get("portless_app_name"):
             app_name = info["portless_app_name"]
             result["portless_url"] = f"http://{app_name}.localhost:1355/"
