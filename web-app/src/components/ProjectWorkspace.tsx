@@ -678,10 +678,24 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
   }, [previewHistoryIndex, previewHistory.length]);
 
   const navigatePreview = useCallback((url: string) => {
-    setPreviewHistory(prev => [...prev.slice(0, previewHistoryIndex + 1), url]);
+    // Resolve relative paths against the dev server base URL, not Purple Lab
+    let resolvedUrl = url;
+    if (url.startsWith('/') && devServerProxyUrl) {
+      try {
+        const base = new URL(devServerProxyUrl);
+        resolvedUrl = `${base.origin}${url}`;
+      } catch {
+        // If devServerProxyUrl isn't a full URL, try with localhost
+        const port = devServer?.port;
+        if (port) {
+          resolvedUrl = `http://localhost:${port}${url}`;
+        }
+      }
+    }
+    setPreviewHistory(prev => [...prev.slice(0, previewHistoryIndex + 1), resolvedUrl]);
     setPreviewHistoryIndex(i => i + 1);
     setPreviewKey(k => k + 1);
-  }, [previewHistoryIndex]);
+  }, [previewHistoryIndex, devServerProxyUrl, devServer?.port]);
 
   // Sync previewInputUrl when navigating history -- show path only, not full URL
   useEffect(() => {
