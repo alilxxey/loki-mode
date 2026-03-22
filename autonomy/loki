@@ -3421,20 +3421,52 @@ cmd_web_stop() {
         rm -f "$pids_file" 2>/dev/null || true
     fi
 
-    # Also stop the Loki Dashboard if it was started by a Purple Lab session
+    # Global cleanup: kill ALL loki-related processes regardless of CWD
+    # This ensures "loki web stop" from anywhere cleans up everything
+
+    # Kill any dashboard server (by process name and by port)
     local dash_port="${LOKI_DASHBOARD_PORT:-57374}"
-    local dash_pid_file="${LOKI_DIR}/dashboard/dashboard.pid"
-    if [ -f "$dash_pid_file" ]; then
-        local dash_pid
-        dash_pid=$(cat "$dash_pid_file" 2>/dev/null)
-        if [ -n "$dash_pid" ] && kill -0 "$dash_pid" 2>/dev/null; then
-            kill "$dash_pid" 2>/dev/null || true
-            sleep 1
-            kill -0 "$dash_pid" 2>/dev/null && kill -9 "$dash_pid" 2>/dev/null || true
-            echo "Loki Dashboard stopped (port $dash_port)"
-        fi
-        rm -f "$dash_pid_file" 2>/dev/null || true
+    local dash_pids
+    dash_pids=$(pgrep -f "dashboard.server\|dashboard/server" 2>/dev/null || true)
+    if [ -n "$dash_pids" ]; then
+        for dpid in $dash_pids; do
+            kill "$dpid" 2>/dev/null || true
+        done
+        sleep 1
+        for dpid in $dash_pids; do
+            kill -0 "$dpid" 2>/dev/null && kill -9 "$dpid" 2>/dev/null || true
+        done
+        echo "Loki Dashboard stopped"
     fi
+    # Also kill by port in case pgrep missed it
+    local dash_port_pid
+    dash_port_pid=$(lsof -ti:"$dash_port" -sTCP:LISTEN 2>/dev/null | head -1 || true)
+    if [ -n "$dash_port_pid" ]; then
+        kill "$dash_port_pid" 2>/dev/null || true
+        sleep 1
+        kill -0 "$dash_port_pid" 2>/dev/null && kill -9 "$dash_port_pid" 2>/dev/null || true
+    fi
+
+    # Kill any loki run.sh orchestrator processes (status monitors, resource monitors)
+    local run_pids
+    run_pids=$(pgrep -f "loki-run-\|status-monitor\|resource-monitor" 2>/dev/null || true)
+    if [ -n "$run_pids" ]; then
+        for rpid in $run_pids; do
+            kill "$rpid" 2>/dev/null || true
+        done
+        sleep 1
+        for rpid in $run_pids; do
+            kill -0 "$rpid" 2>/dev/null && kill -9 "$rpid" 2>/dev/null || true
+        done
+        if [ "$stopped" = true ]; then
+            echo "Background processes cleaned up"
+        fi
+    fi
+
+    # Clean up all PID files globally
+    rm -f "${LOKI_DIR}/dashboard/dashboard.pid" 2>/dev/null || true
+    rm -f "$HOME/.loki/dashboard/dashboard.pid" 2>/dev/null || true
+    rm -f "${PURPLE_LAB_STATE_DIR}/purple-lab.pid" "${PURPLE_LAB_STATE_DIR}/port" 2>/dev/null || true
 }
 
 cmd_web_status() {
