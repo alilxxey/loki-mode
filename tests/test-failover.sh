@@ -11,7 +11,9 @@ set -uo pipefail
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
+# shellcheck disable=SC2034
 YELLOW='\033[1;33m'
+# shellcheck disable=SC2034
 BOLD='\033[1m'
 NC='\033[0m'
 
@@ -61,6 +63,7 @@ source_failover_functions() {
     log_debug() { :; }
     log_error() { echo "[ERROR] $*"; }
     emit_event_json() { :; }
+    # shellcheck disable=SC2034
     ITERATION_COUNT=1
     PROVIDER_NAME="claude"
 
@@ -144,6 +147,7 @@ log_test "Custom failover chain via LOKI_FAILOVER_CHAIN"
 setup_test_env
 source_failover_functions
 LOKI_FAILOVER="true"
+# shellcheck disable=SC2034
 LOKI_FAILOVER_CHAIN="gemini,claude,codex"
 PROVIDER_NAME="gemini"
 init_failover_state

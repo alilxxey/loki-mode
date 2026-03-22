@@ -31,6 +31,7 @@
 
 set -euo pipefail
 
+# shellcheck disable=SC2034
 HOOKS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Load project-specific hook config if it exists
@@ -38,14 +39,22 @@ load_migration_hook_config() {
     local codebase_path="${1:-.}"
     local config_file="${codebase_path}/.loki/migration-hooks.yaml"
 
-    # Defaults
+    # Defaults (used by other functions in this file; SC2034 disabled for globals-via-function pattern)
+    # shellcheck disable=SC2034
     HOOK_POST_FILE_EDIT_ENABLED=true
+    # shellcheck disable=SC2034
     HOOK_POST_STEP_ENABLED=true
+    # shellcheck disable=SC2034
     HOOK_PRE_PHASE_GATE_ENABLED=true
+    # shellcheck disable=SC2034
     HOOK_ON_AGENT_STOP_ENABLED=true
+    # shellcheck disable=SC2034
     HOOK_POST_FILE_EDIT_ACTION="run_tests"
+    # shellcheck disable=SC2034
     HOOK_POST_FILE_EDIT_ON_FAILURE="block_and_rollback"
+    # shellcheck disable=SC2034
     HOOK_POST_STEP_ON_FAILURE="reject_completion"
+    # shellcheck disable=SC2034
     HOOK_ON_AGENT_STOP_ON_FAILURE="force_continue"
 
     if [[ -f "$config_file" ]] && command -v python3 &>/dev/null; then

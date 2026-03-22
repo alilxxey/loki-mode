@@ -183,7 +183,7 @@ if [[ -z "${LOKI_RUNNING_FROM_TEMP:-}" ]] && [[ "${BASH_SOURCE[0]}" == "${0}" ]]
     cp "${BASH_SOURCE[0]}" "$TEMP_SCRIPT"
     chmod 700 "$TEMP_SCRIPT"
     # BUG-XC-011: Set trap BEFORE exec so the temp file gets cleaned up
-    trap "rm -f '$TEMP_SCRIPT'" EXIT
+    trap 'rm -f "$TEMP_SCRIPT"' EXIT
     export LOKI_RUNNING_FROM_TEMP=1
     export LOKI_ORIGINAL_SCRIPT_DIR="$SCRIPT_DIR"
     export LOKI_ORIGINAL_PROJECT_DIR="$PROJECT_DIR"

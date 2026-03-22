@@ -223,7 +223,7 @@ else
 fi
 
 echo "Test 4.7: Real worktree create/list/clean cycle"
-cd "$PROJECT_DIR"
+cd "$PROJECT_DIR" || exit 1
 # Create a real worktree
 test_branch="loki-test-wt-$$"
 git worktree add -b "$test_branch" ".claude/worktrees/test-wt-$$" HEAD 2>/dev/null
@@ -351,9 +351,9 @@ else
 fi
 
 echo "Test 7.2: telemetry enable/disable cycle"
-cd "$PROJECT_DIR"
+cd "$PROJECT_DIR" || exit 1
 mkdir -p .loki
-bash "$CLI" telemetry enable "http://test:4318" 2>&1 >/dev/null
+bash "$CLI" telemetry enable "http://test:4318" >/dev/null 2>&1
 if [ -f ".loki/config.json" ]; then
     saved=$(python3 -c "import json; print(json.load(open('.loki/config.json')).get('otel_endpoint',''))" 2>/dev/null)
     if [ "$saved" = "http://test:4318" ]; then
@@ -365,7 +365,7 @@ else
     fail "telemetry enable" "config.json not created"
 fi
 
-bash "$CLI" telemetry disable 2>&1 >/dev/null
+bash "$CLI" telemetry disable >/dev/null 2>&1
 saved=$(python3 -c "import json; print(json.load(open('.loki/config.json')).get('otel_endpoint','NONE'))" 2>/dev/null)
 if [ "$saved" = "NONE" ]; then
     pass "telemetry disable removes endpoint"

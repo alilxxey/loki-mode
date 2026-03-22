@@ -904,7 +904,9 @@ except: pass
             local container_path="${parts[1]}"
             local mode="${parts[2]:-ro}"
 
-            # Safe tilde expansion (no eval)
+            # Safe tilde expansion (no eval) - SC2088 disabled: tilde is intentionally
+            # treated as a literal string here for safe expansion without eval
+            # shellcheck disable=SC2088
             if [[ "$host_path" == "~/"* ]]; then
                 host_path="$HOME/${host_path#\~/}"
             elif [[ "$host_path" == "~" ]]; then
@@ -1121,7 +1123,8 @@ start_sandbox() {
             local c_container="${mount_parts[1]:-}"
             local c_mode="${mount_parts[2]:-ro}"
             if [[ -n "$c_host" ]] && [[ -n "$c_container" ]]; then
-                # Safe tilde expansion (no eval)
+                # Safe tilde expansion (no eval) - SC2088 disabled: intentional literal match
+                # shellcheck disable=SC2088
                 if [[ "$c_host" == "~/"* ]]; then
                     c_host="$HOME/${c_host#\~/}"
                 elif [[ "$c_host" == "~" ]]; then

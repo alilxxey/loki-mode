@@ -104,7 +104,7 @@ fi
 ((TOTAL++))
 (
     cd "$TMPDIR_BASE"
-    "$LOKI" init myproject --template saas-app 2>&1 >/dev/null
+    "$LOKI" init myproject --template saas-app >/dev/null 2>&1
 ) || true
 if [ -d "$TMPDIR_BASE/myproject" ] && \
    [ -f "$TMPDIR_BASE/myproject/prd.md" ] && \
@@ -159,7 +159,7 @@ fi
 ((TOTAL++))
 (
     cd "$TMPDIR_BASE"
-    "$LOKI" init nogit-project --template cli-tool --no-git 2>&1 >/dev/null
+    "$LOKI" init nogit-project --template cli-tool --no-git >/dev/null 2>&1
 ) || true
 if [ ! -d "$TMPDIR_BASE/nogit-project/.git" ] && [ ! -f "$TMPDIR_BASE/nogit-project/.gitignore" ] && \
    [ -f "$TMPDIR_BASE/nogit-project/prd.md" ]; then
@@ -201,7 +201,7 @@ scratch="$TMPDIR_BASE/scaffold-cwd"
 mkdir -p "$scratch"
 (
     cd "$scratch"
-    "$LOKI" init --template web-scraper --no-git 2>&1 >/dev/null
+    "$LOKI" init --template web-scraper --no-git >/dev/null 2>&1
 ) || true
 if [ -f "$scratch/prd.md" ] && [ -f "$scratch/.loki/loki.config.json" ]; then
     log_pass "init without project name scaffolds current directory"

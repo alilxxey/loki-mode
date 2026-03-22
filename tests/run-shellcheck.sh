@@ -42,6 +42,10 @@ GLOBAL_EXCLUDES="SC1090,SC1091"
 # Variables are intentionally unused within the file itself
 PROVIDER_EXCLUDES="SC2034"
 
+# Test files - variables are set as environment for sourced functions
+# SC2034: unused vars are env vars for sourced functions
+TEST_EXCLUDES="SC2034"
+
 # Find all .sh files
 # Exclude node_modules, .git, .loki, and venv directories
 # shellcheck disable=SC2086
@@ -56,6 +60,9 @@ for file in $FILES; do
     local_excludes="$GLOBAL_EXCLUDES"
     if [[ "$file" == ./providers/*.sh ]]; then
         local_excludes="${GLOBAL_EXCLUDES},${PROVIDER_EXCLUDES}"
+    fi
+    if [[ "$file" == ./tests/*.sh ]]; then
+        local_excludes="${local_excludes},${TEST_EXCLUDES}"
     fi
 
     # Run shellcheck with severity=warning (ignores info/style)

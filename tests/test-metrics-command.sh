@@ -69,7 +69,7 @@ fi
 # Create a temp dir for isolated testing
 TMPDIR_BASE=$(mktemp -d /tmp/loki-test-metrics-XXXXXX)
 ORIG_DIR="$(pwd)"
-trap "cd '$ORIG_DIR'; rm -rf '$TMPDIR_BASE'" EXIT
+trap 'cd "$ORIG_DIR"; rm -rf "$TMPDIR_BASE"' EXIT
 
 # -------------------------------------------
 # Test 1: Help flag works
@@ -98,7 +98,7 @@ test_cmd "loki metrics --help mentions --share flag" \
 # -------------------------------------------
 # Test 5: Returns exit 0 on valid project (even without .loki/)
 # -------------------------------------------
-cd "$TMPDIR_BASE"
+cd "$TMPDIR_BASE" || exit 1
 ((TOTAL++))
 output=$("$LOKI" metrics 2>&1) || actual_exit=$?
 actual_exit=${actual_exit:-0}
@@ -113,12 +113,12 @@ if [ "$actual_exit" -eq 0 ]; then
 else
     log_fail "loki metrics returns exit 0 and shows report header" "exit code was $actual_exit"
 fi
-cd "$ORIG_DIR"
+cd "$ORIG_DIR" || exit 1
 
 # -------------------------------------------
 # Test 6: JSON output is valid JSON
 # -------------------------------------------
-cd "$TMPDIR_BASE"
+cd "$TMPDIR_BASE" || exit 1
 ((TOTAL++))
 output=$("$LOKI" metrics --json 2>&1) || actual_exit=$?
 actual_exit=${actual_exit:-0}
@@ -133,12 +133,12 @@ if [ "$actual_exit" -eq 0 ]; then
 else
     log_fail "loki metrics --json produces valid JSON" "exit code was $actual_exit"
 fi
-cd "$ORIG_DIR"
+cd "$ORIG_DIR" || exit 1
 
 # -------------------------------------------
 # Test 7: --last N filters correctly (JSON check)
 # -------------------------------------------
-cd "$TMPDIR_BASE"
+cd "$TMPDIR_BASE" || exit 1
 ((TOTAL++))
 output=$("$LOKI" metrics --last 3 --json 2>&1) || actual_exit=$?
 actual_exit=${actual_exit:-0}
@@ -151,12 +151,12 @@ if [ "$actual_exit" -eq 0 ]; then
 else
     log_fail "loki metrics --last 3 limits sessions to 3 or fewer" "exit code was $actual_exit"
 fi
-cd "$ORIG_DIR"
+cd "$ORIG_DIR" || exit 1
 
 # -------------------------------------------
 # Test 8: --save creates METRICS.md
 # -------------------------------------------
-cd "$TMPDIR_BASE"
+cd "$TMPDIR_BASE" || exit 1
 ((TOTAL++))
 "$LOKI" metrics --save >/dev/null 2>&1 || true
 if [ -f "METRICS.md" ]; then
@@ -169,12 +169,12 @@ else
     log_fail "loki metrics --save creates METRICS.md with content" "METRICS.md was not created"
 fi
 rm -f METRICS.md
-cd "$ORIG_DIR"
+cd "$ORIG_DIR" || exit 1
 
 # -------------------------------------------
 # Test 9: Works on empty .loki/ directory (shows zeros, does not crash)
 # -------------------------------------------
-cd "$TMPDIR_BASE"
+cd "$TMPDIR_BASE" || exit 1
 mkdir -p .loki
 ((TOTAL++))
 output=$("$LOKI" metrics --json 2>&1) || actual_exit=$?
@@ -189,7 +189,7 @@ if [ "$actual_exit" -eq 0 ]; then
 else
     log_fail "loki metrics on empty .loki/ shows zero iterations" "exit code was $actual_exit"
 fi
-cd "$ORIG_DIR"
+cd "$ORIG_DIR" || exit 1
 
 # -------------------------------------------
 # Test 10: Unknown option is rejected
@@ -217,10 +217,10 @@ fi
 # -------------------------------------------
 # Test 12: Stats card mentions time saved
 # -------------------------------------------
-cd "$TMPDIR_BASE"
+cd "$TMPDIR_BASE" || exit 1
 test_cmd "loki metrics output includes TIME SAVED section" \
     0 "TIME SAVED" metrics
-cd "$ORIG_DIR"
+cd "$ORIG_DIR" || exit 1
 
 # -------------------------------------------
 # Summary

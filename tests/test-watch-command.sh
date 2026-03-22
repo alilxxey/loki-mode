@@ -69,7 +69,7 @@ fi
 # Create a temp dir for isolated testing
 TMPDIR_BASE=$(mktemp -d /tmp/loki-test-watch-XXXXXX)
 ORIG_DIR="$(pwd)"
-trap "cd '$ORIG_DIR'; rm -rf '$TMPDIR_BASE'" EXIT
+trap 'cd "$ORIG_DIR"; rm -rf "$TMPDIR_BASE"' EXIT
 
 # -------------------------------------------
 # Test 1: Help flag works
@@ -87,8 +87,8 @@ test_cmd "loki watch --help shows version" \
 # Test 3: PRD auto-detection (prd.md)
 # -------------------------------------------
 ((TOTAL++))
-cd "$TMPDIR_BASE"
-mkdir -p test-prd-detect && cd test-prd-detect
+cd "$TMPDIR_BASE" || exit 1
+mkdir -p test-prd-detect && cd test-prd-detect || exit 1
 echo "# Test PRD" > prd.md
 output=$("$LOKI" watch --help 2>&1) || true
 # Help should work regardless of dir
@@ -97,14 +97,14 @@ if echo "$output" | grep -qi "Usage"; then
 else
     log_fail "loki watch --help works from dir with prd.md" "missing Usage"
 fi
-cd "$TMPDIR_BASE"
+cd "$TMPDIR_BASE" || exit 1
 
 # -------------------------------------------
 # Test 4: --once flag runs and exits
 # -------------------------------------------
 ((TOTAL++))
-cd "$TMPDIR_BASE"
-mkdir -p test-once && cd test-once
+cd "$TMPDIR_BASE" || exit 1
+mkdir -p test-once && cd test-once || exit 1
 echo "# Test PRD for once mode" > prd.md
 # --once should attempt to run loki start, which will fail quickly (no session)
 # but should exit (not hang) -- we timeout after 5s to verify it doesn't hang
@@ -117,7 +117,7 @@ else
     # Even if start fails, the fact that it returned at all means --once works
     log_pass "loki watch --once runs and exits (does not hang)"
 fi
-cd "$TMPDIR_BASE"
+cd "$TMPDIR_BASE" || exit 1
 
 # -------------------------------------------
 # Test 5: --interval flag accepted
@@ -141,8 +141,8 @@ test_cmd "loki watch --help mentions debounce" \
 # Test 8: Missing PRD file returns error
 # -------------------------------------------
 ((TOTAL++))
-cd "$TMPDIR_BASE"
-mkdir -p test-no-prd && cd test-no-prd
+cd "$TMPDIR_BASE" || exit 1
+mkdir -p test-no-prd && cd test-no-prd || exit 1
 # Remove any .md files
 rm -f *.md
 actual_exit=0
@@ -152,14 +152,14 @@ if [ "$actual_exit" -ne 0 ] && echo "$output" | grep -qi "No PRD file found\|not
 else
     log_fail "loki watch with no PRD file returns error" "expected non-zero exit and error message, got exit=$actual_exit"
 fi
-cd "$TMPDIR_BASE"
+cd "$TMPDIR_BASE" || exit 1
 
 # -------------------------------------------
 # Test 9: Invalid --interval value rejected
 # -------------------------------------------
 ((TOTAL++))
-cd "$TMPDIR_BASE"
-mkdir -p test-bad-interval && cd test-bad-interval
+cd "$TMPDIR_BASE" || exit 1
+mkdir -p test-bad-interval && cd test-bad-interval || exit 1
 echo "# Test" > prd.md
 actual_exit=0
 output=$("$LOKI" watch --interval abc 2>&1) || actual_exit=$?
@@ -168,7 +168,7 @@ if [ "$actual_exit" -ne 0 ] && echo "$output" | grep -qi "Invalid\|interval"; th
 else
     log_fail "loki watch --interval abc rejected with error" "expected error, got exit=$actual_exit"
 fi
-cd "$TMPDIR_BASE"
+cd "$TMPDIR_BASE" || exit 1
 
 # -------------------------------------------
 # Test 10: Polling fallback detection
@@ -180,8 +180,8 @@ test_cmd "loki watch --help mentions polling fallback" \
 # Test 11: Graceful signal handling (watch exits on SIGTERM)
 # -------------------------------------------
 ((TOTAL++))
-cd "$TMPDIR_BASE"
-mkdir -p test-signal && cd test-signal
+cd "$TMPDIR_BASE" || exit 1
+mkdir -p test-signal && cd test-signal || exit 1
 echo "# Signal test PRD" > prd.md
 # Start watch in background with --no-auto-start, send SIGTERM after 2s
 "$LOKI" watch --no-auto-start > /tmp/loki-test-watch-signal.out 2>&1 &
@@ -206,7 +206,7 @@ else
     log_pass "loki watch exits gracefully on SIGTERM"
 fi
 rm -f /tmp/loki-test-watch-signal.out
-cd "$TMPDIR_BASE"
+cd "$TMPDIR_BASE" || exit 1
 
 # -------------------------------------------
 # Test 12: Nonexistent PRD file path returns error

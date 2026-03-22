@@ -113,7 +113,7 @@ fi
 ((TOTAL++))
 MD_TEST_DIR=$(mktemp -d)
 (
-    cd "$MD_TEST_DIR"
+    cd "$MD_TEST_DIR" || exit 1
     git init -q
     echo "clean" > app.py
     git add app.py
@@ -141,7 +141,7 @@ fi
 ((TOTAL++))
 GH_TEST_DIR=$(mktemp -d)
 (
-    cd "$GH_TEST_DIR"
+    cd "$GH_TEST_DIR" || exit 1
     git init -q
     echo "clean" > app.py
     git add app.py
@@ -173,10 +173,10 @@ fi
 # --- Test 11: Security scan detects secrets in diff ---
 ((TOTAL++))
 TEST_DIR=$(mktemp -d)
-trap "rm -rf $TEST_DIR" EXIT
+trap 'rm -rf "$TEST_DIR"' EXIT
 # Create a git repo with a secret in the diff (HEAD~1 fallback)
 (
-    cd "$TEST_DIR"
+    cd "$TEST_DIR" || exit 1
     git init -q
     git config user.email "test@test.com"
     git config user.name "Test"
@@ -223,7 +223,7 @@ fi
 ((TOTAL++))
 ENV_TEST_DIR=$(mktemp -d)
 (
-    cd "$ENV_TEST_DIR"
+    cd "$ENV_TEST_DIR" || exit 1
     git init -q
     git config user.email "test@test.com"
     git config user.name "Test"

@@ -15,14 +15,19 @@
 #   JSON with normalized fields: provider, number, title, body, labels, author, url, created_at
 #===============================================================================
 
-# Colors (safe to re-source)
+# Colors (safe to re-source; used by scripts that source this file)
+# shellcheck disable=SC2034
 RED='\033[0;31m'
+# shellcheck disable=SC2034
 GREEN='\033[0;32m'
+# shellcheck disable=SC2034
 YELLOW='\033[1;33m'
+# shellcheck disable=SC2034
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-# Supported issue providers
+# Supported issue providers (exported for sourcing scripts)
+# shellcheck disable=SC2034
 ISSUE_PROVIDERS=("github" "gitlab" "jira" "azure_devops")
 
 # Detect issue provider from a URL or reference

@@ -360,6 +360,7 @@ class MemoryEngine:
         pattern_id = self.storage.save_pattern(pattern)
 
         # Update index
+        pattern_dict = pattern.model_dump() if hasattr(pattern, "model_dump") else pattern.__dict__
         self._update_index_with_pattern(pattern_dict)
 
         return pattern_id

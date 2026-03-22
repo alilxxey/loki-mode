@@ -69,7 +69,7 @@ fi
 # Create a temp dir for isolated testing
 TMPDIR_BASE=$(mktemp -d /tmp/loki-test-share-XXXXXX)
 ORIG_DIR="$(pwd)"
-trap "cd '$ORIG_DIR'; rm -rf '$TMPDIR_BASE'" EXIT
+trap 'cd "$ORIG_DIR"; rm -rf "$TMPDIR_BASE"' EXIT
 
 # -------------------------------------------
 # Test 1: Command exists and help shows
@@ -98,27 +98,27 @@ test_cmd "loki share --help mentions gh CLI" \
 # -------------------------------------------
 # Test 5: --format text is accepted (fails gracefully without .loki)
 # -------------------------------------------
-cd "$TMPDIR_BASE"
+cd "$TMPDIR_BASE" || exit 1
 test_cmd "loki share --format text fails gracefully without .loki/" \
     1 "no .loki" share --format text
-cd "$ORIG_DIR"
+cd "$ORIG_DIR" || exit 1
 
 # -------------------------------------------
 # Test 6: --private flag is accepted (fails gracefully without .loki)
 # -------------------------------------------
-cd "$TMPDIR_BASE"
+cd "$TMPDIR_BASE" || exit 1
 test_cmd "loki share --private fails gracefully without .loki/" \
     1 "no .loki" share --private
-cd "$ORIG_DIR"
+cd "$ORIG_DIR" || exit 1
 
 # -------------------------------------------
 # Test 7: Invalid format is rejected
 # -------------------------------------------
-cd "$TMPDIR_BASE"
+cd "$TMPDIR_BASE" || exit 1
 mkdir -p .loki
 test_cmd "loki share --format invalid rejects unknown format" \
     1 "unknown format" share --format invalid
-cd "$ORIG_DIR"
+cd "$ORIG_DIR" || exit 1
 
 # -------------------------------------------
 # Test 8: Unknown option is rejected
