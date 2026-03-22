@@ -7948,9 +7948,10 @@ load_state() {
             # Reset retry count if previous session ended in a terminal state
             # This allows new sessions to start fresh after failures
             case "$prev_status" in
-                failed|max_iterations_reached|max_retries_exceeded)
-                    log_info "Previous session ended with status: $prev_status. Resetting retry count."
+                failed|max_iterations_reached|max_retries_exceeded|exited)
+                    log_info "Previous session ended with status: $prev_status. Resetting for new session."
                     RETRY_COUNT=0
+                    ITERATION_COUNT=0
                     ;;
             esac
         else
