@@ -2115,8 +2115,10 @@ create_worktree() {
         git -C "$TARGET_DIR" worktree add "$worktree_path" -b "$branch_name" 2>/dev/null && wt_exit=0 || \
         { git -C "$TARGET_DIR" worktree add "$worktree_path" "$branch_name" 2>/dev/null && wt_exit=0; }
     else
-        # Track main branch
-        git -C "$TARGET_DIR" worktree add "$worktree_path" main 2>/dev/null && wt_exit=0 || \
+        # BUG-PAR-001: Testing/docs worktrees use -b parallel-<stream> main (not bare main checkout)
+        # This avoids "already checked out" errors and keeps each worktree on its own branch
+        git -C "$TARGET_DIR" worktree add "$worktree_path" -b "parallel-${stream_name}" main 2>/dev/null && wt_exit=0 || \
+        { git -C "$TARGET_DIR" worktree add "$worktree_path" "parallel-${stream_name}" 2>/dev/null && wt_exit=0; } || \
         { git -C "$TARGET_DIR" worktree add "$worktree_path" HEAD 2>/dev/null && wt_exit=0; }
     fi
 
@@ -2171,8 +2173,11 @@ remove_worktree() {
 
     # Remove worktree (with safety check for rm -rf)
     git -C "$TARGET_DIR" worktree remove "$worktree_path" --force 2>/dev/null || {
-        # Safety check: only rm -rf if path looks like a worktree (contains .git or is under TARGET_DIR)
-        if [[ -n "$worktree_path" && "$worktree_path" != "/" && "$worktree_path" == "$TARGET_DIR"* ]]; then
+        # BUG-PAR-005: Safety check uses dirname with trailing / to prevent prefix-match false positives
+        # e.g. TARGET_DIR=/foo/bar must not match /foo/bar-other
+        local parent_dir
+        parent_dir="$(dirname "$TARGET_DIR")/"
+        if [[ -n "$worktree_path" && "$worktree_path" != "/" && "$worktree_path" == "${parent_dir}"* ]]; then
             rm -rf "$worktree_path" 2>/dev/null
         else
             log_warn "Skipping unsafe rm -rf for path: $worktree_path"
@@ -2205,7 +2210,11 @@ spawn_worktree_session() {
     done
 
     if [ "$active_count" -ge "$MAX_PARALLEL_SESSIONS" ]; then
-        log_warn "Max parallel sessions reached ($MAX_PARALLEL_SESSIONS). Waiting..."
+        # BUG-PAR-014: Max-sessions rejection queues spawn for retry
+        log_warn "Max parallel sessions reached ($MAX_PARALLEL_SESSIONS). Queuing $stream_name for retry."
+        mkdir -p "${TARGET_DIR:-.}/.loki/signals"
+        echo "{\"stream\":\"$stream_name\",\"task\":\"$(echo "$task_prompt" | head -c 200)\",\"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" \
+            > "${TARGET_DIR:-.}/.loki/signals/SPAWN_QUEUED_${stream_name}"
         return 1
     fi
 
@@ -2256,19 +2265,31 @@ spawn_worktree_session() {
 
         # Completion signaling (v6.7.0)
         if [ $_wt_exit -eq 0 ]; then
-            # Commit any uncommitted work
-            git -C "$worktree_path" add -A 2>/dev/null
+            # BUG-PAR-006: git add excludes .env, *.key, *.pem, credentials*
+            git -C "$worktree_path" add -A \
+                ':!.env' ':!*.key' ':!*.pem' ':!credentials*' 2>/dev/null
             git -C "$worktree_path" commit -m "feat($stream_name): worktree work complete" 2>/dev/null || true
-            # Signal merge readiness to main orchestrator
+            # BUG-PAR-008: Signal files written atomically (temp + mv)
             mkdir -p "${TARGET_DIR:-.}/.loki/signals"
-            cat > "${TARGET_DIR:-.}/.loki/signals/MERGE_REQUESTED_${stream_name}" <<EOSIG
+            local _sig_tmp
+            _sig_tmp=$(mktemp "${TARGET_DIR:-.}/.loki/signals/.tmp.XXXXXX") || true
+            cat > "$_sig_tmp" <<EOSIG
 {"stream":"$stream_name","branch":"$(git -C "$worktree_path" branch --show-current 2>/dev/null)","worktree":"$worktree_path","timestamp":"$(date -u +%Y-%m-%dT%H:%M:%SZ)","exit_code":$_wt_exit}
 EOSIG
+            mv "$_sig_tmp" "${TARGET_DIR:-.}/.loki/signals/MERGE_REQUESTED_${stream_name}" 2>/dev/null || \
+                cp "$_sig_tmp" "${TARGET_DIR:-.}/.loki/signals/MERGE_REQUESTED_${stream_name}" 2>/dev/null
+            rm -f "$_sig_tmp" 2>/dev/null
             echo "WORKTREE_COMPLETE: $stream_name" >> "$log_file"
         else
+            # BUG-PAR-008: Signal files written atomically (temp + mv)
             mkdir -p "${TARGET_DIR:-.}/.loki/signals"
+            local _fail_tmp
+            _fail_tmp=$(mktemp "${TARGET_DIR:-.}/.loki/signals/.tmp.XXXXXX") || true
             echo "{\"stream\":\"$stream_name\",\"status\":\"failed\",\"exit_code\":$_wt_exit,\"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" \
-                > "${TARGET_DIR:-.}/.loki/signals/WORKTREE_FAILED_${stream_name}"
+                > "$_fail_tmp"
+            mv "$_fail_tmp" "${TARGET_DIR:-.}/.loki/signals/WORKTREE_FAILED_${stream_name}" 2>/dev/null || \
+                cp "$_fail_tmp" "${TARGET_DIR:-.}/.loki/signals/WORKTREE_FAILED_${stream_name}" 2>/dev/null
+            rm -f "$_fail_tmp" 2>/dev/null
         fi
     ) &
 
@@ -2291,9 +2312,12 @@ merge_worktree() {
         return 1
     fi
 
+    # BUG-PAR-013: Signal file parsing falls back to jq when python3 unavailable
     local branch worktree_path
-    branch=$(python3 -c "import json; print(json.load(open('$signal_file'))['branch'])" 2>/dev/null)
-    worktree_path=$(python3 -c "import json; print(json.load(open('$signal_file'))['worktree'])" 2>/dev/null)
+    branch=$(python3 -c "import json; print(json.load(open('$signal_file'))['branch'])" 2>/dev/null) || \
+        branch=$(jq -r '.branch' "$signal_file" 2>/dev/null) || true
+    worktree_path=$(python3 -c "import json; print(json.load(open('$signal_file'))['worktree'])" 2>/dev/null) || \
+        worktree_path=$(jq -r '.worktree' "$signal_file" 2>/dev/null) || true
 
     if [ -z "$branch" ]; then
         log_error "Could not determine branch for: $stream_name"
@@ -2302,9 +2326,16 @@ merge_worktree() {
 
     log_step "Merging worktree: $stream_name (branch: $branch)"
 
-    # Merge into current branch
+    # BUG-PAR-009: Verify git checkout main before merge
     local current_branch
     current_branch=$(git -C "${TARGET_DIR:-.}" branch --show-current 2>/dev/null)
+    if [ "$current_branch" != "main" ]; then
+        log_info "Switching to main before merge (was on: $current_branch)"
+        if ! git -C "${TARGET_DIR:-.}" checkout main 2>/dev/null; then
+            log_error "Failed to checkout main for merge: $stream_name"
+            return 1
+        fi
+    fi
 
     if git -C "${TARGET_DIR:-.}" merge --no-ff "$branch" -m "merge($stream_name): auto-merge from parallel worktree" 2>&1; then
         log_info "Merge successful: $stream_name"
@@ -2447,50 +2478,51 @@ Output ONLY the resolved file content with no conflict markers. No explanations.
 }
 
 # Merge a completed feature branch (with AI conflict resolution)
+# BUG-PAR-011: Not in a subshell -- uses git -C instead of cd
+# BUG-PAR-003: Strips feature- prefix to avoid feature/feature-auth double-prefix
 merge_feature() {
     local feature="$1"
-    local branch="feature/$feature"
+    # BUG-PAR-003: Strip feature- prefix if present to avoid double-prefix (feature/feature-auth)
+    local clean_feature="${feature#feature-}"
+    local branch="feature/$clean_feature"
 
-    log_step "Merging feature: $feature"
+    log_step "Merging feature: $clean_feature"
 
-    (
-        cd "$TARGET_DIR" || exit 1
+    # BUG-PAR-011: Ensure we're on main using git -C (no subshell)
+    git -C "$TARGET_DIR" checkout main 2>/dev/null
 
-        # Ensure we're on main
-        git checkout main 2>/dev/null
+    # Attempt merge with no-ff for clear history
+    if git -C "$TARGET_DIR" merge "$branch" --no-ff -m "feat: Merge $clean_feature" 2>/dev/null; then
+        log_info "Merged cleanly: $clean_feature"
+    else
+        # Merge has conflicts - try AI resolution
+        log_warn "Merge conflicts detected - attempting AI resolution"
 
-        # Attempt merge with no-ff for clear history
-        if git merge "$branch" --no-ff -m "feat: Merge $feature" 2>/dev/null; then
-            log_info "Merged cleanly: $feature"
+        if resolve_conflicts_with_ai "$clean_feature"; then
+            # AI resolved conflicts, commit the merge
+            git -C "$TARGET_DIR" commit -m "feat: Merge $clean_feature (AI-resolved conflicts)"
+            audit_agent_action "git_commit" "Committed changes" "merge=$clean_feature,resolution=ai"
+            log_info "Merged with AI conflict resolution: $clean_feature"
         else
-            # Merge has conflicts - try AI resolution
-            log_warn "Merge conflicts detected - attempting AI resolution"
-
-            if resolve_conflicts_with_ai "$feature"; then
-                # AI resolved conflicts, commit the merge
-                git commit -m "feat: Merge $feature (AI-resolved conflicts)"
-                audit_agent_action "git_commit" "Committed changes" "merge=$feature,resolution=ai"
-                log_info "Merged with AI conflict resolution: $feature"
-            else
-                # AI resolution failed, abort merge
-                log_error "AI conflict resolution failed: $feature"
-                git merge --abort 2>/dev/null || true
-                return 1
-            fi
+            # AI resolution failed, abort merge
+            log_error "AI conflict resolution failed: $clean_feature"
+            git -C "$TARGET_DIR" merge --abort 2>/dev/null || true
+            return 1
         fi
+    fi
 
-        # Remove signal
-        rm -f ".loki/signals/MERGE_REQUESTED_$feature"
+    # Remove signal
+    rm -f "$TARGET_DIR/.loki/signals/MERGE_REQUESTED_$feature"
 
-        # Remove worktree
-        remove_worktree "feature-$feature"
+    # Remove worktree
+    remove_worktree "feature-$clean_feature"
 
-        # Delete branch
-        git branch -d "$branch" 2>/dev/null || true
+    # Delete branch
+    git -C "$TARGET_DIR" branch -d "$branch" 2>/dev/null || true
 
-        # Signal for docs update
-        touch ".loki/signals/DOCS_NEEDED"
-    )
+    # Signal for docs update
+    mkdir -p "$TARGET_DIR/.loki/signals"
+    touch "$TARGET_DIR/.loki/signals/DOCS_NEEDED"
 }
 
 # Initialize parallel workflow streams
@@ -2532,7 +2564,9 @@ spawn_feature_stream() {
     local task_description="$2"
 
     # Check worktree limit
-    local worktree_count=$(git -C "$TARGET_DIR" worktree list 2>/dev/null | wc -l)
+    # BUG-PAR-012: Worktree count subtracts 1 for main (git worktree list includes main)
+    local worktree_count_raw=$(git -C "$TARGET_DIR" worktree list 2>/dev/null | wc -l)
+    local worktree_count=$((worktree_count_raw > 0 ? worktree_count_raw - 1 : 0))
     if [ "$worktree_count" -ge "$MAX_WORKTREES" ]; then
         log_warn "Max worktrees reached ($MAX_WORKTREES). Queuing feature: $feature_name"
         return 1
@@ -2601,11 +2635,36 @@ run_parallel_orchestrator() {
 
     # Main orchestrator loop
     local running=true
-    trap 'running=false; cleanup_parallel_streams' INT TERM
+    # BUG-PAR-004: Orchestrator trap handles SIGTERM properly (cleanup + restore global trap + exit)
+    trap 'running=false; cleanup_parallel_streams; trap cleanup INT TERM; exit 0' TERM
+    trap 'running=false; cleanup_parallel_streams' INT
 
     while $running; do
         # Check for merge requests
         check_merge_queue
+
+        # BUG-PAR-014: Retry queued spawns when sessions free up
+        local active_count=0
+        for _qpid in "${WORKTREE_PIDS[@]}"; do
+            if kill -0 "$_qpid" 2>/dev/null; then
+                ((active_count++))
+            fi
+        done
+        if [ "$active_count" -lt "$MAX_PARALLEL_SESSIONS" ]; then
+            for queued_signal in "${TARGET_DIR:-.}"/.loki/signals/SPAWN_QUEUED_*; do
+                [ -f "$queued_signal" ] || continue
+                local queued_stream
+                queued_stream=$(basename "$queued_signal" | sed 's/SPAWN_QUEUED_//')
+                local queued_task=""
+                queued_task=$(python3 -c "import json; print(json.load(open('$queued_signal'))['task'])" 2>/dev/null) || \
+                    queued_task=$(jq -r '.task' "$queued_signal" 2>/dev/null) || true
+                if [ -n "$queued_task" ] && [ -n "${WORKTREE_PATHS[$queued_stream]:-}" ]; then
+                    rm -f "$queued_signal"
+                    spawn_worktree_session "$queued_stream" "$queued_task" && \
+                        log_info "Retried queued spawn: $queued_stream"
+                fi
+            done
+        fi
 
         # Check session health
         for stream in "${!WORKTREE_PIDS[@]}"; do
@@ -2620,22 +2679,28 @@ run_parallel_orchestrator() {
         local state_file="$TARGET_DIR/.loki/state/parallel-streams.json"
         mkdir -p "$(dirname "$state_file")"
 
+        # BUG-PAR-007: Empty worktree map produces valid JSON
+        local worktree_json=""
+        if [ ${#WORKTREE_PATHS[@]} -gt 0 ]; then
+            worktree_json=$(for stream in "${!WORKTREE_PATHS[@]}"; do
+                local path="${WORKTREE_PATHS[$stream]}"
+                local pid="null"
+                if [ -n "${WORKTREE_PIDS[$stream]+x}" ]; then
+                    pid="${WORKTREE_PIDS[$stream]}"
+                fi
+                local status="stopped"
+                if [ "$pid" != "null" ] && kill -0 "$pid" 2>/dev/null; then
+                    status="running"
+                fi
+                echo "    \"$stream\": {\"path\": \"$path\", \"pid\": $pid, \"status\": \"$status\"},"
+            done | sed '$ s/,$//')
+        fi
+
         cat > "$state_file" << EOF
 {
   "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "worktrees": {
-$(for stream in "${!WORKTREE_PATHS[@]}"; do
-    local path="${WORKTREE_PATHS[$stream]}"
-    local pid="null"
-    if [ -n "${WORKTREE_PIDS[$stream]+x}" ]; then
-        pid="${WORKTREE_PIDS[$stream]}"
-    fi
-    local status="stopped"
-    if [ "$pid" != "null" ] && kill -0 "$pid" 2>/dev/null; then
-        status="running"
-    fi
-    echo "    \"$stream\": {\"path\": \"$path\", \"pid\": $pid, \"status\": \"$status\"},"
-done | sed '$ s/,$//')
+${worktree_json}
   },
   "active_sessions": ${#WORKTREE_PIDS[@]},
   "max_sessions": $MAX_PARALLEL_SESSIONS

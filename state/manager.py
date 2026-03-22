@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 from enum import Enum
 from contextlib import contextmanager
+import copy
 import uuid
 import glob as glob_module
 
@@ -102,11 +103,11 @@ class VersionVector:
     def concurrent_with(self, other: "VersionVector") -> bool:
         """Check if two vectors are concurrent (neither dominates).
 
-        Per causality rules, identical vectors are concurrent (happened
-        independently with the same knowledge).
+        Identical vectors represent the same causal point, NOT
+        concurrent operations, so they return False (BUG-ST-006).
         """
         if self.versions == other.versions:
-            return True
+            return False
         return not self.dominates(other) and not other.dominates(self)
 
     def to_dict(self) -> Dict[str, int]:
@@ -796,6 +797,9 @@ class StateManager:
         """
         Merge updates into existing state.
 
+        Holds a file lock across the entire read-modify-write to prevent
+        lost updates from concurrent callers (BUG-ST-002).
+
         Args:
             file_ref: File reference
             updates: Dictionary of updates to merge
@@ -804,9 +808,57 @@ class StateManager:
         Returns:
             StateChange object
         """
-        current = self.get_state(file_ref, default={})
-        merged = {**current, **updates}
-        return self.set_state(file_ref, merged, source)
+        path = self._resolve_path(file_ref)
+
+        with self._file_lock(path, exclusive=True):
+            # Read current state under the lock (bypass cache to get
+            # the true on-disk value while we hold the exclusive lock)
+            old_value = None
+            if path.exists():
+                try:
+                    with open(path, "r") as f:
+                        old_value = json.load(f)
+                except (json.JSONDecodeError, IOError):
+                    old_value = None
+
+            current = old_value if old_value is not None else {}
+            merged = {**current, **updates}
+            change_type = "create" if old_value is None else "update"
+
+            # Save version before writing new data (SYN-015)
+            if self.enable_versioning and old_value is not None:
+                self._save_version(file_ref, old_value, source, change_type)
+
+            # Write atomically (temp file + rename) while still under lock
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fd, temp_path = tempfile.mkstemp(
+                dir=path.parent, prefix=".tmp_", suffix=".json"
+            )
+            try:
+                with os.fdopen(fd, "w") as f:
+                    json.dump(merged, f, indent=2, default=str)
+                shutil.move(temp_path, path)
+            except Exception:
+                if os.path.exists(temp_path):
+                    os.unlink(temp_path)
+                raise
+
+            # Update cache
+            self._put_in_cache(path, merged)
+
+        # Create change object
+        change = StateChange(
+            file_path=str(path.relative_to(self.loki_dir)),
+            old_value=old_value,
+            new_value=merged,
+            change_type=change_type,
+            source=source
+        )
+
+        # Broadcast change
+        self._broadcast(change)
+
+        return change
 
     def delete_state(
         self,
@@ -1147,16 +1199,38 @@ class StateManager:
         return states
 
     def refresh_cache(self) -> None:
-        """Refresh all cached entries from disk."""
+        """Refresh all cached entries from disk.
+
+        Collects paths under _cache_lock, releases it, reads files
+        (which acquire file locks), then re-acquires _cache_lock to
+        update entries. This avoids an ABBA deadlock between the
+        cache lock and file locks (BUG-ST-001).
+        """
+        # Step 1: collect paths under the cache lock
         with self._cache_lock:
-            for path_str in list(self._cache.keys()):
+            paths_to_refresh = list(self._cache.keys())
+
+        # Step 2: read files WITHOUT holding _cache_lock
+        refreshed: dict = {}
+        gone: list = []
+        for path_str in paths_to_refresh:
+            path = Path(path_str)
+            if path.exists():
+                data = self._read_file(path)
+                if data:
+                    refreshed[path_str] = data
+            else:
+                gone.append(path_str)
+
+        # Step 3: re-acquire _cache_lock and update entries
+        with self._cache_lock:
+            for path_str, data in refreshed.items():
                 path = Path(path_str)
-                if path.exists():
-                    data = self._read_file(path)
-                    if data:
-                        self._put_in_cache(path, data)
-                else:
-                    del self._cache[path_str]
+                data_hash = self._compute_hash(data)
+                mtime = path.stat().st_mtime if path.exists() else 0
+                self._cache[path_str] = (data, data_hash, mtime)
+            for path_str in gone:
+                self._cache.pop(path_str, None)
 
     # -------------------------------------------------------------------------
     # Optimistic Updates (SYN-014)
@@ -1231,8 +1305,9 @@ class StateManager:
             self._pending_updates[path_str] = []
         self._pending_updates[path_str].append(pending)
 
-        # Apply optimistically to local state
-        current_state = self.get_state(file_ref, default={})
+        # Apply optimistically to local state -- deepcopy to avoid
+        # mutating the cached dict in-place (BUG-ST-011)
+        current_state = copy.deepcopy(self.get_state(file_ref, default={}))
         current_state[key] = value
         current_state["_version_vector"] = version_vector.to_dict()
         current_state["_last_source"] = source
@@ -1394,14 +1469,23 @@ class StateManager:
             return merged
 
         elif isinstance(local, list) and isinstance(remote, list):
-            # Concatenate and deduplicate (preserving order)
+            # Concatenate and deduplicate (preserving order).
+            # Use try/except to handle unhashable types gracefully
+            # by falling back to JSON serialization (BUG-ST-013).
             seen = set()
             merged = []
             for item in local + remote:
-                item_key = json.dumps(item, sort_keys=True, default=str) if isinstance(item, (dict, list)) else item
-                if item_key not in seen:
-                    seen.add(item_key)
-                    merged.append(item)
+                try:
+                    item_key = json.dumps(item, sort_keys=True, default=str) if isinstance(item, (dict, list)) else item
+                    if item_key not in seen:
+                        seen.add(item_key)
+                        merged.append(item)
+                except TypeError:
+                    # Unhashable type -- fall back to JSON string as key
+                    item_key = json.dumps(item, sort_keys=True, default=str)
+                    if item_key not in seen:
+                        seen.add(item_key)
+                        merged.append(item)
             return merged
 
         else:
@@ -1598,23 +1682,27 @@ class StateManager:
         return version
 
     def _cleanup_old_versions(self, file_ref: Union[str, ManagedFile]) -> None:
-        """Remove versions beyond the retention limit."""
+        """Remove versions beyond the retention limit.
+
+        Only considers files with purely numeric stems so that orphan
+        temp files (e.g. .tmp_xxx.json) are not counted toward the
+        retention limit (BUG-ST-010).
+        """
         history_dir = self._get_history_dir(file_ref)
         if not history_dir.exists():
             return
 
         version_files = glob_module.glob(str(history_dir / "*.json"))
-        if len(version_files) <= self.version_retention:
-            return
 
-        # Sort by version number and remove oldest
+        # Filter to numeric stems only (skip temp/orphan files)
         version_nums = []
         for vf in version_files:
-            try:
-                version_num = int(Path(vf).stem)
-                version_nums.append((version_num, vf))
-            except ValueError:
-                pass
+            stem = Path(vf).stem
+            if stem.isdigit():
+                version_nums.append((int(stem), vf))
+
+        if len(version_nums) <= self.version_retention:
+            return
 
         version_nums.sort(key=lambda x: x[0])
         to_remove = version_nums[:-self.version_retention]
@@ -1777,17 +1865,24 @@ class StateManager:
 
 # Singleton instance for convenience
 _default_manager: Optional[StateManager] = None
+_default_manager_lock = threading.Lock()
 
 
 def get_state_manager(
     loki_dir: Optional[Union[str, Path]] = None,
     **kwargs
 ) -> StateManager:
-    """Get the default state manager instance."""
+    """Get the default state manager instance.
+
+    Uses double-checked locking to avoid a race where two threads
+    could both create a StateManager simultaneously (BUG-ST-007).
+    """
     global _default_manager
 
     if _default_manager is None:
-        _default_manager = StateManager(loki_dir, **kwargs)
+        with _default_manager_lock:
+            if _default_manager is None:
+                _default_manager = StateManager(loki_dir, **kwargs)
 
     return _default_manager
 
