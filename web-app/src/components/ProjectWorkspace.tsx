@@ -16,6 +16,7 @@ import {
   LayoutDashboard,
   GitBranch as CICDIcon,
   Search as SearchIcon, BarChart3, History, DollarSign,
+  MessageSquare,
 } from 'lucide-react';
 import { api } from '../api/client';
 import { useWebSocket } from '../hooks/useWebSocket';
@@ -47,6 +48,7 @@ import {
 } from './PreviewToolbar';
 import type { ConsoleMessage } from './PreviewToolbar';
 import { SmartSuggestions } from './SmartSuggestions';
+import { AIChatPanel } from './AIChatPanel';
 import { ConfidenceIndicator } from './ConfidenceIndicator';
 import { BuildInsights } from './BuildInsights';
 import { BuildReplay } from './BuildReplay';
@@ -485,7 +487,7 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
   const [showBuildReplay, setShowBuildReplay] = useState(false);
   const [showCostEstimator, setShowCostEstimator] = useState(false);
   const [showNLSearch, setShowNLSearch] = useState(false);
-  const [chatSuggestionInput, setChatSuggestionInput] = useState<string | null>(null);
+  const [leftPanelTab, setLeftPanelTab] = useState<'files' | 'chat'>('files');
 
   // B16: Token sparkline history
   const { history: tokenHistory, recordTokens } = useTokenHistory();
@@ -1387,47 +1389,93 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
               {sidebarVisible && (
               <Panel defaultSize={20} minSize={15}>
                 <div className="h-full flex flex-col border-r border-border bg-card">
-                  <div className="px-3 py-2 border-b border-border flex items-center gap-2">
-                    <span className="text-xs text-muted-accessible uppercase tracking-wider font-semibold flex-1">
+                  {/* Tab bar: Files | Chat */}
+                  <div className="flex items-center border-b border-border flex-shrink-0">
+                    <button
+                      onClick={() => setLeftPanelTab('files')}
+                      className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium transition-colors border-b-2 ${
+                        leftPanelTab === 'files'
+                          ? 'text-primary border-primary'
+                          : 'text-muted hover:text-ink border-transparent'
+                      }`}
+                    >
+                      <Folder size={14} />
                       Files
                       {filesChangedIndicator && (
-                        <span className="ml-2 text-[10px] font-normal text-primary animate-pulse">
+                        <span className="ml-1 text-[10px] font-normal text-primary animate-pulse">
                           changed
                         </span>
                       )}
-                    </span>
-                    <button
-                      onClick={handleCreateFile}
-                      title="New File"
-                      className="flex items-center gap-1 text-xs text-muted-accessible hover:text-primary px-2.5 py-1 rounded border border-border hover:border-primary/30 transition-colors"
-                    >
-                      <FilePlus size={12} /> New
                     </button>
                     <button
-                      onClick={handleCreateFolder}
-                      title="New Folder"
-                      className="flex items-center gap-1 text-xs text-muted-accessible hover:text-primary px-2.5 py-1 rounded border border-border hover:border-primary/30 transition-colors"
+                      onClick={() => setLeftPanelTab('chat')}
+                      className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium transition-colors border-b-2 ${
+                        leftPanelTab === 'chat'
+                          ? 'text-primary border-primary'
+                          : 'text-muted hover:text-ink border-transparent'
+                      }`}
                     >
-                      <FolderPlus size={12} /> New
+                      <MessageSquare size={14} />
+                      Chat
                     </button>
-                  </div>
-                  <div className="flex-1 overflow-y-auto terminal-scroll">
-                    {sessionData.files.length > 0 ? (
-                      <FileTree
-                        nodes={sessionData.files}
-                        selectedPath={selectedFile}
-                        onSelect={handleFileSelect}
-                        onDelete={handleDeleteFile}
-                        onContextMenu={handleContextMenu}
-                      />
-                    ) : (
-                      <div className="flex flex-col items-center justify-center p-6 text-center h-full">
-                        <FolderOpen size={28} className="text-muted/40 mb-2" />
-                        <p className="text-xs text-muted font-medium">No files yet</p>
-                        <p className="text-[11px] text-muted/70 mt-0.5">Start a build to generate your project.</p>
+                    {leftPanelTab === 'files' && (
+                      <div className="ml-auto flex items-center gap-1 pr-2">
+                        <button
+                          onClick={handleCreateFile}
+                          title="New File"
+                          className="flex items-center gap-1 text-xs text-muted-accessible hover:text-primary px-2.5 py-1 rounded border border-border hover:border-primary/30 transition-colors"
+                        >
+                          <FilePlus size={12} /> New
+                        </button>
+                        <button
+                          onClick={handleCreateFolder}
+                          title="New Folder"
+                          className="flex items-center gap-1 text-xs text-muted-accessible hover:text-primary px-2.5 py-1 rounded border border-border hover:border-primary/30 transition-colors"
+                        >
+                          <FolderPlus size={12} /> New
+                        </button>
                       </div>
                     )}
                   </div>
+                  {/* Tab content */}
+                  {leftPanelTab === 'files' ? (
+                    <div className="flex-1 overflow-y-auto terminal-scroll">
+                      {sessionData.files.length > 0 ? (
+                        <FileTree
+                          nodes={sessionData.files}
+                          selectedPath={selectedFile}
+                          onSelect={handleFileSelect}
+                          onDelete={handleDeleteFile}
+                          onContextMenu={handleContextMenu}
+                        />
+                      ) : (
+                        <div className="flex flex-col items-center justify-center p-6 text-center h-full">
+                          <FolderOpen size={28} className="text-muted/40 mb-2" />
+                          <p className="text-xs text-muted font-medium">No files yet</p>
+                          <p className="text-[11px] text-muted/70 mt-0.5">Start a build to generate your project.</p>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="flex-1 flex flex-col min-h-0">
+                      <SmartSuggestions
+                        projectState={
+                          isBuilding ? 'building'
+                            : buildPhase === 'complete' ? 'completed'
+                            : sessionData.files.length === 0 ? 'empty'
+                            : 'idle'
+                        }
+                        hasSession={!!sessionData.id}
+                        files={sessionData.files.map(f => ({ path: f.path, type: f.type }))}
+                        phase={buildPhase}
+                        onSelect={() => {}}
+                        className="border-b border-border"
+                      />
+                      <div className="flex-1 min-h-0">
+                        <AIChatPanel sessionId={sessionData.id} defaultMode={buildMode} />
+                      </div>
+                    </div>
+                  )}
                 </div>
               </Panel>
               )}
@@ -2077,20 +2125,6 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
 
           {bottomPanelVisible && (
             <Panel defaultSize={30} minSize={15} collapsible>
-              {/* Smart suggestions above chat input area */}
-              <SmartSuggestions
-                projectState={
-                  isBuilding ? 'building'
-                    : buildPhase === 'complete' ? 'completed'
-                    : sessionData.files.length === 0 ? 'empty'
-                    : 'idle'
-                }
-                hasSession={!!sessionData.id}
-                files={sessionData.files.map(f => ({ path: f.path, type: f.type }))}
-                phase={buildPhase}
-                onSelect={(prompt) => setChatSuggestionInput(prompt)}
-                className="border-b border-border"
-              />
               <ErrorBoundary name="ActivityPanel">
                 <ActivityPanel
                   logs={null}

@@ -1,8 +1,7 @@
 import { useState } from 'react';
-import { Terminal, MessageSquare, ScrollText, Bot, ShieldCheck, Check, X, Clock, Users, ChevronRight, Activity } from 'lucide-react';
+import { Terminal, ScrollText, Bot, ShieldCheck, Check, X, Clock, Users, ChevronRight, Activity } from 'lucide-react';
 import { TerminalOutput } from './TerminalOutput';
 import { TerminalEmulator } from './TerminalEmulator';
-import { AIChatPanel } from './AIChatPanel';
 import { BuildActivityFeed } from './BuildActivityFeed';
 import type { BuildEvent } from './BuildActivityFeed';
 import type { LogEntry, Agent, ChecklistSummary } from '../types/api';
@@ -20,7 +19,7 @@ interface ActivityPanelProps {
   onFileClick?: (path: string) => void;
 }
 
-type TabId = 'terminal' | 'chat' | 'activity' | 'build' | 'agents' | 'quality';
+type TabId = 'terminal' | 'activity' | 'build' | 'agents' | 'quality';
 
 interface TabDef {
   id: TabId;
@@ -31,7 +30,6 @@ interface TabDef {
 
 const TABS: TabDef[] = [
   { id: 'terminal', label: 'Terminal', icon: Terminal, alwaysShow: true },
-  { id: 'chat', label: 'AI Chat', icon: MessageSquare, alwaysShow: true },
   { id: 'activity', label: 'Activity', icon: Activity, alwaysShow: true },
   { id: 'build', label: 'Build Log', icon: ScrollText },
   { id: 'agents', label: 'Agents', icon: Bot },
@@ -112,7 +110,6 @@ export function ActivityPanel({
   sessionId,
   isRunning,
   subscribe,
-  buildMode,
   buildEvents,
   onFileClick,
 }: ActivityPanelProps) {
@@ -184,7 +181,6 @@ export function ActivityPanel({
         {activeTab === 'agents' && <AgentsTab agents={agents} />}
         {activeTab === 'activity' && <BuildActivityFeed events={buildEvents || []} onFileClick={onFileClick} />}
         {activeTab === 'quality' && <QualityTab checklist={checklist} />}
-        {activeTab === 'chat' && <AIChatPanel sessionId={sessionId} defaultMode={buildMode} />}
       </div>
     </div>
   );
