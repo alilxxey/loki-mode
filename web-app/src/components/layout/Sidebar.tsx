@@ -20,6 +20,8 @@ import {
   Sparkles,
   BarChart3,
   HelpCircle,
+  ShieldCheck,
+  Wrench,
 } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
 import { useTheme } from '../../hooks/useTheme';
@@ -75,6 +77,13 @@ const navSections: NavSection[] = [
       { to: '/settings', label: 'Settings', icon: Settings2 },
     ],
   },
+const adminNav: NavItem[] = [
+  { to: '/admin', label: 'Admin', icon: ShieldCheck },
+  { to: '/admin/settings', label: 'System Settings', icon: Wrench },
+];
+
+const secondaryNav: NavItem[] = [
+  { to: '/settings', label: 'Settings', icon: Settings2 },
 ];
 
 function useIsMobile() {
@@ -111,6 +120,7 @@ export function Sidebar({ wsConnected, version, onOpenDocs }: SidebarProps) {
   const isMobile = useIsMobile();
   const location = useLocation();
   const { theme, toggleTheme } = useTheme();
+  const { user, isLocalMode } = useAuth();
   const [mobileOpen, setMobileOpen] = useState(false);
 
   const [collapsed, setCollapsed] = useState(() => {
@@ -262,6 +272,29 @@ export function Sidebar({ wsConnected, version, onOpenDocs }: SidebarProps) {
             {showLabels && <span>{item.label}</span>}
           </NavLink>
         ))}
+
+        {/* Admin section -- shown for admin role or local mode */}
+        {(isLocalMode || user?.authenticated) && (
+          <>
+            <div className="my-2 border-t border-[#ECEAE3]" />
+            {showLabels && (
+              <span className="px-3 text-[10px] font-semibold text-[#939084] uppercase tracking-wider">
+                Admin
+              </span>
+            )}
+            {adminNav.map((item) => (
+              <NavLink
+                key={item.to}
+                to={item.to}
+                className={({ isActive }) => linkClasses(isActive)}
+                title={!showLabels ? item.label : undefined}
+              >
+                <item.icon size={18} />
+                {showLabels && <span>{item.label}</span>}
+              </NavLink>
+            ))}
+          </>
+        )}
 
         {/* Separator */}
         <div className="my-2 border-t border-[#ECEAE3]" />
