@@ -168,3 +168,65 @@ export interface TemplateMetadata {
   build_time: string;
   gradient: string;
 }
+
+// GitHub Issues
+export interface GitHubIssue {
+  number: number;
+  title: string;
+  body: string;
+  state: string;
+  labels: { name: string; color: string }[];
+  author: { login: string };
+  createdAt: string;
+  updatedAt: string;
+  comments: number;
+}
+
+// GitHub Pull Requests
+export interface GitHubPR {
+  number: number;
+  title: string;
+  body: string;
+  state: string;
+  author: { login: string };
+  headRefName: string;
+  baseRefName: string;
+  reviewDecision: string | null;
+  additions: number;
+  deletions: number;
+  changedFiles: number;
+  createdAt: string;
+  statusCheckRollup: { state: string } | null;
+}
+
+// GitHub Actions
+export interface WorkflowRun {
+  databaseId: number;
+  name: string;
+  workflowName: string;
+  status: string;
+  conclusion: string | null;
+  headBranch: string;
+  event: string;
+  createdAt: string;
+  updatedAt: string;
+  url: string;
+}
+
+export interface Workflow {
+  id: number;
+  name: string;
+  state: string;
+}
+
+// Deploy connections
+export interface ConnectionStatus {
+  connected: boolean;
+  user?: string;
+}
+
+export interface DeployStatus {
+  vercel: ConnectionStatus;
+  netlify: ConnectionStatus;
+  github: ConnectionStatus;
+}

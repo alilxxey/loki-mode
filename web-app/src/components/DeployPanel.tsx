@@ -1,10 +1,11 @@
 import { useState, useCallback } from 'react';
 import {
   Rocket, ExternalLink, Copy, Check, Globe, GitBranch,
-  Loader2, AlertCircle, CheckCircle2,
+  Loader2, AlertCircle, CheckCircle2, Link,
 } from 'lucide-react';
 import { api } from '../api/client';
 import { Button } from './ui/Button';
+import { DeployConnections, type AllConnectionStatuses } from './DeployConnections';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -19,6 +20,7 @@ interface PlatformConfig {
   icon: React.ComponentType<{ size?: number; className?: string }>;
   color: string;
   bgColor: string;
+  connectionKey: 'vercel' | 'netlify' | 'github';
 }
 
 type DeployStatus = 'idle' | 'deploying' | 'success' | 'error';
@@ -45,6 +47,7 @@ const platforms: PlatformConfig[] = [
     icon: Globe,
     color: 'text-ink',
     bgColor: 'bg-ink/5',
+    connectionKey: 'vercel',
   },
   {
     id: 'netlify',
@@ -53,6 +56,7 @@ const platforms: PlatformConfig[] = [
     icon: Globe,
     color: 'text-teal-600',
     bgColor: 'bg-teal-500/5',
+    connectionKey: 'netlify',
   },
   {
     id: 'github-pages',
@@ -61,6 +65,7 @@ const platforms: PlatformConfig[] = [
     icon: GitBranch,
     color: 'text-purple-600',
     bgColor: 'bg-purple-500/5',
+    connectionKey: 'github',
   },
 ];
 
@@ -73,11 +78,13 @@ function PlatformCard({
   deployState,
   onDeploy,
   disabled,
+  connected,
 }: {
   platform: PlatformConfig;
   deployState: DeployState;
   onDeploy: () => void;
   disabled: boolean;
+  connected: boolean;
 }) {
   const [copied, setCopied] = useState(false);
   const Icon = platform.icon;
@@ -93,10 +100,13 @@ function PlatformCard({
     }
   }, [deployState.url]);
 
+  const isDisabled = disabled || !connected;
+
   return (
     <div className={`border border-border rounded-lg p-4 transition-colors ${
       deployState.status === 'success' ? 'border-green-500/30 bg-green-500/5' :
       deployState.status === 'error' ? 'border-red-500/30 bg-red-500/5' :
+      !connected ? 'opacity-60' :
       'hover:border-primary/30 hover:bg-hover'
     }`}>
       {/* Header */}
@@ -108,20 +118,36 @@ function PlatformCard({
           <h4 className="text-sm font-semibold text-ink">{platform.name}</h4>
           <p className="text-[11px] text-muted leading-snug mt-0.5">{platform.description}</p>
         </div>
+        {/* Connection indicator */}
+        <span
+          className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${
+            connected ? 'bg-green-500' : 'bg-gray-300'
+          }`}
+          title={connected ? 'Connected' : 'Not connected'}
+        />
       </div>
 
       {/* Deploy action / status */}
       {deployState.status === 'idle' && (
-        <Button
-          variant="secondary"
-          size="sm"
-          icon={Rocket}
-          onClick={onDeploy}
-          disabled={disabled}
-          className="w-full"
-        >
-          Deploy to {platform.name}
-        </Button>
+        <div className="relative group">
+          <Button
+            variant="secondary"
+            size="sm"
+            icon={Rocket}
+            onClick={onDeploy}
+            disabled={isDisabled}
+            className="w-full"
+          >
+            Deploy to {platform.name}
+          </Button>
+          {!connected && (
+            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+              <span className="bg-ink text-white text-[10px] px-2 py-1 rounded shadow opacity-0 group-hover:opacity-100 transition-opacity">
+                Connect {platform.name} first
+              </span>
+            </div>
+          )}
+        </div>
       )}
 
       {deployState.status === 'deploying' && (
@@ -182,7 +208,7 @@ function PlatformCard({
             size="sm"
             icon={Rocket}
             onClick={onDeploy}
-            disabled={disabled}
+            disabled={isDisabled}
             className="w-full"
           >
             Retry
@@ -337,6 +363,14 @@ export function DeployPanel({ sessionId }: DeployPanelProps) {
     'github-pages': { status: 'idle' },
   });
 
+  const [connectionStatuses, setConnectionStatuses] = useState<AllConnectionStatuses>({
+    vercel: { connected: false },
+    netlify: { connected: false },
+    github: { connected: false },
+  });
+
+  const [showConnections, setShowConnections] = useState(false);
+
   const isAnyDeploying = Object.values(deployStates).some(s => s.status === 'deploying');
 
   const handleDeploy = useCallback(async (platform: DeployPlatform) => {
@@ -369,6 +403,9 @@ export function DeployPanel({ sessionId }: DeployPanelProps) {
     }
   }, [sessionId]);
 
+  const isConnected = (platform: PlatformConfig) =>
+    connectionStatuses[platform.connectionKey]?.connected ?? false;
+
   return (
     <div className="h-full overflow-y-auto terminal-scroll">
       <div className="p-6 max-w-2xl mx-auto space-y-6">
@@ -383,6 +420,40 @@ export function DeployPanel({ sessionId }: DeployPanelProps) {
           </p>
         </div>
 
+        {/* Connections toggle */}
+        <div className="border border-border rounded-lg overflow-hidden">
+          <button
+            type="button"
+            onClick={() => setShowConnections(!showConnections)}
+            className="flex items-center justify-between w-full px-4 py-3 text-left hover:bg-hover transition-colors"
+          >
+            <div className="flex items-center gap-2">
+              <Link size={16} className="text-primary" />
+              <span className="text-sm font-medium text-ink">Platform Connections</span>
+              {/* Quick status dots */}
+              <div className="flex items-center gap-1 ml-2">
+                {(['vercel', 'netlify', 'github'] as const).map((key) => (
+                  <span
+                    key={key}
+                    className={`w-2 h-2 rounded-full ${
+                      connectionStatuses[key]?.connected ? 'bg-green-500' : 'bg-gray-300'
+                    }`}
+                    title={`${key}: ${connectionStatuses[key]?.connected ? 'Connected' : 'Not connected'}`}
+                  />
+                ))}
+              </div>
+            </div>
+            <span className="text-xs text-muted">
+              {showConnections ? 'Hide' : 'Manage'}
+            </span>
+          </button>
+          {showConnections && (
+            <div className="border-t border-border p-4">
+              <DeployConnections compact onStatusChange={setConnectionStatuses} />
+            </div>
+          )}
+        </div>
+
         {/* Platform cards */}
         <div className="space-y-3">
           {platforms.map(platform => (
@@ -392,6 +463,7 @@ export function DeployPanel({ sessionId }: DeployPanelProps) {
               deployState={deployStates[platform.id]}
               onDeploy={() => handleDeploy(platform.id)}
               disabled={isAnyDeploying}
+              connected={isConnected(platform)}
             />
           ))}
         </div>

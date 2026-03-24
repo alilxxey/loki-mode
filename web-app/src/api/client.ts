@@ -438,6 +438,126 @@ export const api = {
       { method: 'POST' },
     ),
 
+  // GitHub Issues
+  getGitHubIssues: (sessionId: string, state?: string, limit?: number) =>
+    fetchJSON<import('../types/api').GitHubIssue[]>(
+      `/sessions/${encodeURIComponent(sessionId)}/github/issues?${new URLSearchParams({
+        ...(state ? { state } : {}),
+        ...(limit ? { limit: String(limit) } : {}),
+      }).toString()}`
+    ),
+
+  getGitHubIssue: (sessionId: string, number: number) =>
+    fetchJSON<import('../types/api').GitHubIssue>(
+      `/sessions/${encodeURIComponent(sessionId)}/github/issues/${number}`
+    ),
+
+  fixGitHubIssue: (sessionId: string, number: number) =>
+    fetchJSON<{ branch: string; pr_url: string; pr_number: number; task_id: string }>(
+      `/sessions/${encodeURIComponent(sessionId)}/github/issues/${number}/fix`,
+      { method: 'POST' }
+    ),
+
+  // GitHub PRs
+  getGitHubPRs: (sessionId: string, state?: string, limit?: number) =>
+    fetchJSON<import('../types/api').GitHubPR[]>(
+      `/sessions/${encodeURIComponent(sessionId)}/github/prs?${new URLSearchParams({
+        ...(state ? { state } : {}),
+        ...(limit ? { limit: String(limit) } : {}),
+      }).toString()}`
+    ),
+
+  getGitHubPR: (sessionId: string, number: number) =>
+    fetchJSON<import('../types/api').GitHubPR>(
+      `/sessions/${encodeURIComponent(sessionId)}/github/prs/${number}`
+    ),
+
+  getGitHubPRDiff: (sessionId: string, number: number) =>
+    fetchJSON<string>(
+      `/sessions/${encodeURIComponent(sessionId)}/github/prs/${number}/diff`
+    ),
+
+  reviewGitHubPR: (sessionId: string, number: number, action: string, body: string) =>
+    fetchJSON<void>(
+      `/sessions/${encodeURIComponent(sessionId)}/github/prs/${number}/review`,
+      { method: 'POST', body: JSON.stringify({ action, body }) }
+    ),
+
+  mergeGitHubPR: (sessionId: string, number: number, method: string) =>
+    fetchJSON<void>(
+      `/sessions/${encodeURIComponent(sessionId)}/github/prs/${number}/merge`,
+      { method: 'POST', body: JSON.stringify({ method }) }
+    ),
+
+  // GitHub Actions
+  getWorkflowRuns: (sessionId: string, limit?: number) =>
+    fetchJSON<import('../types/api').WorkflowRun[]>(
+      `/sessions/${encodeURIComponent(sessionId)}/github/runs?${new URLSearchParams({
+        ...(limit ? { limit: String(limit) } : {}),
+      }).toString()}`
+    ),
+
+  getWorkflowRunDetail: (sessionId: string, runId: number) =>
+    fetchJSON<import('../types/api').WorkflowRun>(
+      `/sessions/${encodeURIComponent(sessionId)}/github/runs/${runId}`
+    ),
+
+  getWorkflowRunLogs: (sessionId: string, runId: number) =>
+    fetchJSON<string>(
+      `/sessions/${encodeURIComponent(sessionId)}/github/runs/${runId}/logs`
+    ),
+
+  getWorkflows: (sessionId: string) =>
+    fetchJSON<import('../types/api').Workflow[]>(
+      `/sessions/${encodeURIComponent(sessionId)}/github/workflows`
+    ),
+
+  dispatchWorkflow: (sessionId: string, workflow: string, ref: string) =>
+    fetchJSON<void>(
+      `/sessions/${encodeURIComponent(sessionId)}/github/workflows/dispatch`,
+      { method: 'POST', body: JSON.stringify({ workflow, ref }) }
+    ),
+
+  rerunWorkflow: (sessionId: string, runId: number) =>
+    fetchJSON<void>(
+      `/sessions/${encodeURIComponent(sessionId)}/github/runs/${runId}/rerun`,
+      { method: 'POST' }
+    ),
+
+  cancelWorkflow: (sessionId: string, runId: number) =>
+    fetchJSON<void>(
+      `/sessions/${encodeURIComponent(sessionId)}/github/runs/${runId}/cancel`,
+      { method: 'POST' }
+    ),
+
+  // GitHub Repo import
+  importGitHubRepo: (sessionId: string, repo: string, branch?: string) =>
+    fetchJSON<{ success: boolean; files_count: number }>(
+      `/sessions/${encodeURIComponent(sessionId)}/github/import`,
+      { method: 'POST', body: JSON.stringify({ repo, ...(branch ? { branch } : {}) }) }
+    ),
+
+  // Deploy connections
+  getDeployStatus: () =>
+    fetchJSON<import('../types/api').DeployStatus>('/deploy/status'),
+
+  connectVercel: (token: string) =>
+    fetchJSON<{ success: boolean; user: string }>('/deploy/vercel/connect', {
+      method: 'POST',
+      body: JSON.stringify({ token }),
+    }),
+
+  connectNetlify: (token: string) =>
+    fetchJSON<{ success: boolean; user: string }>('/deploy/netlify/connect', {
+      method: 'POST',
+      body: JSON.stringify({ token }),
+    }),
+
+  disconnectPlatform: (platform: string) =>
+    fetchJSON<void>(`/deploy/${encodeURIComponent(platform)}/disconnect`, {
+      method: 'POST',
+    }),
+
   // Auth endpoints
   getMe: () =>
     fetchJSON<{ authenticated: boolean; local_mode?: boolean; sub?: string; email?: string; name?: string; avatar?: string }>('/auth/me'),

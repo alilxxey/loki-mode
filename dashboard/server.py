@@ -345,8 +345,12 @@ async def _push_loki_state_loop() -> None:
 
     Reads dashboard-state.json every 2s when running (30s when idle) and
     broadcasts a state_update message so clients don't rely solely on polling.
+
+    When dashboard-state.json is absent (skill-invoked sessions), reads state
+    from session.json + orchestrator.json + queue files instead.
     """
     last_mtime: float = 0.0
+    _last_skill_hash: str = ""  # Track skill-session state changes
     while True:
         try:
             if not manager.active_connections:
@@ -355,6 +359,9 @@ async def _push_loki_state_loop() -> None:
 
             loki_dir = _get_loki_dir()
             state_file = loki_dir / "dashboard-state.json"
+            _session_file = loki_dir / "session.json"
+
+            _broadcast_sent = False
 
             if state_file.exists():
                 try:
@@ -397,6 +404,15 @@ async def _push_loki_state_loop() -> None:
                             except (ValueError, OSError, ProcessLookupError):
                                 pass
 
+                        # Also check session.json for skill sessions
+                        if not _pid_alive and _session_file.exists():
+                            try:
+                                _sd = _safe_json_read(_session_file, {})
+                                if _sd.get("status") == "running":
+                                    _pid_alive = True
+                            except (json.JSONDecodeError, KeyError):
+                                pass
+
                         status_str = raw.get("mode", "autonomous")
                         if not _pid_alive:
                             status_str = "stopped"
@@ -423,8 +439,127 @@ async def _push_loki_state_loop() -> None:
                             "type": "status_update",
                             "data": payload,
                         })
+                        _broadcast_sent = True
                     except (json.JSONDecodeError, OSError, KeyError):
                         pass
+
+            # Skill-session fallback: when dashboard-state.json is missing,
+            # read state from session.json + orchestrator.json + queue files
+            if not _broadcast_sent and _session_file.exists():
+                try:
+                    _sd = _safe_json_read(_session_file, {})
+                    if _sd.get("status") == "running":
+                        # Validate freshness (5 min staleness threshold)
+                        _sk_ts = _sd.get("updatedAt") or _sd.get("startedAt", "")
+                        _sk_fresh = True
+                        if _sk_ts:
+                            try:
+                                _sk_dt = datetime.fromisoformat(
+                                    _sk_ts.replace("Z", "+00:00")
+                                )
+                                if _sk_dt.tzinfo is None:
+                                    _sk_dt = _sk_dt.replace(tzinfo=timezone.utc)
+                                if (datetime.now(timezone.utc) - _sk_dt).total_seconds() > 300:
+                                    _sk_fresh = False
+                            except (ValueError, AttributeError):
+                                pass
+                        else:
+                            try:
+                                if time.time() - _session_file.stat().st_mtime > 300:
+                                    _sk_fresh = False
+                            except OSError:
+                                pass
+
+                        if _sk_fresh:
+                            # Read version from VERSION file
+                            _sk_version = ""
+                            _vf = _Path(os.path.dirname(os.path.dirname(__file__))) / "VERSION"
+                            if _vf.is_file():
+                                try:
+                                    _sk_version = _vf.read_text().strip()
+                                except OSError:
+                                    pass
+
+                            # Read orchestrator state
+                            _sk_phase = ""
+                            _sk_iteration = 0
+                            _sk_complexity = "standard"
+                            _orch_f = loki_dir / "state" / "orchestrator.json"
+                            if _orch_f.exists():
+                                try:
+                                    _orch = _safe_json_read(_orch_f, {})
+                                    _sk_phase = _orch.get("currentPhase", "") or ""
+                                    _sk_iteration = _orch.get("iteration", 0)
+                                    _sk_complexity = _orch.get("complexity", "standard") or "standard"
+                                except (json.JSONDecodeError, KeyError):
+                                    pass
+
+                            # Read pending tasks
+                            _sk_pending = 0
+                            _sk_current_task = ""
+                            _pf = loki_dir / "queue" / "pending.json"
+                            if _pf.exists():
+                                try:
+                                    _pd = _safe_json_read(_pf, [])
+                                    _pt = _pd.get("tasks", _pd) if isinstance(_pd, dict) else _pd
+                                    if isinstance(_pt, list):
+                                        _sk_pending = len(_pt)
+                                except (json.JSONDecodeError, KeyError, AttributeError):
+                                    pass
+
+                            _ipf = loki_dir / "queue" / "in-progress.json"
+                            if _ipf.exists():
+                                try:
+                                    _ipd = _safe_json_read(_ipf, [])
+                                    _ipt = _ipd.get("tasks", _ipd) if isinstance(_ipd, dict) else _ipd
+                                    if isinstance(_ipt, list) and _ipt:
+                                        _f = _ipt[0]
+                                        if isinstance(_f, dict):
+                                            _sk_current_task = (
+                                                _f.get("title", "")
+                                                or _f.get("payload", {}).get("action", "")
+                                                or _f.get("id", "")
+                                            )
+                                except (json.JSONDecodeError, KeyError, AttributeError):
+                                    pass
+
+                            if not _sk_current_task:
+                                _ctf = loki_dir / "queue" / "current-task.json"
+                                if _ctf.exists():
+                                    try:
+                                        _ct = _safe_json_read(_ctf, {})
+                                        if isinstance(_ct, dict):
+                                            _sk_current_task = (
+                                                _ct.get("title", "")
+                                                or _ct.get("payload", {}).get("action", "")
+                                                or _ct.get("id", "")
+                                            )
+                                    except (json.JSONDecodeError, KeyError, AttributeError):
+                                        pass
+
+                            # Build a change hash to avoid redundant broadcasts
+                            _sk_hash = f"{_sk_phase}:{_sk_iteration}:{_sk_pending}:{_sk_current_task}"
+                            if _sk_hash != _last_skill_hash:
+                                _last_skill_hash = _sk_hash
+                                payload = {
+                                    "status": "running",
+                                    "phase": _sk_phase,
+                                    "iteration": _sk_iteration,
+                                    "complexity": _sk_complexity,
+                                    "mode": "autonomous",
+                                    "provider": _sd.get("provider", "claude"),
+                                    "running_agents": 0,
+                                    "pending_tasks": _sk_pending,
+                                    "current_task": _sk_current_task,
+                                    "version": _sk_version,
+                                }
+                                await manager.broadcast({
+                                    "type": "status_update",
+                                    "data": payload,
+                                })
+                                _broadcast_sent = True
+                except (json.JSONDecodeError, OSError, KeyError):
+                    pass
 
             # Poll faster when a session is running
             pid_file = loki_dir / "loki.pid"
@@ -435,6 +570,15 @@ async def _push_loki_state_loop() -> None:
                     os.kill(pid, 0)
                     is_running = True
                 except (ValueError, OSError, ProcessLookupError):
+                    pass
+
+            # Also consider skill sessions as "running" for poll interval
+            if not is_running and _session_file.exists():
+                try:
+                    _sd2 = _safe_json_read(_session_file, {})
+                    if _sd2.get("status") == "running":
+                        is_running = True
+                except (json.JSONDecodeError, KeyError):
                     pass
 
             await asyncio.sleep(2.0 if is_running else 30.0)
@@ -598,9 +742,12 @@ async def get_status() -> StatusResponse:
     running_agents = 0
 
     # Read dashboard state (with retry for concurrent writes)
+    _has_dashboard_state = False
     if state_file.exists():
         try:
             state = _safe_json_read(state_file, {})
+            if state:
+                _has_dashboard_state = True
             phase = state.get("phase", "")
             iteration = state.get("iteration", 0)
             complexity = state.get("complexity", "standard")
@@ -641,13 +788,112 @@ async def get_status() -> StatusResponse:
             pass
 
     # Also check session.json for skill-invoked sessions
+    _skill_session = False
     if not running and session_file.exists():
         try:
             sd = _safe_json_read(session_file, {})
             if sd.get("status") == "running":
-                running = True
+                # Validate freshness: session.json must have been updated within
+                # the last 5 minutes to be considered active (skill agents update
+                # it each turn).  Fall back to file mtime if no timestamp field.
+                _session_fresh = True
+                _session_ts = sd.get("updatedAt") or sd.get("startedAt", "")
+                if _session_ts:
+                    try:
+                        _sdt = datetime.fromisoformat(
+                            _session_ts.replace("Z", "+00:00")
+                        )
+                        if _sdt.tzinfo is None:
+                            _sdt = _sdt.replace(tzinfo=timezone.utc)
+                        _age = (datetime.now(timezone.utc) - _sdt).total_seconds()
+                        if _age > 300:
+                            _session_fresh = False
+                    except (ValueError, AttributeError):
+                        pass
+                else:
+                    # No timestamp -- check file mtime
+                    try:
+                        _mtime = session_file.stat().st_mtime
+                        _age = time.time() - _mtime
+                        if _age > 300:
+                            _session_fresh = False
+                    except OSError:
+                        pass
+
+                if _session_fresh:
+                    running = True
+                    _skill_session = True
+                    # Pull provider from session.json if available
+                    _sp = sd.get("provider", "")
+                    if _sp:
+                        provider = _sp
         except (json.JSONDecodeError, KeyError):
             pass
+
+    # When running as a skill (no dashboard-state.json), read state from
+    # the orchestrator and queue files that the skill agent writes directly.
+    if _skill_session and not _has_dashboard_state:
+        orch_file = loki_dir / "state" / "orchestrator.json"
+        if orch_file.exists():
+            try:
+                orch = _safe_json_read(orch_file, {})
+                phase = orch.get("currentPhase", phase) or phase
+                iteration = orch.get("iteration", iteration)
+                complexity = orch.get("complexity", complexity) or complexity
+                _metrics = orch.get("metrics", {})
+                if isinstance(_metrics, dict):
+                    _tc = _metrics.get("tasksCompleted", 0)
+                    _tf = _metrics.get("tasksFailed", 0)
+                    if isinstance(_tc, (int, float)):
+                        pass  # available for future use
+            except (json.JSONDecodeError, KeyError):
+                pass
+
+        # Read pending task count from queue files
+        _q_pending = loki_dir / "queue" / "pending.json"
+        if _q_pending.exists():
+            try:
+                _qd = _safe_json_read(_q_pending, [])
+                _tasks = _qd.get("tasks", _qd) if isinstance(_qd, dict) else _qd
+                if isinstance(_tasks, list):
+                    pending_tasks = len(_tasks)
+            except (json.JSONDecodeError, KeyError, AttributeError):
+                pass
+
+        # Read current task from in-progress queue
+        _q_inprog = loki_dir / "queue" / "in-progress.json"
+        if _q_inprog.exists():
+            try:
+                _ipd = _safe_json_read(_q_inprog, [])
+                _ip_tasks = _ipd.get("tasks", _ipd) if isinstance(_ipd, dict) else _ipd
+                if isinstance(_ip_tasks, list) and _ip_tasks:
+                    _first = _ip_tasks[0]
+                    if isinstance(_first, dict):
+                        current_task = (
+                            _first.get("title", "")
+                            or _first.get("payload", {}).get("action", "")
+                            or _first.get("id", "")
+                        )
+            except (json.JSONDecodeError, KeyError, AttributeError):
+                pass
+
+        # Read current-task.json (skill agents write this when claiming a task)
+        _q_current = loki_dir / "queue" / "current-task.json"
+        if not current_task and _q_current.exists():
+            try:
+                _ct = _safe_json_read(_q_current, {})
+                if isinstance(_ct, dict):
+                    current_task = (
+                        _ct.get("title", "")
+                        or _ct.get("payload", {}).get("action", "")
+                        or _ct.get("id", "")
+                    )
+            except (json.JSONDecodeError, KeyError, AttributeError):
+                pass
+
+        # Skill sessions are autonomous by definition
+        if not mode:
+            mode = "autonomous"
 
     # Determine status string
     if not running:

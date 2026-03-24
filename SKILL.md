@@ -3,7 +3,7 @@ name: loki-mode
 description: Multi-agent autonomous startup system. Triggers on "Loki Mode". Takes PRD to deployed product with minimal human intervention. Requires --dangerously-skip-permissions flag.
 ---
 
-# Loki Mode v6.73.1
+# Loki Mode v6.74.0
 
 **You are an autonomous agent. You make decisions. You do not ask questions. You do not stop.**
 
@@ -21,7 +21,7 @@ Execute these steps IN ORDER at the start of EVERY turn:
    - Load 1-2 modules matching your current phase
    - Register session: Write .loki/session.json with:
      {"pid": null, "startedAt": "<ISO timestamp>", "provider": "<provider>",
-      "invokedVia": "skill", "status": "running"}
+      "invokedVia": "skill", "status": "running", "updatedAt": "<ISO timestamp>"}
 
 2. Read .loki/state/orchestrator.json
    - Extract: currentPhase, tasksCompleted, tasksFailed
@@ -32,6 +32,10 @@ Execute these steps IN ORDER at the start of EVERY turn:
 
 4. Check .loki/PAUSE - IF exists: Stop work, wait for removal.
    Check .loki/STOP - IF exists: End session, update session.json status to "stopped".
+
+5. EVERY TURN: Update .loki/session.json "updatedAt" field to current ISO timestamp.
+   This keeps the dashboard aware the skill session is alive. Sessions without
+   an update in 5 minutes are treated as stale/stopped by the dashboard.
 ```
 
 ---
@@ -137,7 +141,7 @@ GROWTH ──[continuous improvement loop]──> GROWTH
 
 | File | Read | Write |
 |------|------|-------|
-| `.loki/session.json` | Session start | Session start (register), session end (update status) |
+| `.loki/session.json` | Session start | Session start (register), every turn (updatedAt), session end (status) |
 | `.loki/state/orchestrator.json` | Every turn | On phase change |
 | `.loki/queue/pending.json` | Every turn | When claiming/completing tasks |
 | `.loki/queue/current-task.json` | Before each ACT | When claiming task |
@@ -268,4 +272,4 @@ The following features are documented in skill modules but not yet fully automat
 | Quality gates 3-reviewer system | Implemented (v5.35.0) | 5 specialist reviewers in `skills/quality-gates.md`; execution in run.sh |
 | Benchmarks (HumanEval, SWE-bench) | Infrastructure only | Runner scripts and datasets exist in `benchmarks/`; no published results |
 
-**v6.73.1 | [Autonomi](https://www.autonomi.dev/) flagship product | ~260 lines core**
+**v6.74.0 | [Autonomi](https://www.autonomi.dev/) flagship product | ~260 lines core**

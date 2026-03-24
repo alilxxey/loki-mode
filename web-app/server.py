@@ -6817,6 +6817,679 @@ def _parse_diff_hunks(diff_text: str) -> list[dict]:
 
     # Limit to 50 hunks max to prevent huge responses
     return hunks[:50]
+
+
+# ---------------------------------------------------------------------------
+# GitHub Issues & PRs (real gh CLI integration)
+# ---------------------------------------------------------------------------
+
+
+def _get_repo_from_remote(project_dir: str) -> Optional[str]:
+    """Parse git remote origin URL to extract owner/repo."""
+    try:
+        result = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            capture_output=True, text=True, cwd=project_dir, timeout=10,
+        )
+        if result.returncode != 0:
+            return None
+        url = result.stdout.strip()
+        # Handle SSH: git@github.com:owner/repo.git
+        m = re.search(r"github\.com[:/]([^/]+)/([^/.]+?)(?:\.git)?$", url)
+        if m:
+            return f"{m.group(1)}/{m.group(2)}"
+        # Handle HTTPS: https://github.com/owner/repo.git
+        m = re.search(r"github\.com/([^/]+)/([^/.]+?)(?:\.git)?$", url)
+        if m:
+            return f"{m.group(1)}/{m.group(2)}"
+        return None
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return None
+
+
+def _ensure_gh_auth() -> bool:
+    """Check if gh CLI is installed and authenticated."""
+    import shutil
+    gh = shutil.which("gh")
+    if not gh:
+        return False
+    try:
+        result = subprocess.run(
+            [gh, "auth", "status"],
+            capture_output=True, text=True, timeout=10,
+        )
+        return result.returncode == 0
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return False
+
+
+def _run_gh(args: list[str], cwd: Optional[str] = None, timeout: int = 30) -> subprocess.CompletedProcess:
+    """Run a gh CLI command. Raises FileNotFoundError if gh is not installed."""
+    import shutil
+    gh = shutil.which("gh")
+    if not gh:
+        raise FileNotFoundError("gh CLI not found. Install it: https://cli.github.com/")
+    return subprocess.run(
+        [gh] + args,
+        capture_output=True, text=True, cwd=cwd, timeout=timeout,
+    )
+
+
+class GitHubImportRequest(BaseModel):
+    repo: str
+    branch: str = "main"
+
+    @field_validator("repo")
+    @classmethod
+    def validate_repo(cls, v: str) -> str:
+        if not re.match(r"^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$", v):
+            raise ValueError("repo must be in 'owner/repo' format")
+        return v
+
+
+class GitHubReviewRequest(BaseModel):
+    action: str
+    body: str = ""
+
+    @field_validator("action")
+    @classmethod
+    def validate_action(cls, v: str) -> str:
+        allowed = {"approve", "request_changes", "comment"}
+        if v not in allowed:
+            raise ValueError(f"action must be one of: {', '.join(sorted(allowed))}")
+        return v
+
+
+class GitHubMergeRequest(BaseModel):
+    method: str = "merge"
+
+    @field_validator("method")
+    @classmethod
+    def validate_method(cls, v: str) -> str:
+        allowed = {"merge", "squash", "rebase"}
+        if v not in allowed:
+            raise ValueError(f"method must be one of: {', '.join(sorted(allowed))}")
+        return v
+
+
+@app.post("/api/sessions/{session_id}/github/import")
+async def github_import_repo(session_id: str, req: GitHubImportRequest) -> JSONResponse:
+    """Clone a GitHub repo into the session directory."""
+    target, err = _validate_session_and_find_dir(session_id)
+    if err:
+        return err
+
+    # Check if session directory already has files (beyond .loki/)
+    existing = [f for f in target.iterdir() if f.name != ".loki"]
+    if existing:
+        return JSONResponse(status_code=400, content={
+            "error": "Session already has files. Create a new session for importing a repo.",
+        })
+
+    if not _ensure_gh_auth():
+        return JSONResponse(status_code=400, content={
+            "error": "gh CLI not found or not authenticated. Run: gh auth login",
+        })
+
+    loop = asyncio.get_running_loop()
+    try:
+        result = await loop.run_in_executor(
+            None, lambda: _run_gh(
+                ["repo", "clone", req.repo, "."],
+                cwd=str(target), timeout=120,
+            )
+        )
+        if result.returncode != 0:
+            error_msg = (result.stderr or result.stdout or "Clone failed").strip()
+            return JSONResponse(status_code=400, content={"error": error_msg})
+
+        # Checkout the requested branch if not default
+        if req.branch != "main" and req.branch != "master":
+            await loop.run_in_executor(
+                None, lambda: _run_git(target, "checkout", req.branch)
+            )
+
+        # Count files
+        files_count = sum(1 for _ in target.rglob("*") if _.is_file() and ".git" not in _.parts)
+
+        # Detect default branch
+        branch_result = await loop.run_in_executor(
+            None, lambda: _run_git(target, "rev-parse", "--abbrev-ref", "HEAD")
+        )
+        default_branch = branch_result.stdout.strip() if branch_result.returncode == 0 else req.branch
+
+        return JSONResponse(content={
+            "success": True,
+            "files_count": files_count,
+            "default_branch": default_branch,
+        })
+    except FileNotFoundError:
+        return JSONResponse(status_code=400, content={"error": "gh CLI not found. Install it: https://cli.github.com/"})
+    except subprocess.TimeoutExpired:
+        return JSONResponse(status_code=500, content={"error": "Clone timed out (120s limit)"})
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"error": f"Import failed: {exc}"})
+
+
+@app.get("/api/sessions/{session_id}/github/issues")
+async def github_list_issues(
+    session_id: str,
+    state: str = "open",
+    labels: str = "",
+    limit: int = 30,
+) -> JSONResponse:
+    """List GitHub issues for the session's repo."""
+    target, err = _validate_session_and_find_dir(session_id)
+    if err:
+        return err
+
+    repo = _get_repo_from_remote(str(target))
+    if not repo:
+        return JSONResponse(status_code=400, content={
+            "error": "No GitHub remote found. Push the project to GitHub first.",
+        })
+
+    if state not in ("open", "closed", "all"):
+        return JSONResponse(status_code=400, content={"error": "state must be open, closed, or all"})
+    limit = min(max(1, limit), 100)
+
+    loop = asyncio.get_running_loop()
+    try:
+        cmd = [
+            "issue", "list",
+            "--repo", repo,
+            "--state", state,
+            "--limit", str(limit),
+            "--json", "number,title,body,state,labels,author,createdAt,updatedAt,comments",
+        ]
+        if labels:
+            cmd.extend(["--label", labels])
+        result = await loop.run_in_executor(None, lambda: _run_gh(cmd, cwd=str(target)))
+        if result.returncode != 0:
+            error_msg = (result.stderr or result.stdout or "Failed to list issues").strip()
+            return JSONResponse(status_code=400, content={"error": error_msg})
+
+        issues = json.loads(result.stdout) if result.stdout.strip() else []
+        return JSONResponse(content=issues)
+    except FileNotFoundError:
+        return JSONResponse(status_code=400, content={"error": "gh CLI not found. Install it: https://cli.github.com/"})
+    except json.JSONDecodeError:
+        return JSONResponse(status_code=500, content={"error": "Failed to parse gh output"})
+    except subprocess.TimeoutExpired:
+        return JSONResponse(status_code=500, content={"error": "Request timed out"})
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"error": f"Failed to list issues: {exc}"})
+
+
+@app.get("/api/sessions/{session_id}/github/issues/{issue_number}")
+async def github_get_issue(session_id: str, issue_number: int) -> JSONResponse:
+    """Get a single GitHub issue with full details."""
+    target, err = _validate_session_and_find_dir(session_id)
+    if err:
+        return err
+
+    repo = _get_repo_from_remote(str(target))
+    if not repo:
+        return JSONResponse(status_code=400, content={
+            "error": "No GitHub remote found. Push the project to GitHub first.",
+        })
+
+    loop = asyncio.get_running_loop()
+    try:
+        result = await loop.run_in_executor(
+            None, lambda: _run_gh([
+                "issue", "view", str(issue_number),
+                "--repo", repo,
+                "--json", "number,title,body,state,labels,author,comments,assignees",
+            ], cwd=str(target))
+        )
+        if result.returncode != 0:
+            error_msg = (result.stderr or result.stdout or "Issue not found").strip()
+            status = 404 if "not found" in error_msg.lower() else 400
+            return JSONResponse(status_code=status, content={"error": error_msg})
+
+        issue = json.loads(result.stdout)
+        return JSONResponse(content=issue)
+    except FileNotFoundError:
+        return JSONResponse(status_code=400, content={"error": "gh CLI not found. Install it: https://cli.github.com/"})
+    except json.JSONDecodeError:
+        return JSONResponse(status_code=500, content={"error": "Failed to parse gh output"})
+    except subprocess.TimeoutExpired:
+        return JSONResponse(status_code=500, content={"error": "Request timed out"})
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"error": f"Failed to get issue: {exc}"})
+
+
+@app.get("/api/sessions/{session_id}/github/prs")
+async def github_list_prs(
+    session_id: str,
+    state: str = "open",
+    limit: int = 30,
+) -> JSONResponse:
+    """List pull requests for the session's repo."""
+    target, err = _validate_session_and_find_dir(session_id)
+    if err:
+        return err
+
+    repo = _get_repo_from_remote(str(target))
+    if not repo:
+        return JSONResponse(status_code=400, content={
+            "error": "No GitHub remote found. Push the project to GitHub first.",
+        })
+
+    if state not in ("open", "closed", "merged", "all"):
+        return JSONResponse(status_code=400, content={"error": "state must be open, closed, merged, or all"})
+    limit = min(max(1, limit), 100)
+
+    loop = asyncio.get_running_loop()
+    try:
+        result = await loop.run_in_executor(
+            None, lambda: _run_gh([
+                "pr", "list",
+                "--repo", repo,
+                "--state", state,
+                "--limit", str(limit),
+                "--json", "number,title,body,state,author,createdAt,headRefName,baseRefName,reviewDecision,statusCheckRollup,additions,deletions,changedFiles",
+            ], cwd=str(target))
+        )
+        if result.returncode != 0:
+            error_msg = (result.stderr or result.stdout or "Failed to list PRs").strip()
+            return JSONResponse(status_code=400, content={"error": error_msg})
+
+        prs = json.loads(result.stdout) if result.stdout.strip() else []
+        return JSONResponse(content=prs)
+    except FileNotFoundError:
+        return JSONResponse(status_code=400, content={"error": "gh CLI not found. Install it: https://cli.github.com/"})
+    except json.JSONDecodeError:
+        return JSONResponse(status_code=500, content={"error": "Failed to parse gh output"})
+    except subprocess.TimeoutExpired:
+        return JSONResponse(status_code=500, content={"error": "Request timed out"})
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"error": f"Failed to list PRs: {exc}"})
+
+
+@app.get("/api/sessions/{session_id}/github/prs/{pr_number}")
+async def github_get_pr(session_id: str, pr_number: int) -> JSONResponse:
+    """Get a single PR with full details including reviews and comments."""
+    target, err = _validate_session_and_find_dir(session_id)
+    if err:
+        return err
+
+    repo = _get_repo_from_remote(str(target))
+    if not repo:
+        return JSONResponse(status_code=400, content={
+            "error": "No GitHub remote found. Push the project to GitHub first.",
+        })
+
+    loop = asyncio.get_running_loop()
+    try:
+        result = await loop.run_in_executor(
+            None, lambda: _run_gh([
+                "pr", "view", str(pr_number),
+                "--repo", repo,
+                "--json", "number,title,body,state,author,comments,reviews,files,additions,deletions,commits",
+            ], cwd=str(target))
+        )
+        if result.returncode != 0:
+            error_msg = (result.stderr or result.stdout or "PR not found").strip()
+            status = 404 if "not found" in error_msg.lower() else 400
+            return JSONResponse(status_code=status, content={"error": error_msg})
+
+        pr = json.loads(result.stdout)
+        return JSONResponse(content=pr)
+    except FileNotFoundError:
+        return JSONResponse(status_code=400, content={"error": "gh CLI not found. Install it: https://cli.github.com/"})
+    except json.JSONDecodeError:
+        return JSONResponse(status_code=500, content={"error": "Failed to parse gh output"})
+    except subprocess.TimeoutExpired:
+        return JSONResponse(status_code=500, content={"error": "Request timed out"})
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"error": f"Failed to get PR: {exc}"})
+
+
+@app.get("/api/sessions/{session_id}/github/prs/{pr_number}/diff")
+async def github_get_pr_diff(session_id: str, pr_number: int) -> JSONResponse:
+    """Get the raw unified diff for a pull request."""
+    target, err = _validate_session_and_find_dir(session_id)
+    if err:
+        return err
+
+    repo = _get_repo_from_remote(str(target))
+    if not repo:
+        return JSONResponse(status_code=400, content={
+            "error": "No GitHub remote found. Push the project to GitHub first.",
+        })
+
+    loop = asyncio.get_running_loop()
+    try:
+        result = await loop.run_in_executor(
+            None, lambda: _run_gh([
+                "pr", "diff", str(pr_number),
+                "--repo", repo,
+            ], cwd=str(target), timeout=60)
+        )
+        if result.returncode != 0:
+            error_msg = (result.stderr or result.stdout or "Failed to get diff").strip()
+            return JSONResponse(status_code=400, content={"error": error_msg})
+
+        return JSONResponse(content={"diff": result.stdout})
+    except FileNotFoundError:
+        return JSONResponse(status_code=400, content={"error": "gh CLI not found. Install it: https://cli.github.com/"})
+    except subprocess.TimeoutExpired:
+        return JSONResponse(status_code=500, content={"error": "Request timed out"})
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"error": f"Failed to get PR diff: {exc}"})
+
+
+@app.post("/api/sessions/{session_id}/github/issues/{issue_number}/fix")
+async def github_fix_issue(session_id: str, issue_number: int) -> JSONResponse:
+    """Trigger Loki to fix a GitHub issue: fetch issue, create branch, run fix, create PR."""
+    target, err = _validate_session_and_find_dir(session_id)
+    if err:
+        return err
+
+    repo = _get_repo_from_remote(str(target))
+    if not repo:
+        return JSONResponse(status_code=400, content={
+            "error": "No GitHub remote found. Push the project to GitHub first.",
+        })
+
+    if not _ensure_gh_auth():
+        return JSONResponse(status_code=400, content={
+            "error": "gh CLI not found or not authenticated. Run: gh auth login",
+        })
+
+    # Create a background task and return immediately
+    _cleanup_chat_tasks()
+    task = ChatTask()
+    _chat_tasks[task.id] = task
+
+    async def run_fix_issue() -> None:
+        loop = asyncio.get_running_loop()
+        proc: Optional[subprocess.Popen] = None
+        try:
+            # 1. Fetch issue details
+            issue_result = await loop.run_in_executor(
+                None, lambda: _run_gh([
+                    "issue", "view", str(issue_number),
+                    "--repo", repo,
+                    "--json", "number,title,body,state,labels",
+                ], cwd=str(target))
+            )
+            if issue_result.returncode != 0:
+                task.output_lines.append(f"Failed to fetch issue #{issue_number}: {issue_result.stderr}")
+                task.returncode = 1
+                task.complete = True
+                return
+
+            issue_data = json.loads(issue_result.stdout)
+            issue_title = issue_data.get("title", f"Issue #{issue_number}")
+            issue_body = issue_data.get("body", "")
+
+            task.output_lines.append(f"Fetched issue #{issue_number}: {issue_title}")
+
+            # 2. Create a fix branch
+            branch_name = f"fix/issue-{issue_number}"
+            # Ensure we are on the default branch first
+            await loop.run_in_executor(
+                None, lambda: _run_git(target, "checkout", "main")
+            )
+            # Pull latest
+            await loop.run_in_executor(
+                None, lambda: _run_git(target, "pull", "--ff-only", timeout=30)
+            )
+            # Create and checkout the fix branch
+            branch_result = await loop.run_in_executor(
+                None, lambda: _run_git(target, "checkout", "-b", branch_name)
+            )
+            if branch_result.returncode != 0:
+                # Branch might already exist, try switching to it
+                await loop.run_in_executor(
+                    None, lambda: _run_git(target, "checkout", branch_name)
+                )
+
+            task.output_lines.append(f"Created branch: {branch_name}")
+
+            # 3. Run loki quick to fix the issue
+            loki = _find_loki_cli()
+            if loki is None:
+                task.output_lines.append("loki CLI not found")
+                task.returncode = 1
+                task.complete = True
+                return
+
+            fix_prompt = (
+                f"Fix GitHub issue #{issue_number}: {issue_title}\n\n"
+                f"{issue_body}\n\n"
+                f"Make the necessary code changes to fix this issue. "
+                f"Ensure all changes are tested and working."
+            )
+
+            fix_env = {**os.environ}
+            fix_env.update(_load_secrets())
+            # Detect provider from session state
+            fix_provider = session.provider or "claude"
+            prov_file = target / ".loki" / "state" / "provider"
+            if prov_file.exists():
+                try:
+                    _fp = prov_file.read_text().strip()
+                    if _fp:
+                        fix_provider = _fp
+                except OSError:
+                    pass
+            fix_env["LOKI_PROVIDER"] = fix_provider
+
+            task.output_lines.append(f"Running loki quick with provider: {fix_provider}")
+
+            proc = subprocess.Popen(
+                [loki, "quick", fix_prompt],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                text=True,
+                cwd=str(target),
+                env=fix_env,
+                start_new_session=True,
+            )
+            task.process = proc
+            _track_child_pid(proc.pid)
+
+            def _read_output() -> None:
+                assert proc.stdout is not None
+                for raw_line in proc.stdout:
+                    if task.cancelled:
+                        break
+                    clean = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', raw_line.rstrip("\n"))
+                    stripped = clean.strip()
+                    # Skip tool invocation noise
+                    if stripped in ("[Tool: Read]", "[Tool: Bash]", "[Tool: Write]",
+                                    "[Tool: Edit]", "[Tool: Grep]", "[Tool: Glob]",
+                                    "[Result]", "[Thinking]"):
+                        continue
+                    if not stripped:
+                        continue
+                    task.output_lines.append(clean)
+                proc.stdout.close()
+
+            await asyncio.wait_for(loop.run_in_executor(None, _read_output), timeout=600)
+            proc.wait(timeout=10)
+
+            if proc.returncode != 0:
+                task.output_lines.append(f"loki quick exited with code {proc.returncode}")
+                task.returncode = proc.returncode
+                task.complete = True
+                return
+
+            task.output_lines.append("Fix applied. Committing and pushing changes...")
+
+            # 4. Stage, commit, and push
+            await loop.run_in_executor(
+                None, lambda: _run_git(target, "add", "-A")
+            )
+            commit_msg = f"fix: #{issue_number} {issue_title}"
+            commit_result = await loop.run_in_executor(
+                None, lambda: _run_git(target, "commit", "-m", commit_msg, timeout=30)
+            )
+            if commit_result.returncode != 0:
+                # Nothing to commit -- changes may have been committed by loki
+                task.output_lines.append("No additional changes to commit (loki may have committed already)")
+
+            push_result = await loop.run_in_executor(
+                None, lambda: _run_git(target, "push", "-u", "origin", branch_name, timeout=60)
+            )
+            if push_result.returncode != 0:
+                task.output_lines.append(f"Push failed: {push_result.stderr.strip()}")
+                task.returncode = 1
+                task.complete = True
+                return
+
+            task.output_lines.append(f"Pushed {branch_name} to origin")
+
+            # 5. Create a PR
+            pr_body = f"Fixes #{issue_number}\n\nAI-generated fix by Loki Mode"
+            pr_result = await loop.run_in_executor(
+                None, lambda: _run_gh([
+                    "pr", "create",
+                    "--title", f"fix: #{issue_number} {issue_title}",
+                    "--body", pr_body,
+                    "--repo", repo,
+                ], cwd=str(target), timeout=30)
+            )
+            if pr_result.returncode != 0:
+                task.output_lines.append(f"PR creation failed: {pr_result.stderr.strip()}")
+                task.returncode = 1
+                task.complete = True
+                return
+
+            pr_url = pr_result.stdout.strip()
+            pr_num = 0
+            if pr_url:
+                parts = pr_url.rstrip("/").split("/")
+                try:
+                    pr_num = int(parts[-1])
+                except (ValueError, IndexError):
+                    pass
+
+            task.output_lines.append(f"Created PR: {pr_url}")
+            # Store PR info in task for retrieval
+            task.files_changed = [f"branch:{branch_name}", f"pr_url:{pr_url}", f"pr_number:{pr_num}"]
+            task.returncode = 0
+
+        except asyncio.TimeoutError:
+            if proc is not None:
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except (ProcessLookupError, OSError):
+                    if proc.poll() is None:
+                        proc.kill()
+                proc.wait()
+            task.output_lines.append("Fix timed out after 10 minutes")
+            task.returncode = 1
+        except Exception as e:
+            task.output_lines.append(f"Error: {e}")
+            task.returncode = 1
+            if proc is not None and proc.poll() is None:
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except (ProcessLookupError, OSError):
+                    proc.kill()
+                proc.wait()
+        finally:
+            if proc is not None:
+                _untrack_child_pid(proc.pid)
+            task.complete = True
+
+    asyncio.create_task(run_fix_issue())
+
+    return JSONResponse(content={
+        "task_id": task.id,
+        "status": "running",
+        "message": f"Fixing issue #{issue_number} in background",
+    })
+
+
+@app.post("/api/sessions/{session_id}/github/prs/{pr_number}/review")
+async def github_review_pr(session_id: str, pr_number: int, req: GitHubReviewRequest) -> JSONResponse:
+    """Submit a review on a pull request."""
+    target, err = _validate_session_and_find_dir(session_id)
+    if err:
+        return err
+
+    repo = _get_repo_from_remote(str(target))
+    if not repo:
+        return JSONResponse(status_code=400, content={
+            "error": "No GitHub remote found. Push the project to GitHub first.",
+        })
+
+    loop = asyncio.get_running_loop()
+    try:
+        # Map action to gh flag
+        action_flag = f"--{req.action.replace('_', '-')}"
+        cmd = [
+            "pr", "review", str(pr_number),
+            "--repo", repo,
+            action_flag,
+        ]
+        if req.body:
+            cmd.extend(["--body", req.body])
+
+        result = await loop.run_in_executor(None, lambda: _run_gh(cmd, cwd=str(target)))
+        if result.returncode != 0:
+            error_msg = (result.stderr or result.stdout or "Review failed").strip()
+            return JSONResponse(status_code=400, content={"error": error_msg})
+
+        return JSONResponse(content={"success": True})
+    except FileNotFoundError:
+        return JSONResponse(status_code=400, content={"error": "gh CLI not found. Install it: https://cli.github.com/"})
+    except subprocess.TimeoutExpired:
+        return JSONResponse(status_code=500, content={"error": "Request timed out"})
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"error": f"Review failed: {exc}"})
+
+
+@app.post("/api/sessions/{session_id}/github/prs/{pr_number}/merge")
+async def github_merge_pr(session_id: str, pr_number: int, req: GitHubMergeRequest) -> JSONResponse:
+    """Merge a pull request."""
+    target, err = _validate_session_and_find_dir(session_id)
+    if err:
+        return err
+
+    repo = _get_repo_from_remote(str(target))
+    if not repo:
+        return JSONResponse(status_code=400, content={
+            "error": "No GitHub remote found. Push the project to GitHub first.",
+        })
+
+    loop = asyncio.get_running_loop()
+    try:
+        result = await loop.run_in_executor(
+            None, lambda: _run_gh([
+                "pr", "merge", str(pr_number),
+                "--repo", repo,
+                f"--{req.method}",
+            ], cwd=str(target))
+        )
+        if result.returncode != 0:
+            error_msg = (result.stderr or result.stdout or "Merge failed").strip()
+            return JSONResponse(status_code=400, content={"error": error_msg})
+
+        # Try to get the merge commit SHA
+        sha = ""
+        merge_output = (result.stdout or "").strip()
+        sha_match = re.search(r"[0-9a-f]{40}", merge_output)
+        if sha_match:
+            sha = sha_match.group(0)
+
+        return JSONResponse(content={"success": True, "sha": sha})
+    except FileNotFoundError:
+        return JSONResponse(status_code=400, content={"error": "gh CLI not found. Install it: https://cli.github.com/"})
+    except subprocess.TimeoutExpired:
+        return JSONResponse(status_code=500, content={"error": "Request timed out"})
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"error": f"Merge failed: {exc}"})
+
+
+# ---------------------------------------------------------------------------
 # Teams & RBAC endpoints
 # ---------------------------------------------------------------------------
 
@@ -6990,6 +7663,581 @@ def main() -> None:
     port = int(os.environ.get("PURPLE_LAB_PORT", str(PORT)))
     print(f"Purple Lab starting on http://{host}:{port}")
     uvicorn.run(app, host=host, port=port, log_level="info", timeout_keep_alive=30)
+
+
+_TOKENS_DIR = SCRIPT_DIR.parent / ".loki" / "tokens"
+
+
+def _token_path(platform: str) -> Path:
+    """Return the path to a platform's token file."""
+    return _TOKENS_DIR / f"{platform}.json"
+
+
+def _load_token(platform: str) -> Optional[dict]:
+    """Load a stored token for a platform. Returns dict or None."""
+    path = _token_path(platform)
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text())
+        if isinstance(data, dict) and data.get("token"):
+            return data
+    except (json.JSONDecodeError, OSError):
+        pass
+    return None
+
+
+def _save_token(platform: str, token: str, user: str) -> None:
+    """Save a verified token for a platform with secure file permissions."""
+    _TOKENS_DIR.mkdir(parents=True, exist_ok=True)
+    data = {
+        "token": token,
+        "user": user,
+        "created_at": datetime.utcnow().isoformat() + "Z",
+        "verified": True,
+    }
+    path = _token_path(platform)
+    path.write_text(json.dumps(data, indent=2))
+    os.chmod(str(path), 0o600)
+
+
+def _delete_token(platform: str) -> bool:
+    """Delete a stored token. Returns True if deleted, False if not found."""
+    path = _token_path(platform)
+    if path.exists():
+        path.unlink()
+        return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Deploy connection endpoints (token management)
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/deploy/vercel/token")
+async def set_vercel_token(req: dict = Body(...)) -> JSONResponse:
+    """Store a Vercel token after verifying it with the Vercel CLI."""
+    token = req.get("token", "").strip()
+    if not token:
+        return JSONResponse(status_code=400, content={"error": "Token is required"})
+
+    loop = asyncio.get_running_loop()
+    try:
+        result = await loop.run_in_executor(None, lambda: subprocess.run(
+            ["vercel", "whoami", "--token", token],
+            capture_output=True, text=True, timeout=15,
+        ))
+        output = (result.stdout or "").strip()
+        if result.returncode != 0:
+            stderr = (result.stderr or "").strip()
+            return JSONResponse(status_code=400, content={
+                "error": "Token verification failed",
+                "detail": stderr or output or "vercel whoami returned non-zero",
+            })
+        # The output of `vercel whoami` is the username
+        user = output.split("\n")[-1].strip() if output else "unknown"
+        _save_token("vercel", token, user)
+        return JSONResponse(content={"success": True, "user": user})
+    except FileNotFoundError:
+        return JSONResponse(status_code=500, content={
+            "error": "Vercel CLI not found. Install with: npm i -g vercel"
+        })
+    except subprocess.TimeoutExpired:
+        return JSONResponse(status_code=500, content={"error": "Token verification timed out"})
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"error": f"Token verification failed: {exc}"})
+
+
+@app.get("/api/deploy/vercel/status")
+async def get_vercel_status() -> JSONResponse:
+    """Check if a Vercel token is configured and valid."""
+    data = _load_token("vercel")
+    if not data:
+        return JSONResponse(content={"connected": False})
+
+    # Re-verify the token is still valid
+    loop = asyncio.get_running_loop()
+    try:
+        result = await loop.run_in_executor(None, lambda: subprocess.run(
+            ["vercel", "whoami", "--token", data["token"]],
+            capture_output=True, text=True, timeout=15,
+        ))
+        if result.returncode == 0:
+            user = (result.stdout or "").strip().split("\n")[-1].strip() or data.get("user", "unknown")
+            return JSONResponse(content={"connected": True, "user": user})
+        else:
+            return JSONResponse(content={"connected": False, "error": "Token expired or revoked"})
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        # CLI not available or timeout -- report based on stored data
+        return JSONResponse(content={
+            "connected": True,
+            "user": data.get("user", "unknown"),
+            "warning": "Could not re-verify token (CLI unavailable or timeout)",
+        })
+
+
+@app.post("/api/deploy/netlify/token")
+async def set_netlify_token(req: dict = Body(...)) -> JSONResponse:
+    """Store a Netlify personal access token after verifying it."""
+    token = req.get("token", "").strip()
+    if not token:
+        return JSONResponse(status_code=400, content={"error": "Token is required"})
+
+    loop = asyncio.get_running_loop()
+    try:
+        result = await loop.run_in_executor(None, lambda: subprocess.run(
+            ["netlify", "status", "--auth", token],
+            capture_output=True, text=True, timeout=15,
+        ))
+        output = (result.stdout or "") + (result.stderr or "")
+        if result.returncode != 0:
+            return JSONResponse(status_code=400, content={
+                "error": "Token verification failed",
+                "detail": output.strip() or "netlify status returned non-zero",
+            })
+        # Extract username from netlify status output
+        user = "unknown"
+        for line in output.split("\n"):
+            # Netlify status shows "Email: user@example.com" or "Name: ..."
+            if "Email:" in line:
+                user = line.split("Email:")[-1].strip()
+                break
+            elif "Name:" in line and user == "unknown":
+                user = line.split("Name:")[-1].strip()
+        _save_token("netlify", token, user)
+        return JSONResponse(content={"success": True, "user": user})
+    except FileNotFoundError:
+        return JSONResponse(status_code=500, content={
+            "error": "Netlify CLI not found. Install with: npm i -g netlify-cli"
+        })
+    except subprocess.TimeoutExpired:
+        return JSONResponse(status_code=500, content={"error": "Token verification timed out"})
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"error": f"Token verification failed: {exc}"})
+
+
+@app.get("/api/deploy/netlify/status")
+async def get_netlify_status() -> JSONResponse:
+    """Check if a Netlify token is configured and valid."""
+    data = _load_token("netlify")
+    if not data:
+        return JSONResponse(content={"connected": False})
+
+    # Re-verify the token
+    loop = asyncio.get_running_loop()
+    try:
+        result = await loop.run_in_executor(None, lambda: subprocess.run(
+            ["netlify", "status", "--auth", data["token"]],
+            capture_output=True, text=True, timeout=15,
+        ))
+        if result.returncode == 0:
+            return JSONResponse(content={"connected": True, "user": data.get("user", "unknown")})
+        else:
+            return JSONResponse(content={"connected": False, "error": "Token expired or revoked"})
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return JSONResponse(content={
+            "connected": True,
+            "user": data.get("user", "unknown"),
+            "warning": "Could not re-verify token (CLI unavailable or timeout)",
+        })
+
+
+@app.get("/api/deploy/github/status")
+async def get_github_status() -> JSONResponse:
+    """Check if GitHub CLI (gh) is authenticated."""
+    loop = asyncio.get_running_loop()
+    try:
+        result = await loop.run_in_executor(None, lambda: subprocess.run(
+            ["gh", "auth", "status"],
+            capture_output=True, text=True, timeout=15,
+        ))
+        output = (result.stdout or "") + (result.stderr or "")
+        if result.returncode == 0:
+            # Extract username from gh auth status output
+            user = "unknown"
+            for line in output.split("\n"):
+                if "Logged in to" in line:
+                    # "Logged in to github.com account username ..."
+                    parts = line.split("account")
+                    if len(parts) > 1:
+                        user = parts[1].strip().split()[0].strip("()")
+                        break
+            return JSONResponse(content={"connected": True, "user": user})
+        else:
+            return JSONResponse(content={"connected": False})
+    except FileNotFoundError:
+        return JSONResponse(content={"connected": False, "error": "gh CLI not installed"})
+    except subprocess.TimeoutExpired:
+        return JSONResponse(content={"connected": False, "error": "Auth check timed out"})
+    except Exception as exc:
+        return JSONResponse(content={"connected": False, "error": str(exc)})
+
+
+@app.get("/api/deploy/status")
+async def get_all_deploy_status() -> JSONResponse:
+    """Return connection status for all deployment platforms."""
+    loop = asyncio.get_running_loop()
+
+    async def _check_vercel() -> dict:
+        data = _load_token("vercel")
+        if not data:
+            return {"connected": False}
+        try:
+            result = await loop.run_in_executor(None, lambda: subprocess.run(
+                ["vercel", "whoami", "--token", data["token"]],
+                capture_output=True, text=True, timeout=10,
+            ))
+            if result.returncode == 0:
+                user = (result.stdout or "").strip().split("\n")[-1].strip() or data.get("user", "unknown")
+                return {"connected": True, "user": user}
+            return {"connected": False, "error": "Token expired or revoked"}
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            return {"connected": True, "user": data.get("user", "unknown"), "warning": "Could not re-verify"}
+
+    async def _check_netlify() -> dict:
+        data = _load_token("netlify")
+        if not data:
+            return {"connected": False}
+        try:
+            result = await loop.run_in_executor(None, lambda: subprocess.run(
+                ["netlify", "status", "--auth", data["token"]],
+                capture_output=True, text=True, timeout=10,
+            ))
+            if result.returncode == 0:
+                return {"connected": True, "user": data.get("user", "unknown")}
+            return {"connected": False, "error": "Token expired or revoked"}
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            return {"connected": True, "user": data.get("user", "unknown"), "warning": "Could not re-verify"}
+
+# ---------------------------------------------------------------------------
+# GitHub Actions endpoints (CI/CD panel)
+# ---------------------------------------------------------------------------
+
+
+def _get_repo_from_remote(project_dir: Path) -> Optional[str]:
+    """Extract 'owner/repo' from the git remote origin URL.
+
+    Supports both HTTPS and SSH remote formats:
+      https://github.com/owner/repo.git -> owner/repo
+      git@github.com:owner/repo.git     -> owner/repo
+    """
+    try:
+        result = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            capture_output=True, text=True, cwd=str(project_dir), timeout=10,
+        )
+        if result.returncode != 0:
+            return None
+        remote = result.stdout.strip()
+        # HTTPS: https://github.com/owner/repo.git
+        m = re.search(r"github\.com[:/]([^/]+)/([^/.]+?)(?:\.git)?$", remote)
+        if m:
+            return f"{m.group(1)}/{m.group(2)}"
+        return None
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return None
+
+
+def _run_gh(args: list[str], cwd: str, timeout: int = 30) -> subprocess.CompletedProcess:
+    """Run a gh CLI command. Raises FileNotFoundError if gh is not installed."""
+    import shutil
+    gh = shutil.which("gh")
+    if not gh:
+        raise FileNotFoundError("gh CLI not found. Install it: https://cli.github.com/")
+    return subprocess.run(
+        [gh] + args,
+        capture_output=True, text=True, cwd=cwd, timeout=timeout,
+    )
+
+
+@app.get("/api/sessions/{session_id}/github/actions/runs")
+async def github_actions_list_runs(
+    session_id: str, limit: int = 10, branch: Optional[str] = None,
+) -> JSONResponse:
+    """List recent workflow runs for the session's repo."""
+    target, err = _validate_session_and_find_dir(session_id)
+    if err:
+        return err
+
+    repo = _get_repo_from_remote(target)
+    if not repo:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "Could not determine GitHub repo from git remote"},
+        )
+
+    limit = min(max(limit, 1), 100)
+    loop = asyncio.get_running_loop()
+    try:
+        cmd = [
+            "run", "list",
+            "--repo", repo,
+            "--limit", str(limit),
+            "--json", "databaseId,name,status,conclusion,headBranch,event,createdAt,updatedAt,url,workflowName",
+        ]
+        if branch:
+            cmd.extend(["--branch", branch])
+
+        result = await loop.run_in_executor(None, lambda: _run_gh(cmd, cwd=str(target)))
+        if result.returncode != 0:
+            error_msg = result.stderr.strip()
+            if "not logged" in error_msg.lower() or "auth" in error_msg.lower():
+                return JSONResponse(status_code=401, content={"error": "gh CLI not authenticated. Run: gh auth login"})
+            return JSONResponse(status_code=400, content={"error": error_msg or "Failed to list workflow runs"})
+
+        runs = json.loads(result.stdout) if result.stdout.strip() else []
+        return JSONResponse(content=runs)
+    except FileNotFoundError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+    except json.JSONDecodeError:
+        return JSONResponse(status_code=500, content={"error": "Failed to parse gh output"})
+    except subprocess.TimeoutExpired:
+        return JSONResponse(status_code=504, content={"error": "GitHub API request timed out"})
+    except OSError as exc:
+        return JSONResponse(status_code=500, content={"error": f"Failed to list runs: {exc}"})
+
+
+@app.get("/api/sessions/{session_id}/github/actions/runs/{run_id}")
+async def github_actions_run_detail(session_id: str, run_id: int) -> JSONResponse:
+    """Get detailed info for a specific workflow run including jobs and steps."""
+    target, err = _validate_session_and_find_dir(session_id)
+    if err:
+        return err
+
+    repo = _get_repo_from_remote(target)
+    if not repo:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "Could not determine GitHub repo from git remote"},
+        )
+
+    loop = asyncio.get_running_loop()
+    try:
+        cmd = [
+            "run", "view", str(run_id),
+            "--repo", repo,
+            "--json", "name,status,conclusion,jobs",
+        ]
+        result = await loop.run_in_executor(None, lambda: _run_gh(cmd, cwd=str(target)))
+        if result.returncode != 0:
+            error_msg = result.stderr.strip()
+            if "not found" in error_msg.lower() or "could not find" in error_msg.lower():
+                return JSONResponse(status_code=404, content={"error": f"Workflow run {run_id} not found"})
+            return JSONResponse(status_code=400, content={"error": error_msg or "Failed to get run details"})
+
+        detail = json.loads(result.stdout) if result.stdout.strip() else {}
+        return JSONResponse(content=detail)
+    except FileNotFoundError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+    except json.JSONDecodeError:
+        return JSONResponse(status_code=500, content={"error": "Failed to parse gh output"})
+    except subprocess.TimeoutExpired:
+        return JSONResponse(status_code=504, content={"error": "GitHub API request timed out"})
+    except OSError as exc:
+        return JSONResponse(status_code=500, content={"error": f"Failed to get run detail: {exc}"})
+
+
+@app.get("/api/sessions/{session_id}/github/actions/runs/{run_id}/logs")
+async def github_actions_run_logs(session_id: str, run_id: int) -> JSONResponse:
+    """Get logs for a specific workflow run (truncated to last 5000 lines if huge)."""
+    target, err = _validate_session_and_find_dir(session_id)
+    if err:
+        return err
+
+    repo = _get_repo_from_remote(target)
+    if not repo:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "Could not determine GitHub repo from git remote"},
+        )
+
+    loop = asyncio.get_running_loop()
+    try:
+        cmd = [
+            "run", "view", str(run_id),
+            "--repo", repo,
+            "--log",
+        ]
+        result = await loop.run_in_executor(
+            None, lambda: _run_gh(cmd, cwd=str(target), timeout=60),
+        )
+        if result.returncode != 0:
+            error_msg = result.stderr.strip()
+            if "not found" in error_msg.lower() or "could not find" in error_msg.lower():
+                return JSONResponse(status_code=404, content={"error": f"Logs for run {run_id} not found"})
+            return JSONResponse(status_code=400, content={"error": error_msg or "Failed to get run logs"})
+
+        log_text = result.stdout or ""
+        # Truncate to last 5000 lines if too large
+        lines = log_text.splitlines()
+        if len(lines) > 5000:
+            log_text = "\n".join(lines[-5000:])
+
+        return JSONResponse(content={"logs": log_text})
+    except FileNotFoundError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+    except subprocess.TimeoutExpired:
+        return JSONResponse(status_code=504, content={"error": "Log retrieval timed out (logs may be very large)"})
+    except OSError as exc:
+        return JSONResponse(status_code=500, content={"error": f"Failed to get run logs: {exc}"})
+
+
+@app.get("/api/sessions/{session_id}/github/actions/workflows")
+async def github_actions_list_workflows(session_id: str) -> JSONResponse:
+    """List available workflows for the session's repo."""
+    target, err = _validate_session_and_find_dir(session_id)
+    if err:
+        return err
+
+    repo = _get_repo_from_remote(target)
+    if not repo:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "Could not determine GitHub repo from git remote"},
+        )
+
+    loop = asyncio.get_running_loop()
+    try:
+        cmd = [
+            "workflow", "list",
+            "--repo", repo,
+            "--json", "name,id,state",
+        ]
+        result = await loop.run_in_executor(None, lambda: _run_gh(cmd, cwd=str(target)))
+        if result.returncode != 0:
+            error_msg = result.stderr.strip()
+            return JSONResponse(status_code=400, content={"error": error_msg or "Failed to list workflows"})
+
+        workflows = json.loads(result.stdout) if result.stdout.strip() else []
+        return JSONResponse(content=workflows)
+    except FileNotFoundError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+    except json.JSONDecodeError:
+        return JSONResponse(status_code=500, content={"error": "Failed to parse gh output"})
+    except subprocess.TimeoutExpired:
+        return JSONResponse(status_code=504, content={"error": "GitHub API request timed out"})
+    except OSError as exc:
+        return JSONResponse(status_code=500, content={"error": f"Failed to list workflows: {exc}"})
+
+
+@app.post("/api/sessions/{session_id}/github/actions/dispatch")
+async def github_actions_dispatch(session_id: str, req: dict = Body(...)) -> JSONResponse:
+    """Dispatch (trigger) a workflow run."""
+    target, err = _validate_session_and_find_dir(session_id)
+    if err:
+        return err
+
+    workflow = req.get("workflow", "").strip()
+    if not workflow:
+        return JSONResponse(status_code=400, content={"error": "workflow is required"})
+
+    ref = req.get("ref", "main").strip()
+    inputs = req.get("inputs", {})
+
+    repo = _get_repo_from_remote(target)
+    if not repo:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "Could not determine GitHub repo from git remote"},
+        )
+
+    loop = asyncio.get_running_loop()
+    try:
+        cmd = [
+            "workflow", "run", workflow,
+            "--repo", repo,
+            "--ref", ref,
+        ]
+        if isinstance(inputs, dict):
+            for key, value in inputs.items():
+                cmd.extend(["--field", f"{key}={value}"])
+
+        result = await loop.run_in_executor(None, lambda: _run_gh(cmd, cwd=str(target)))
+        if result.returncode != 0:
+            error_msg = result.stderr.strip()
+            return JSONResponse(status_code=400, content={"error": error_msg or "Failed to dispatch workflow"})
+
+        return JSONResponse(content={"success": True, "message": "Workflow dispatched"})
+    except FileNotFoundError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+    except subprocess.TimeoutExpired:
+        return JSONResponse(status_code=504, content={"error": "Workflow dispatch timed out"})
+    except OSError as exc:
+        return JSONResponse(status_code=500, content={"error": f"Failed to dispatch workflow: {exc}"})
+
+
+@app.post("/api/sessions/{session_id}/github/actions/runs/{run_id}/rerun")
+async def github_actions_rerun_failed(session_id: str, run_id: int) -> JSONResponse:
+    """Re-run failed jobs in a workflow run."""
+    target, err = _validate_session_and_find_dir(session_id)
+    if err:
+        return err
+
+    repo = _get_repo_from_remote(target)
+    if not repo:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "Could not determine GitHub repo from git remote"},
+        )
+
+    loop = asyncio.get_running_loop()
+    try:
+        cmd = [
+            "run", "rerun", str(run_id),
+            "--repo", repo,
+            "--failed",
+        ]
+        result = await loop.run_in_executor(None, lambda: _run_gh(cmd, cwd=str(target)))
+        if result.returncode != 0:
+            error_msg = result.stderr.strip()
+            if "not found" in error_msg.lower() or "could not find" in error_msg.lower():
+                return JSONResponse(status_code=404, content={"error": f"Workflow run {run_id} not found"})
+            return JSONResponse(status_code=400, content={"error": error_msg or "Failed to re-run workflow"})
+
+        return JSONResponse(content={"success": True})
+    except FileNotFoundError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+    except subprocess.TimeoutExpired:
+        return JSONResponse(status_code=504, content={"error": "Re-run request timed out"})
+    except OSError as exc:
+        return JSONResponse(status_code=500, content={"error": f"Failed to re-run workflow: {exc}"})
+
+
+@app.post("/api/sessions/{session_id}/github/actions/runs/{run_id}/cancel")
+async def github_actions_cancel_run(session_id: str, run_id: int) -> JSONResponse:
+    """Cancel an in-progress workflow run."""
+    target, err = _validate_session_and_find_dir(session_id)
+    if err:
+        return err
+
+    repo = _get_repo_from_remote(target)
+    if not repo:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "Could not determine GitHub repo from git remote"},
+        )
+
+    loop = asyncio.get_running_loop()
+    try:
+        cmd = [
+            "run", "cancel", str(run_id),
+            "--repo", repo,
+        ]
+        result = await loop.run_in_executor(None, lambda: _run_gh(cmd, cwd=str(target)))
+        if result.returncode != 0:
+            error_msg = result.stderr.strip()
+            if "not found" in error_msg.lower() or "could not find" in error_msg.lower():
+                return JSONResponse(status_code=404, content={"error": f"Workflow run {run_id} not found"})
+            return JSONResponse(status_code=400, content={"error": error_msg or "Failed to cancel run"})
+
+        return JSONResponse(content={"success": True})
+    except FileNotFoundError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+    except subprocess.TimeoutExpired:
+        return JSONResponse(status_code=504, content={"error": "Cancel request timed out"})
+    except OSError as exc:
+        return JSONResponse(status_code=500, content={"error": f"Failed to cancel run: {exc}"})
 
 
 if __name__ == "__main__":

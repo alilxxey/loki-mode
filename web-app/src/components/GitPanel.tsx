@@ -1,17 +1,50 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef, lazy, Suspense } from 'react';
 import {
   GitBranch, GitCommit as GitCommitIcon, GitPullRequest,
   ChevronDown, Plus, Upload, RefreshCw,
   FileCode2, FilePlus, Trash2, FileQuestion,
-  Check, Clock, AlertCircle,
+  Check, Clock, AlertCircle, CircleDot, Play,
+  Github, Link,
 } from 'lucide-react';
 import { api } from '../api/client';
 import { Button } from './ui/Button';
-import type { GitStatus, GitFileChange, GitCommit, GitBranch as GitBranchType } from '../types/api';
+import type {
+  GitStatus, GitFileChange, GitCommit, GitBranch as GitBranchType,
+} from '../types/api';
+
+interface RemoteInfo { has_remote: boolean; repo?: string; owner?: string; }
+
+// Lazy imports for sub-panels to avoid circular deps
+const GitHubIssuesPanel = lazy(() =>
+  import('./GitHubIssuesPanel').then(m => ({ default: m.GitHubIssuesPanel }))
+);
+const GitHubPRsPanel = lazy(() =>
+  import('./GitHubPRsPanel').then(m => ({ default: m.GitHubPRsPanel }))
+);
+const CICDPanel = lazy(() =>
+  import('./CICDPanel').then(m => ({ default: m.CICDPanel }))
+);
 
 interface GitPanelProps {
   sessionId: string;
 }
+
+// ---------------------------------------------------------------------------
+// Badge count cache (30-second TTL)
+// ---------------------------------------------------------------------------
+
+interface BadgeCounts {
+  issues: number;
+  prs: number;
+  actions: number;
+  fetchedAt: number;
+}
+
+const BADGE_CACHE_TTL = 30_000; // 30 seconds
+
+// ---------------------------------------------------------------------------
+// Existing sub-components (unchanged)
+// ---------------------------------------------------------------------------
 
 const STATUS_ICONS: Record<string, React.ReactNode> = {
   modified: <FileCode2 size={13} className="text-yellow-500" />,
@@ -71,10 +104,14 @@ function FileChangeItem({ file }: { file: GitFileChange }) {
   );
 }
 
-type GitView = 'changes' | 'history' | 'branches';
+// ---------------------------------------------------------------------------
+// Changes sub-view (extracted from old GitPanel)
+// ---------------------------------------------------------------------------
 
-export function GitPanel({ sessionId }: GitPanelProps) {
-  const [view, setView] = useState<GitView>('changes');
+type ChangesView = 'changes' | 'history' | 'branches';
+
+function ChangesTab({ sessionId }: { sessionId: string }) {
+  const [view, setView] = useState<ChangesView>('changes');
   const [status, setStatus] = useState<GitStatus | null>(null);
   const [commits, setCommits] = useState<GitCommit[]>([]);
   const [branches, setBranches] = useState<GitBranchType[]>([]);
@@ -217,7 +254,7 @@ export function GitPanel({ sessionId }: GitPanelProps) {
 
   return (
     <div className="h-full flex flex-col">
-      {/* Header */}
+      {/* Branch indicator + refresh */}
       <div className="flex items-center gap-2 px-3 py-2 border-b border-border bg-hover flex-shrink-0">
         <GitBranch size={14} className="text-primary" />
         <span className="text-xs font-semibold text-ink">{status?.branch || 'unknown'}</span>
@@ -489,6 +526,263 @@ export function GitPanel({ sessionId }: GitPanelProps) {
               </div>
             )}
           </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Lazy fallback
+// ---------------------------------------------------------------------------
+
+function TabLoading() {
+  return (
+    <div className="h-full flex items-center justify-center">
+      <div className="flex flex-col items-center gap-2">
+        <RefreshCw size={20} className="text-muted animate-spin" />
+        <span className="text-xs text-muted">Loading...</span>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// No remote / GitHub connection prompt
+// ---------------------------------------------------------------------------
+
+function NoGitHubRemote({
+  sessionId,
+  onPushed,
+}: {
+  sessionId: string;
+  onPushed: () => void;
+}) {
+  const [pushing, setPushing] = useState(false);
+  const [pushError, setPushError] = useState<string | null>(null);
+
+  const handlePush = async () => {
+    setPushing(true);
+    setPushError(null);
+    try {
+      await api.githubPush(sessionId);
+      onPushed();
+    } catch (e) {
+      setPushError(e instanceof Error ? e.message : 'Push to GitHub failed');
+    }
+    setPushing(false);
+  };
+
+  return (
+    <div className="h-full flex items-center justify-center p-8">
+      <div className="flex flex-col items-center gap-4 text-center max-w-xs">
+        <Github size={40} className="text-muted/30" />
+        <div>
+          <p className="text-sm font-medium text-ink">
+            This project isn't connected to GitHub yet
+          </p>
+          <p className="text-xs text-muted mt-1">
+            Push your project to GitHub to access issues, pull requests, and CI/CD workflows.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button size="sm" icon={Upload} onClick={handlePush} loading={pushing}>
+            Push to GitHub
+          </Button>
+        </div>
+        {pushError && (
+          <p className="text-[11px] text-red-400 font-mono">{pushError}</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Main GitPanel -- top-level hub with 4 tabs
+// ---------------------------------------------------------------------------
+
+type TopTab = 'changes' | 'issues' | 'prs' | 'actions';
+
+export function GitPanel({ sessionId }: GitPanelProps) {
+  const [activeTab, setActiveTab] = useState<TopTab>('changes');
+  const [remoteLoading, setRemoteLoading] = useState(true);
+  const [remoteInfo, setRemoteInfo] = useState<RemoteInfo | null>(null);
+  const [badgeCounts, setBadgeCounts] = useState<BadgeCounts>({
+    issues: 0,
+    prs: 0,
+    actions: 0,
+    fetchedAt: 0,
+  });
+  const badgeFetchRef = useRef(false);
+
+  // Check if project has a GitHub remote
+  const checkRemote = useCallback(async () => {
+    setRemoteLoading(true);
+    try {
+      const info = await api.getStatus();
+      setRemoteInfo({ has_remote: true, repo: '', owner: '' });
+    } catch {
+      // If the endpoint fails, assume no remote -- degrade gracefully
+      setRemoteInfo({ has_remote: false });
+    }
+    setRemoteLoading(false);
+  }, [sessionId]);
+
+  useEffect(() => {
+    checkRemote();
+  }, [checkRemote]);
+
+  // Fetch badge counts (with 30s cache)
+  const fetchBadgeCounts = useCallback(async () => {
+    if (!remoteInfo?.has_remote) return;
+    const now = Date.now();
+    if (now - badgeCounts.fetchedAt < BADGE_CACHE_TTL) return;
+    if (badgeFetchRef.current) return;
+    badgeFetchRef.current = true;
+
+    try {
+      const [issues, prs, runs] = await Promise.allSettled([
+        api.getGitHubIssues(sessionId, 'open', 1),
+        api.getGitHubPRs(sessionId, 'open', 1),
+        api.getWorkflowRuns(sessionId, 5),
+      ]);
+
+      setBadgeCounts({
+        issues: issues.status === 'fulfilled' ? (issues.value as any[]).length : 0,
+        prs: prs.status === 'fulfilled' ? (prs.value as any[]).length : 0,
+        actions: runs.status === 'fulfilled'
+          ? (runs.value as any[]).filter((r: any) => r.status === 'in_progress').length
+          : 0,
+        fetchedAt: Date.now(),
+      });
+    } catch {
+      // Non-critical -- badge counts just stay at 0
+    }
+    badgeFetchRef.current = false;
+  }, [sessionId, remoteInfo?.has_remote, badgeCounts.fetchedAt]);
+
+  // Fetch badge counts on mount and when switching to a GitHub tab
+  useEffect(() => {
+    if (remoteInfo?.has_remote) {
+      fetchBadgeCounts();
+    }
+  }, [remoteInfo?.has_remote, fetchBadgeCounts]);
+
+  useEffect(() => {
+    if (['issues', 'prs', 'actions'].includes(activeTab) && remoteInfo?.has_remote) {
+      fetchBadgeCounts();
+    }
+  }, [activeTab, remoteInfo?.has_remote, fetchBadgeCounts]);
+
+  // Loading state for remote check
+  if (remoteLoading) {
+    return (
+      <div className="h-full flex items-center justify-center">
+        <div className="flex flex-col items-center gap-2">
+          <RefreshCw size={20} className="text-muted animate-spin" />
+          <span className="text-xs text-muted">Checking GitHub connection...</span>
+        </div>
+      </div>
+    );
+  }
+
+  // Determine whether GitHub tabs should be shown
+  const hasRemote = remoteInfo?.has_remote ?? false;
+
+  // Top tab definitions
+  const tabs: Array<{
+    id: TopTab;
+    label: string;
+    icon: typeof FileCode2;
+    count?: number;
+    requiresRemote: boolean;
+  }> = [
+    { id: 'changes', label: 'Changes', icon: FileCode2, requiresRemote: false },
+    { id: 'issues', label: 'Issues', icon: CircleDot, count: badgeCounts.issues, requiresRemote: true },
+    { id: 'prs', label: 'PRs', icon: GitPullRequest, count: badgeCounts.prs, requiresRemote: true },
+    { id: 'actions', label: 'Actions', icon: Play, count: badgeCounts.actions, requiresRemote: true },
+  ];
+
+  // If no remote, only show Changes tab and the no-remote message when other tabs selected
+  const visibleTabs = hasRemote ? tabs : tabs;
+
+  return (
+    <div className="h-full flex flex-col">
+      {/* Top tab bar */}
+      <div className="flex items-center gap-1 px-2 py-1.5 border-b border-border bg-hover flex-shrink-0">
+        {visibleTabs.map(tab => {
+          const disabled = tab.requiresRemote && !hasRemote;
+          return (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              disabled={disabled}
+              className={`flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium rounded-btn transition-colors ${
+                activeTab === tab.id
+                  ? 'bg-primary/10 text-primary'
+                  : disabled
+                    ? 'text-muted/40 cursor-not-allowed'
+                    : 'text-muted hover:text-ink'
+              }`}
+              title={disabled ? 'Connect to GitHub to access this tab' : undefined}
+            >
+              <tab.icon size={12} />
+              {tab.label}
+              {tab.count !== undefined && tab.count > 0 && (
+                <span className="ml-0.5 px-1 py-0 text-[9px] rounded-full bg-primary/20 text-primary font-mono">
+                  {tab.count}
+                </span>
+              )}
+            </button>
+          );
+        })}
+
+        {/* Remote indicator */}
+        {hasRemote && remoteInfo?.owner && (
+          <div className="ml-auto flex items-center gap-1 text-[10px] text-muted font-mono">
+            <Link size={10} />
+            {remoteInfo.owner}/{remoteInfo.repo}
+          </div>
+        )}
+      </div>
+
+      {/* Tab content */}
+      <div className="flex-1 overflow-hidden">
+        {activeTab === 'changes' && (
+          <ChangesTab sessionId={sessionId} />
+        )}
+
+        {activeTab === 'issues' && (
+          hasRemote ? (
+            <Suspense fallback={<TabLoading />}>
+              <GitHubIssuesPanel sessionId={sessionId} />
+            </Suspense>
+          ) : (
+            <NoGitHubRemote sessionId={sessionId} onPushed={checkRemote} />
+          )
+        )}
+
+        {activeTab === 'prs' && (
+          hasRemote ? (
+            <Suspense fallback={<TabLoading />}>
+              <GitHubPRsPanel sessionId={sessionId} />
+            </Suspense>
+          ) : (
+            <NoGitHubRemote sessionId={sessionId} onPushed={checkRemote} />
+          )
+        )}
+
+        {activeTab === 'actions' && (
+          hasRemote ? (
+            <Suspense fallback={<TabLoading />}>
+              <div className="h-full overflow-y-auto p-4">
+                <CICDPanel sessionId={sessionId} />
+              </div>
+            </Suspense>
+          ) : (
+            <NoGitHubRemote sessionId={sessionId} onPushed={checkRemote} />
+          )
         )}
       </div>
     </div>
