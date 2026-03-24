@@ -3,6 +3,7 @@ import {
   DollarSign, Clock, Zap,
   Compass, Hammer, TestTube2, Search, CheckCircle2, Loader2,
 } from 'lucide-react';
+import { LoadingMessages } from './LoadingMessages';
 
 // B21: Smooth CSS transitions between build phases
 // B22: Phase icons that animate (spin on active, checkmark on complete)
@@ -119,6 +120,11 @@ export function BuildProgressBar({ phase, iteration, maxIterations, cost, startT
             );
           })}
         </div>
+
+        {/* Loading messages during active phases */}
+        {isRunning && phase !== 'complete' && phase !== 'idle' && (
+          <LoadingMessages context="build" />
+        )}
 
         <div className="flex-1" />
 

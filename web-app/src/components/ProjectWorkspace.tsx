@@ -15,6 +15,7 @@ import {
   RefreshCw, PanelLeftClose, PanelLeftOpen, PanelBottomClose, PanelBottomOpen, Maximize2, Minimize2,
   LayoutDashboard,
   GitBranch as CICDIcon,
+  Search as SearchIcon, BarChart3, History, DollarSign,
 } from 'lucide-react';
 import { api } from '../api/client';
 import { useWebSocket } from '../hooks/useWebSocket';
@@ -45,6 +46,12 @@ import {
   FullscreenButton, PreviewConsole, RefreshButton, PreviewSkeleton,
 } from './PreviewToolbar';
 import type { ConsoleMessage } from './PreviewToolbar';
+import { SmartSuggestions } from './SmartSuggestions';
+import { ConfidenceIndicator } from './ConfidenceIndicator';
+import { BuildInsights } from './BuildInsights';
+import { BuildReplay } from './BuildReplay';
+import { NLSearch } from './NLSearch';
+import { CostEstimator } from './CostEstimator';
 
 // Wrapper to avoid inline import complexity
 function CICDPanelLazy({ sessionId }: { sessionId: string }) {
@@ -227,7 +234,7 @@ function flattenFiles(nodes: FileNode[], prefix = ''): { path: string; name: str
   return result;
 }
 
-type WorkspaceTab = 'code' | 'preview' | 'config' | 'secrets' | 'prd' | 'dashboard' | 'deploy' | 'git' | 'cicd';
+type WorkspaceTab = 'code' | 'preview' | 'config' | 'secrets' | 'prd' | 'dashboard' | 'deploy' | 'git' | 'cicd' | 'insights';
 
 function SecretsPanel() {
   const [secrets, setSecrets] = useState<Record<string, string>>({});
@@ -473,6 +480,12 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [buildEvents, setBuildEvents] = useState<BuildEvent[]>([]);
   const [changePreviewData, setChangePreviewData] = useState<ChangePreviewData | null>(null);
+
+  // Orphan component integration state
+  const [showBuildReplay, setShowBuildReplay] = useState(false);
+  const [showCostEstimator, setShowCostEstimator] = useState(false);
+  const [showNLSearch, setShowNLSearch] = useState(false);
+  const [chatSuggestionInput, setChatSuggestionInput] = useState<string | null>(null);
 
   // B16: Token sparkline history
   const { history: tokenHistory, recordTokens } = useTokenHistory();
@@ -1187,6 +1200,8 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
     { id: 'zen', label: 'Toggle Zen Mode', category: 'setting' as const, icon: Maximize2, action: () => toggleZenMode() },
     { id: 'sidebar', label: 'Toggle File Tree', category: 'setting' as const, icon: PanelLeftClose, action: () => setSidebarVisible(v => !v) },
     { id: 'preview-changes', label: 'Preview Pending Changes', category: 'command' as const, icon: GitBranch, action: () => handlePreviewChanges() },
+    { id: 'insights', label: 'Build Insights', category: 'command' as const, icon: BarChart3, action: () => setActiveWorkspaceTab('insights') },
+    { id: 'nl-search', label: 'Natural Language Search', category: 'command' as const, icon: SearchIcon, action: () => setShowNLSearch(true) },
   ], [setActiveWorkspaceTab, toggleZenMode, handlePreviewChanges]);
 
   // Derive build phase from session status for the progress bar
@@ -1255,30 +1270,46 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
           </button>
         </div>
 
-        {/* Start Build button when not building */}
+        {/* Start Build button when not building -- shows CostEstimator first */}
         {!isBuilding && (
           <Button
             variant="primary"
             size="sm"
             icon={Play}
-            onClick={async () => {
-              try {
-                const prd = sessionData.prd || '';
-                if (!prd.trim()) {
-                  window.alert('No PRD found for this project. Go to Home to start a new build.');
-                  return;
-                }
-                await api.startSession({ prd, provider: selectedProvider, projectDir: sessionData.path });
-                setIsBuilding(true);
-              } catch (e) {
-                window.alert(`Failed to start: ${e instanceof Error ? e.message : 'Unknown error'}`);
+            onClick={() => {
+              const prd = sessionData.prd || '';
+              if (!prd.trim()) {
+                window.alert('No PRD found for this project. Go to Home to start a new build.');
+                return;
               }
+              setShowCostEstimator(true);
             }}
             title="Start build for this project"
           >
             Build
           </Button>
         )}
+
+        {/* Build Replay button -- shown when build is complete */}
+        {!isBuilding && buildPhase === 'complete' && (
+          <Button
+            variant="ghost"
+            size="sm"
+            icon={History}
+            onClick={() => setShowBuildReplay(true)}
+            title="Replay the build timeline"
+          >
+            Replay Build
+          </Button>
+        )}
+
+        {/* NL Search button */}
+        <IconButton
+          icon={SearchIcon}
+          label="Natural language search"
+          size="sm"
+          onClick={() => setShowNLSearch(true)}
+        />
 
         {/* Stop/Pause/Resume controls */}
         {isBuilding && (
@@ -1314,15 +1345,31 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
         <ShortcutsHelpButton onClick={() => setShowHelp(true)} />
       </div>
 
-      {/* Build progress bar */}
-      <BuildProgressBar
-        phase={buildPhase}
-        iteration={buildStatus.iteration}
-        maxIterations={buildStatus.maxIterations}
-        cost={buildStatus.cost}
-        startTime={buildStatus.startTime}
-        isRunning={isBuilding}
-      />
+      {/* Build progress bar with confidence indicator */}
+      <div className="flex items-center gap-2">
+        <div className="flex-1">
+          <BuildProgressBar
+            phase={buildPhase}
+            iteration={buildStatus.iteration}
+            maxIterations={buildStatus.maxIterations}
+            cost={buildStatus.cost}
+            startTime={buildStatus.startTime}
+            isRunning={isBuilding}
+          />
+        </div>
+        {isBuilding && (
+          <div className="flex-shrink-0 pr-2">
+            <ConfidenceIndicator
+              gatePassRate={0.8}
+              testCoverage={buildStatus.iteration > 2 ? 60 : 20}
+              iteration={buildStatus.iteration}
+              maxIterations={buildStatus.maxIterations}
+              phase={buildPhase}
+              compact
+            />
+          </div>
+        )}
+      </div>
 
       {/* Checkpoint timeline */}
       <CheckpointTimeline
@@ -1402,6 +1449,7 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
                       { id: 'dashboard' as const, label: 'Dashboard', icon: LayoutDashboard },
                       { id: 'git' as const, label: 'Git', icon: GitBranch },
                       { id: 'cicd' as const, label: 'CI/CD', icon: CICDIcon },
+                      { id: 'insights' as const, label: 'Insights', icon: BarChart3 },
                     ]).map(tab => (
                       <button
                         key={tab.id}
@@ -2001,6 +2049,24 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
                         <CICDPanelLazy sessionId={session.id} />
                       </div>
                     )}
+                    {activeWorkspaceTab === 'insights' && (
+                      <div className="h-full overflow-y-auto p-4">
+                        <BuildInsights
+                          filesCreated={sessionData.files.filter(f => f.type === 'file').length}
+                          filesModified={0}
+                          linesGenerated={0}
+                          testsGenerated={0}
+                          testPassRate={0}
+                          totalTokens={0}
+                          phaseBreakdown={[]}
+                          totalTimeSecs={buildStatus.startTime ? Math.floor((Date.now() - buildStatus.startTime) / 1000) : 0}
+                          qualityScore={0}
+                          totalCost={buildStatus.cost}
+                          iterations={buildStatus.iteration}
+                          provider={selectedProvider}
+                        />
+                      </div>
+                    )}
                   </div>
                 </div>
               </Panel>
@@ -2011,6 +2077,20 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
 
           {bottomPanelVisible && (
             <Panel defaultSize={30} minSize={15} collapsible>
+              {/* Smart suggestions above chat input area */}
+              <SmartSuggestions
+                projectState={
+                  isBuilding ? 'building'
+                    : buildPhase === 'complete' ? 'completed'
+                    : sessionData.files.length === 0 ? 'empty'
+                    : 'idle'
+                }
+                hasSession={!!sessionData.id}
+                files={sessionData.files.map(f => ({ path: f.path, type: f.type }))}
+                phase={buildPhase}
+                onSelect={(prompt) => setChatSuggestionInput(prompt)}
+                className="border-b border-border"
+              />
               <ErrorBoundary name="ActivityPanel">
                 <ActivityPanel
                   logs={null}
@@ -2135,6 +2215,76 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
         phase={buildPhase}
         buildTime={buildStatus.startTime ? Math.floor((Date.now() - buildStatus.startTime) / 1000) : undefined}
       />
+
+      {/* Build Replay modal overlay */}
+      {showBuildReplay && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setShowBuildReplay(false)}>
+          <div className="bg-card rounded-card shadow-2xl border border-border w-full max-w-3xl max-h-[80vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-4 py-3 border-b border-border">
+              <h3 className="text-sm font-bold text-ink">Build Replay</h3>
+              <button onClick={() => setShowBuildReplay(false)} className="text-muted hover:text-ink p-1 rounded hover:bg-hover transition-colors">
+                <X size={16} />
+              </button>
+            </div>
+            <div className="p-4">
+              <BuildReplay
+                sessionId={sessionData.id}
+                files={sessionData.files.map(f => ({ path: f.path, type: f.type as 'file' | 'directory' }))}
+                phases={['planning', 'building', 'testing', 'reviewing', 'complete']}
+                checkpoints={[]}
+                qualityGates={[]}
+                totalIterations={buildStatus.iteration || buildStatus.maxIterations}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* NL Search modal overlay */}
+      {showNLSearch && (
+        <div className="fixed inset-0 z-50 flex items-start justify-center pt-[15vh]" onClick={() => setShowNLSearch(false)}>
+          <div className="bg-card rounded-card shadow-2xl border border-border w-full max-w-lg" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-4 py-3 border-b border-border">
+              <h3 className="text-sm font-bold text-ink">Search Files</h3>
+              <button onClick={() => setShowNLSearch(false)} className="text-muted hover:text-ink p-1 rounded hover:bg-hover transition-colors">
+                <X size={16} />
+              </button>
+            </div>
+            <NLSearch
+              sessionId={sessionData.id}
+              onOpenFile={(path, line) => {
+                handleFileSelect(path, path.split('/').pop() || path);
+                setShowNLSearch(false);
+              }}
+              className="p-4"
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Cost Estimator dialog -- shown before build starts */}
+      {showCostEstimator && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setShowCostEstimator(false)}>
+          <div className="bg-card rounded-card shadow-2xl border border-border w-full max-w-md" onClick={e => e.stopPropagation()}>
+            <CostEstimator
+              complexity={buildMode === 'quick' ? 'simple' : buildMode === 'max' ? 'complex' : 'standard'}
+              provider={selectedProvider}
+              estimatedIterations={buildStatus.maxIterations}
+              onConfirm={async () => {
+                setShowCostEstimator(false);
+                try {
+                  const prd = sessionData.prd || '';
+                  await api.startSession({ prd, provider: selectedProvider, projectDir: sessionData.path });
+                  setIsBuilding(true);
+                } catch (e) {
+                  window.alert(`Failed to start: ${e instanceof Error ? e.message : 'Unknown error'}`);
+                }
+              }}
+              onCancel={() => setShowCostEstimator(false)}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

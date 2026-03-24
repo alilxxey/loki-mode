@@ -1,6 +1,7 @@
 import { useNavigate } from 'react-router-dom';
 import { Roadmap } from '../components/Roadmap';
 import { ChangelogWidget } from '../components/ChangelogWidget';
+import { Tag } from '../components/Tag';
 
 interface ProjectCard {
   title: string;
@@ -157,7 +158,7 @@ export default function ShowcasePage() {
                 {/* Tech stack badges */}
                 <div className="flex flex-wrap gap-1.5 mb-3">
                   {project.techStack.map((tech) => (
-                    <TechBadge key={tech} name={tech} />
+                    <Tag key={tech} label={tech} color="default" />
                   ))}
                 </div>
 

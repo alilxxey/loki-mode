@@ -5,7 +5,7 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [6.73.0] - 2026-03-24 - 120 Commercial UI Enhancements
+## [6.73.1] - 2026-03-24 - 120 Commercial UI Enhancements
 
 ### Added
 - **Landing Page**: Hero constellation animation, typing cursor, social proof with animated counters, showcase carousel, how-it-works 3-step guide, gradient text, floating action hints, warm greeting, footer

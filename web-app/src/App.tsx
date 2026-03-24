@@ -23,6 +23,9 @@ const LoginPage = lazy(() => import('./pages/LoginPage'));
 const TeamsPage = lazy(() => import('./pages/TeamsPage'));
 const AdminPage = lazy(() => import('./pages/AdminPage'));
 const SystemSettingsPage = lazy(() => import('./pages/SystemSettingsPage'));
+const MetricsPage = lazy(() => import('./pages/MetricsPage'));
+const ShowcasePage = lazy(() => import('./pages/ShowcasePage'));
+const ComparePage = lazy(() => import('./pages/ComparePage'));
 const NotFoundPage = lazy(() => import('./pages/NotFoundPage'));
 
 function LoadingFallback() {
@@ -58,6 +61,9 @@ export default function App() {
           <Route path="/templates" element={<Suspense fallback={<LoadingFallback />}><TemplatesPage /></Suspense>} />
           <Route path="/settings" element={<Suspense fallback={<LoadingFallback />}><SettingsPage /></Suspense>} />
           <Route path="/teams" element={<Suspense fallback={<LoadingFallback />}><TeamsPage /></Suspense>} />
+          <Route path="/metrics" element={<Suspense fallback={<LoadingFallback />}><MetricsPage /></Suspense>} />
+          <Route path="/showcase" element={<Suspense fallback={<LoadingFallback />}><ShowcasePage /></Suspense>} />
+          <Route path="/compare" element={<Suspense fallback={<LoadingFallback />}><ComparePage /></Suspense>} />
           <Route path="/admin" element={<Suspense fallback={<LoadingFallback />}><AdminPage /></Suspense>} />
           <Route path="/admin/settings" element={<Suspense fallback={<LoadingFallback />}><SystemSettingsPage /></Suspense>} />
           <Route path="*" element={<Suspense fallback={<LoadingFallback />}><NotFoundPage /></Suspense>} />

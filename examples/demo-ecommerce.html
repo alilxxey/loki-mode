@@ -7,7 +7,6 @@
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 :root{--bg:#f9fafb;--surface:#fff;--text:#111827;--muted:#6b7280;--primary:#7c3aed;--primary-hover:#6d28d9;--border:#e5e7eb;--star:#f59e0b;--shadow:0 1px 3px rgba(0,0,0,.08)}
-@media(prefers-color-scheme:dark){:root{--bg:#0f0e17;--surface:#1a1928;--text:#e5e5eb;--muted:#9ca3af;--border:#2d2b3d;--shadow:0 1px 3px rgba(0,0,0,.3)}}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);line-height:1.6}
 body.dark{--bg:#0f0e17;--surface:#1a1928;--text:#e5e5eb;--muted:#9ca3af;--border:#2d2b3d;--shadow:0 1px 3px rgba(0,0,0,.3)}
 header{display:flex;align-items:center;justify-content:space-between;padding:.75rem 2rem;background:var(--surface);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:50}
@@ -71,11 +70,11 @@ footer{text-align:center;padding:2rem 1rem;color:var(--muted);font-size:.75rem;b
     <h3>Filters</h3>
     <div class="filter-group">
       <label>Category</label>
-      <div class="filter-option"><input type="checkbox" checked data-cat="all" onchange="filterProducts()"> All</div>
-      <div class="filter-option"><input type="checkbox" data-cat="electronics" onchange="filterProducts()"> Electronics</div>
-      <div class="filter-option"><input type="checkbox" data-cat="accessories" onchange="filterProducts()"> Accessories</div>
-      <div class="filter-option"><input type="checkbox" data-cat="software" onchange="filterProducts()"> Software</div>
-      <div class="filter-option"><input type="checkbox" data-cat="audio" onchange="filterProducts()"> Audio</div>
+      <div class="filter-option"><input type="checkbox" checked data-cat="all" onchange="filterProducts(event)"> All</div>
+      <div class="filter-option"><input type="checkbox" data-cat="electronics" onchange="filterProducts(event)"> Electronics</div>
+      <div class="filter-option"><input type="checkbox" data-cat="accessories" onchange="filterProducts(event)"> Accessories</div>
+      <div class="filter-option"><input type="checkbox" data-cat="software" onchange="filterProducts(event)"> Software</div>
+      <div class="filter-option"><input type="checkbox" data-cat="audio" onchange="filterProducts(event)"> Audio</div>
     </div>
     <div class="filter-group">
       <label>Price Range</label>
@@ -158,13 +157,22 @@ function toggleCart(id,btn){
   else{cart.add(id);btn.textContent='Added';btn.classList.add('added')}
   document.getElementById('cartCount').textContent=cart.size;
 }
-function filterProducts(){
+function filterProducts(e){
   const allCb=document.querySelector('[data-cat="all"]');
   const catCbs=document.querySelectorAll('[data-cat]:not([data-cat="all"])');
+  if(e&&e.target){
+    const clicked=e.target;
+    if(clicked.dataset.cat==='all'&&clicked.checked){
+      catCbs.forEach(c=>c.checked=false);
+    }else if(clicked.dataset.cat!=='all'&&clicked.checked){
+      allCb.checked=false;
+    }
+  }
   const checkedCats=[...catCbs].filter(c=>c.checked).map(c=>c.dataset.cat);
+  if(checkedCats.length===0){allCb.checked=true}
   const min=parseFloat(document.getElementById('priceMin').value)||0;
   const max=parseFloat(document.getElementById('priceMax').value)||Infinity;
-  if(allCb.checked||checkedCats.length===0){
+  if(allCb.checked){
     filteredProducts=products.filter(p=>p.price>=min&&p.price<=max);
   }else{
     filteredProducts=products.filter(p=>checkedCats.includes(p.category)&&p.price>=min&&p.price<=max);
@@ -179,6 +187,7 @@ function sortProducts(){
   else filteredProducts.sort((a,b)=>a.id-b.id);
   renderProducts();
 }
+if(window.matchMedia&&window.matchMedia('(prefers-color-scheme:dark)').matches){document.body.classList.add('dark')}
 function toggleTheme(){document.body.classList.toggle('dark')}
 function toggleSource(){
   const s=document.getElementById('sourceSection');s.classList.toggle('visible');

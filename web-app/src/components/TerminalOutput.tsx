@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Radio, Lock, ArrowDown } from 'lucide-react';
+import { VirtualList } from './VirtualList';
 import type { LogEntry } from '../types/api';
 
 interface TerminalOutputProps {
@@ -143,27 +144,36 @@ export function TerminalOutput({ logs, loading, subscribe }: TerminalOutputProps
           </div>
         )}
 
-        {displayLogs.map((entry, i) => (
-          <div key={i} className="flex gap-2 hover:bg-hover rounded px-1 -mx-1">
-            <span className="text-muted flex-shrink-0 select-none w-16 text-right">
-              {formatTimestamp(entry.timestamp)}
-            </span>
-            <span
-              className={`flex-shrink-0 w-12 text-right uppercase text-xs font-semibold ${
-                LEVEL_COLORS[entry.level] || 'text-muted'
-              }`}
-            >
-              {entry.level}
-            </span>
-            <span className={`flex-1 break-all ${
-              entry.level === 'error' || entry.level === 'critical'
-                ? 'text-danger'
-                : 'text-ink'
-            }`}>
-              {entry.message}
-            </span>
+        {displayLogs.length > 0 && (
+          <div style={{ height: displayLogs.length * 24, position: 'relative' }}>
+            <VirtualList
+              items={displayLogs}
+              itemHeight={24}
+              className="!overflow-visible"
+              renderItem={(entry: LogEntry) => (
+                <div className="flex gap-2 hover:bg-hover rounded px-1 -mx-1 h-full items-center">
+                  <span className="text-muted flex-shrink-0 select-none w-16 text-right">
+                    {formatTimestamp(entry.timestamp)}
+                  </span>
+                  <span
+                    className={`flex-shrink-0 w-12 text-right uppercase text-xs font-semibold ${
+                      LEVEL_COLORS[entry.level] || 'text-muted'
+                    }`}
+                  >
+                    {entry.level}
+                  </span>
+                  <span className={`flex-1 break-all ${
+                    entry.level === 'error' || entry.level === 'critical'
+                      ? 'text-danger'
+                      : 'text-ink'
+                  }`}>
+                    {entry.message}
+                  </span>
+                </div>
+              )}
+            />
           </div>
-        ))}
+        )}
 
         {/* Terminal cursor */}
         {displayLogs.length > 0 && (

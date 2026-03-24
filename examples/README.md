@@ -36,7 +36,7 @@ cd examples && python3 -m http.server 8080
 Every demo includes:
 
 - **Self-contained** -- Single HTML file, no external dependencies
-- **Dark mode** -- Toggle button + `prefers-color-scheme` media query support
+- **Dark mode** -- Toggle button with OS preference auto-detection
 - **Responsive** -- Works on mobile, tablet, and desktop
 - **View Source** -- Built-in button to inspect the source code
 - **Professional UI** -- Clean typography, consistent spacing, polished design

@@ -17,6 +17,11 @@ import {
   Sun,
   Users,
   HelpCircle,
+  BarChart3,
+  Sparkles,
+  GitCompare,
+  ShieldCheck,
+  Wrench,
 } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
 import { useTheme } from '../../hooks/useTheme';
@@ -42,11 +47,16 @@ const mainNav: NavItem[] = [
   { to: '/', label: 'Home', icon: Home },
   { to: '/projects', label: 'Projects', icon: FolderKanban },
   { to: '/templates', label: 'Templates', icon: LayoutTemplate, discoveryFeature: 'templates' },
+  { to: '/showcase', label: 'Showcase', icon: Sparkles },
+  { to: '/metrics', label: 'Metrics', icon: BarChart3 },
+  { to: '/compare', label: 'Compare', icon: GitCompare },
   { to: '/teams', label: 'Teams', icon: Users },
 ];
 
 const secondaryNav: NavItem[] = [
   { to: '/settings', label: 'Settings', icon: Settings2 },
+  { to: '/admin', label: 'Admin', icon: ShieldCheck },
+  { to: '/admin/settings', label: 'System', icon: Wrench },
 ];
 
 function useIsMobile() {

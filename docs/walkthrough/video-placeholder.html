@@ -29,7 +29,7 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #0F0F1A;
+    --bg: #0F0F11;
     --bg-card: #1A1A2E;
     --text: #E2E8F0;
     --text-muted: #94A3B8;
@@ -222,6 +222,11 @@ body {
 
 .frame.active .type-char {
   animation: typeIn 0.03s ease forwards;
+}
+
+@keyframes typeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 /* Frame 3: Code generation */

@@ -14,6 +14,7 @@ import {
   FileText,
 } from 'lucide-react';
 import { Button } from './ui/Button';
+import { Avatar } from './Avatar';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -358,7 +359,7 @@ export function AuditTrail({
                   </td>
                   <td className="px-3 py-2.5">
                     <div className="flex items-center gap-1.5">
-                      <User size={12} className="text-[#939084] flex-shrink-0" />
+                      <Avatar name={event.user.split('@')[0]} size="sm" />
                       <span className="text-[#201515] dark:text-[#E8E6E3] truncate max-w-[150px]">
                         {event.user}
                       </span>

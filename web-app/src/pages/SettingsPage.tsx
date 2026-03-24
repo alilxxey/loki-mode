@@ -20,6 +20,7 @@ import { SettingToggle } from '../components/settings/SettingToggle';
 import { SettingSelect } from '../components/settings/SettingSelect';
 import { SettingSlider } from '../components/settings/SettingSlider';
 import { SettingInput } from '../components/settings/SettingInput';
+import { Divider as DesignDivider } from '../components/Divider';
 
 // ---------------------------------------------------------------------------
 // localStorage helpers
@@ -166,7 +167,7 @@ function SectionHeading({ children }: { children: React.ReactNode }) {
 }
 
 function Divider() {
-  return <div className="border-t border-[#ECEAE3] my-1" />;
+  return <DesignDivider className="my-1" />;
 }
 
 // ---------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import { usePolling } from '../hooks/usePolling';
@@ -21,6 +21,10 @@ import { HowItWorks } from '../components/HowItWorks';
 import { TemplateShowcase } from '../components/TemplateShowcase';
 import { BenefitCards } from '../components/BenefitCards';
 import { Footer } from '../components/Footer';
+import { OpenSourceStats } from '../components/OpenSourceStats';
+import { NewsletterSignup } from '../components/NewsletterSignup';
+import { Celebration } from '../components/Celebration';
+import { WarmEmptyState } from '../components/WarmEmptyState';
 import type { StatusResponse, Agent, LogEntry } from '../types/api';
 
 const CYCLING_PROMPTS = [
@@ -30,6 +34,14 @@ const CYCLING_PROMPTS = [
   "Build a chat app with real-time messaging...",
   "Create an e-commerce store with Stripe...",
 ];
+
+function getTimeGreeting(): string {
+  const hour = new Date().getHours();
+  if (hour >= 5 && hour < 12) return 'Good morning! What shall we build today?';
+  if (hour >= 12 && hour < 17) return 'Good afternoon! Ready to create something amazing?';
+  if (hour >= 17 && hour < 22) return 'Good evening! Let\'s build something cool.';
+  return 'Burning the midnight oil? Let\'s build something cool.';
+}
 
 export default function HomePage() {
   const navigate = useNavigate();
@@ -47,6 +59,9 @@ export default function HomePage() {
     () => sessionStorage.getItem('pl_provider') || 'claude'
   );
   const [templatePrd, setTemplatePrd] = useState<string | undefined>(undefined);
+  const [showCelebration, setShowCelebration] = useState(false);
+
+  const greeting = useMemo(() => getTimeGreeting(), []);
 
   // Quick-start input state
   const [quickPrompt, setQuickPrompt] = useState('');
@@ -130,13 +145,26 @@ export default function HomePage() {
   useEffect(() => { sessionStorage.setItem('pl_provider', selectedProvider); }, [selectedProvider]);
   useEffect(() => { sessionStorage.setItem('pl_tab', activeTab); }, [activeTab]);
 
+  // Detect build completion to trigger celebration
+  const prevPhaseRef = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    const currentPhase = (wsStatus ?? httpStatus)?.phase;
+    if (currentPhase === 'complete' && prevPhaseRef.current && prevPhaseRef.current !== 'complete') {
+      setShowCelebration(true);
+    }
+    prevPhaseRef.current = currentPhase;
+  }, [wsStatus, httpStatus]);
+
   const fetchMemory = useCallback(() => api.getMemorySummary(), []);
   const fetchChecklist = useCallback(() => api.getChecklist(), []);
   const fetchFiles = useCallback(() => api.getFiles(), []);
 
+  const fetchSessions = useCallback(() => api.getSessionsHistory(), []);
+
   const { data: memory, loading: memoryLoading } = usePolling(fetchMemory, 30000, isRunning);
   const { data: checklist, loading: checklistLoading } = usePolling(fetchChecklist, 30000, isRunning);
   const { data: files, loading: filesLoading } = usePolling(fetchFiles, 30000, isRunning);
+  const { data: sessions } = usePolling(fetchSessions, 60000, true);
 
   const status = wsStatus ?? httpStatus;
   const agents = wsAgents;
@@ -232,6 +260,7 @@ export default function HomePage() {
           <div className="flex flex-col items-center">
             {/* Hero section */}
             <div ref={heroRef} className="text-center mt-12 mb-10">
+              <p className="text-sm font-medium text-[#553DE9] mb-2">{greeting}</p>
               <h2 className="font-heading text-h1 text-[#36342E]">
                 Describe it. Build it. Ship it.
               </h2>
@@ -352,7 +381,19 @@ export default function HomePage() {
             )}
 
             <div className="w-full max-w-3xl mt-6">
-              <SessionHistory onLoadSession={handleLoadSession} />
+              {sessions && sessions.length === 0 ? (
+                <WarmEmptyState
+                  type="no-projects"
+                  action={() => {
+                    const example = CYCLING_PROMPTS[Math.floor(Math.random() * CYCLING_PROMPTS.length)];
+                    setQuickPrompt(example);
+                    quickInputRef.current?.focus();
+                  }}
+                  actionLabel="Try an example"
+                />
+              ) : (
+                <SessionHistory onLoadSession={handleLoadSession} />
+              )}
             </div>
 
             <div className="mt-6 text-xs text-[#6B6960] flex items-center gap-2">
@@ -402,6 +443,12 @@ export default function HomePage() {
                 </div>
               </div>
             </section>
+
+            {/* 6. Newsletter Signup */}
+            <NewsletterSignup />
+
+            {/* 7. Open Source Stats */}
+            <OpenSourceStats />
           </div>
         ) : (
           <>
@@ -473,6 +520,11 @@ export default function HomePage() {
 
       {/* Footer (only shown when not building) */}
       {!isRunning && <Footer />}
+
+      {/* Celebration overlay when build completes */}
+      {showCelebration && (
+        <Celebration type="build-complete" onDismiss={() => setShowCelebration(false)} />
+      )}
     </div>
   );
 }

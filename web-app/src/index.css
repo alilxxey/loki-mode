@@ -1,3 +1,5 @@
+@import './styles/animations.css';
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -84,6 +86,7 @@
     --color-background: #0F0F11;
     --color-card: #1A1A1E;
     --color-border: #2A2A30;
+    --color-border-light: #3A3A42;
     --color-hover: #222228;
     --color-ink: #E8E6E3;
     --color-muted: #8A8880;
@@ -138,7 +141,8 @@
     color: #6A6860;
   }
   .dark input:focus, .dark textarea:focus, .dark select:focus {
-    border-color: #553DE9;
+    border-color: #7B6BEF;
+    box-shadow: 0 0 0 3px rgba(123, 107, 239, 0.15);
   }
 
   /* Skeleton loading */
@@ -170,7 +174,11 @@
   .dark .pattern-nodes { opacity: 0.02; }
 
   @media (prefers-reduced-motion: reduce) {
-    *, *::before, *::after { transition-duration: 0s !important; }
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
     .phase-active { animation: none; }
   }
 
@@ -323,5 +331,40 @@
   }
   .img-blur-placeholder.loaded {
     filter: blur(0);
+  }
+
+  /* --- Dark mode glass card --- */
+  .dark .glass-card {
+    background: rgba(26, 26, 30, 0.7);
+    border-color: rgba(255, 255, 255, 0.06);
+  }
+
+  /* --- Micro-interaction utilities --- */
+  .card-lift { transition: transform 0.2s, box-shadow 0.2s; }
+  .card-lift:hover { transform: translateY(-2px); box-shadow: 0 8px 25px rgba(0,0,0,0.1); }
+  .icon-hover { transition: color 0.15s; }
+  .icon-hover:hover { color: #553DE9; }
+  .glass-card {
+    background: rgba(255, 255, 255, 0.05);
+    backdrop-filter: blur(12px);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+  }
+  .gradient-border {
+    border-image: linear-gradient(135deg, #553DE9, #D63384) 1;
+  }
+  .gradient-text {
+    background: linear-gradient(135deg, #553DE9, #D63384, #2F71E3);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  /* --- Mobile responsive utilities --- */
+  @media (max-width: 767px) {
+    .desktop-only { display: none !important; }
+    .mobile-bottom-nav-spacer { height: 64px; }
+  }
+  @media (min-width: 768px) {
+    .mobile-only { display: none !important; }
   }
 }

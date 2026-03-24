@@ -15,6 +15,8 @@ import { Sparkline } from '../components/charts/Sparkline';
 import { HeatMap } from '../components/charts/HeatMap';
 import { RadarChart } from '../components/charts/RadarChart';
 import { Timeline } from '../components/charts/Timeline';
+import { CodeTimeline } from '../components/CodeTimeline';
+import { ProviderRace } from '../components/ProviderRace';
 
 // --------------------------------------------------------------------------
 // Sample data -- in production these would come from API
@@ -260,6 +262,45 @@ export function MetricsPage() {
         <ChartCard title="Current Pipeline">
           <Timeline phases={timelinePhases} width={Math.min(chartWidth, 360)} height={72} />
         </ChartCard>
+      </div>
+      {/* Code Evolution section */}
+      <div className="mb-6">
+        <h2 className="text-base font-semibold text-[#36342E] dark:text-[#E8E6E3] mb-3">Code Evolution</h2>
+        <CodeTimeline
+          filePath=""
+          iterations={[
+            {
+              iteration: 1,
+              description: 'Initial scaffolding',
+              files: [
+                { path: 'src/index.ts', additions: 120, deletions: 0, action: 'add' },
+                { path: 'package.json', additions: 35, deletions: 0, action: 'add' },
+              ],
+            },
+            {
+              iteration: 2,
+              description: 'Add API routes',
+              files: [
+                { path: 'src/routes.ts', additions: 85, deletions: 0, action: 'add' },
+                { path: 'src/index.ts', additions: 12, deletions: 3, action: 'modify' },
+              ],
+            },
+            {
+              iteration: 3,
+              description: 'Fix validation and add tests',
+              files: [
+                { path: 'src/routes.ts', additions: 15, deletions: 8, action: 'modify' },
+                { path: 'tests/routes.test.ts', additions: 64, deletions: 0, action: 'add' },
+              ],
+            },
+          ]}
+        />
+      </div>
+
+      {/* Provider Comparison section */}
+      <div className="mb-6">
+        <h2 className="text-base font-semibold text-[#36342E] dark:text-[#E8E6E3] mb-3">Provider Comparison</h2>
+        <ProviderRace active={false} />
       </div>
     </div>
   );

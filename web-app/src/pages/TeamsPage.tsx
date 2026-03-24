@@ -8,6 +8,8 @@ import {
 import { TeamPanel, type TeamInfo, type TeamRole } from '../components/TeamPanel';
 import { RBACPanel } from '../components/RBACPanel';
 import { Button } from '../components/ui/Button';
+import { Avatar } from '../components/Avatar';
+import { ActivityFeed } from '../components/ActivityFeed';
 import { useNotification } from '../contexts/NotificationContext';
 import { api } from '../api/client';
 
@@ -213,7 +215,7 @@ export default function TeamsPage() {
                       : 'text-[#36342E] dark:text-[#C5C0B8] hover:bg-[#F8F4F0] dark:hover:bg-[#222228]'
                   }`}
                 >
-                  <Users size={14} />
+                  <Avatar name={team.name} size="sm" />
                   <span className="truncate flex-1">{team.name}</span>
                   <span className="text-xs text-[#939084]">{team.members.length}</span>
                 </button>
@@ -229,9 +231,7 @@ export default function TeamsPage() {
               {/* Team dashboard header */}
               <div className="card p-4">
                 <div className="flex items-center gap-4">
-                  <div className="w-12 h-12 rounded-lg bg-[#553DE9]/10 flex items-center justify-center">
-                    <Users size={24} className="text-[#553DE9]" />
-                  </div>
+                  <Avatar name={selectedTeam.name} size="lg" />
                   <div className="flex-1">
                     <h2 className="text-lg font-semibold text-[#201515] dark:text-[#E8E6E3]">
                       {selectedTeam.name}
@@ -282,32 +282,37 @@ export default function TeamsPage() {
               )}
 
               {activeTab === 'activity' && (
-                <div className="card p-6">
-                  <div className="flex items-center gap-2 mb-4">
-                    <Activity size={18} className="text-[#553DE9]" />
-                    <h3 className="text-sm font-semibold text-[#201515] dark:text-[#E8E6E3] uppercase tracking-wider">
-                      Recent Activity
-                    </h3>
-                  </div>
-                  {activities.length === 0 ? (
-                    <div className="text-center py-8 text-[#939084] text-sm">No recent activity</div>
-                  ) : (
-                    <div className="space-y-3">
-                      {activities.map(a => (
-                        <div
-                          key={a.id}
-                          className="flex items-center gap-3 p-3 rounded-lg border border-[#ECEAE3] dark:border-[#2A2A30] hover:bg-[#F8F4F0] dark:hover:bg-[#222228] transition-colors"
-                        >
-                          <div className="w-2 h-2 rounded-full bg-[#553DE9] flex-shrink-0" />
-                          <div className="flex-1 min-w-0">
-                            <p className="text-sm text-[#201515] dark:text-[#E8E6E3]">{a.action}</p>
-                            <p className="text-xs text-[#939084]">{a.user}</p>
-                          </div>
-                          <span className="text-xs text-[#939084] flex-shrink-0">{a.timestamp}</span>
-                        </div>
-                      ))}
+                <div className="space-y-4">
+                  {/* Inline recent activity list */}
+                  <div className="card p-6">
+                    <div className="flex items-center gap-2 mb-4">
+                      <Activity size={18} className="text-[#553DE9]" />
+                      <h3 className="text-sm font-semibold text-[#201515] dark:text-[#E8E6E3] uppercase tracking-wider">
+                        Recent Activity
+                      </h3>
                     </div>
-                  )}
+                    {activities.length === 0 ? (
+                      <div className="text-center py-8 text-[#939084] text-sm">No recent activity</div>
+                    ) : (
+                      <div className="space-y-3">
+                        {activities.map(a => (
+                          <div
+                            key={a.id}
+                            className="flex items-center gap-3 p-3 rounded-lg border border-[#ECEAE3] dark:border-[#2A2A30] hover:bg-[#F8F4F0] dark:hover:bg-[#222228] transition-colors"
+                          >
+                            <Avatar name={a.user} size="sm" />
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm text-[#201515] dark:text-[#E8E6E3]">{a.action}</p>
+                              <p className="text-xs text-[#939084]">{a.user}</p>
+                            </div>
+                            <span className="text-xs text-[#939084] flex-shrink-0">{a.timestamp}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  {/* Global activity feed */}
+                  <ActivityFeed maxItems={10} collapsible />
                 </div>
               )}
             </>

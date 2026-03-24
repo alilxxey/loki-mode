@@ -5,12 +5,14 @@ import { OnboardingOverlay } from '../OnboardingOverlay';
 import { ProductTour } from '../ProductTour';
 import { WhatsNew } from '../WhatsNew';
 import { DocsSidebar } from '../DocsSidebar';
+import { AchievementToastContainer, useAchievements } from '../AchievementToast';
 import { api } from '../../api/client';
 import { useWebSocket } from '../../hooks/useWebSocket';
 
 export function AppShell() {
   const [version, setVersion] = useState('');
   const [docsOpen, setDocsOpen] = useState(false);
+  const { toastQueue, dismissCurrent } = useAchievements();
 
   const { connected } = useWebSocket(() => {});
 
@@ -22,6 +24,7 @@ export function AppShell() {
 
   return (
     <div className="flex h-screen bg-[#FAF9F6]">
+      <AchievementToastContainer toastQueue={toastQueue} onDismiss={dismissCurrent} />
       <OnboardingOverlay />
       <ProductTour />
       <WhatsNew />

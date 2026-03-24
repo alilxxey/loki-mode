@@ -12,6 +12,7 @@ import {
   BarChart3,
 } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
+import { ProgressRing } from '../components/ProgressRing';
 import { UsageAnalytics } from '../components/UsageAnalytics';
 import { AuditTrail } from '../components/AuditTrail';
 import { UserManagement } from '../components/UserManagement';
@@ -364,11 +365,23 @@ export default function AdminPage() {
       {activeTab === 'overview' && (
         <div className="space-y-6">
           <OverviewCards cards={overviewCards} />
+          {/* Build success rate ring */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            <div className="card p-4 flex flex-col items-center justify-center">
+              <h4 className="text-sm font-medium text-[#36342E] dark:text-[#E8E6E3] mb-3">Build Success Rate</h4>
+              <ProgressRing percentage={94} size={96} strokeWidth={6} color="#1FC5A8">
+                <span className="text-lg font-bold text-[#36342E] dark:text-[#E8E6E3]">94%</span>
+              </ProgressRing>
+              <p className="text-xs text-[#939084] mt-2">342 total builds</p>
+            </div>
+            <div className="lg:col-span-2">
+              <SystemHealthPanel health={systemHealth} />
+            </div>
+          </div>
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <UserActivityChart data={userActivity} />
-            <SystemHealthPanel health={systemHealth} />
+            <RecentActivityLog actions={recentActions} />
           </div>
-          <RecentActivityLog actions={recentActions} />
         </div>
       )}
 

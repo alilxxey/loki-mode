@@ -6820,9 +6820,56 @@ def _parse_diff_hunks(diff_text: str) -> list[dict]:
 # Teams & RBAC endpoints
 # ---------------------------------------------------------------------------
 
-# In-memory store for teams (production would use database)
-_teams_store: Dict[str, dict] = {}
-_audit_log: list = []
+# File-based persistence for teams and audit log
+_TEAMS_FILE = ".loki/teams.json"
+_AUDIT_LOG_FILE = ".loki/audit-log.json"
+
+
+def _ensure_loki_dir() -> None:
+    """Create .loki/ directory if it does not exist."""
+    loki_dir = _loki_dir()
+    loki_dir.mkdir(parents=True, exist_ok=True)
+
+
+def _load_teams() -> dict:
+    """Read teams from .loki/teams.json. Returns empty dict if not found."""
+    teams_path = _loki_dir() / "teams.json"
+    try:
+        return json.loads(teams_path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _save_teams(data: dict) -> None:
+    """Write teams to .loki/teams.json atomically (write to temp, then rename)."""
+    _ensure_loki_dir()
+    teams_path = _loki_dir() / "teams.json"
+    tmp_path = teams_path.with_suffix(".json.tmp")
+    tmp_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    os.replace(str(tmp_path), str(teams_path))
+
+
+def _load_audit_log() -> list:
+    """Read audit log from .loki/audit-log.json. Returns empty list if not found."""
+    audit_path = _loki_dir() / "audit-log.json"
+    try:
+        return json.loads(audit_path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+
+
+def _append_audit_log(entry: dict) -> None:
+    """Append an entry to .loki/audit-log.json atomically."""
+    _ensure_loki_dir()
+    audit_path = _loki_dir() / "audit-log.json"
+    log = _load_audit_log()
+    log.insert(0, entry)
+    # Keep last 500 entries
+    if len(log) > 500:
+        log = log[:500]
+    tmp_path = audit_path.with_suffix(".json.tmp")
+    tmp_path.write_text(json.dumps(log, indent=2), encoding="utf-8")
+    os.replace(str(tmp_path), str(audit_path))
 
 
 class CreateTeamRequest(BaseModel):
@@ -6844,16 +6891,13 @@ def _audit(action: str, user: str = "system", target: str = "", details: str = "
         "timestamp": datetime.now().isoformat(),
         "details": details,
     }
-    _audit_log.insert(0, entry)
-    # Keep last 500 entries
-    if len(_audit_log) > 500:
-        _audit_log[:] = _audit_log[:500]
+    _append_audit_log(entry)
 
 
 @app.get("/api/teams")
 async def list_teams() -> JSONResponse:
     """List all teams."""
-    teams = list(_teams_store.values())
+    teams = list(_load_teams().values())
     return JSONResponse(content=teams)
 
 
@@ -6867,7 +6911,9 @@ async def create_team(req: CreateTeamRequest) -> JSONResponse:
         "members": [],
         "created_at": datetime.now().isoformat(),
     }
-    _teams_store[team_id] = team
+    store = _load_teams()
+    store[team_id] = team
+    _save_teams(store)
     _audit("team.created", target=req.name)
     return JSONResponse(content={"id": team_id, "name": req.name, "created": True})
 
@@ -6875,7 +6921,8 @@ async def create_team(req: CreateTeamRequest) -> JSONResponse:
 @app.get("/api/teams/{team_id}/members")
 async def list_team_members(team_id: str) -> JSONResponse:
     """List members of a team."""
-    team = _teams_store.get(team_id)
+    store = _load_teams()
+    team = store.get(team_id)
     if not team:
         return JSONResponse(status_code=404, content={"error": "Team not found"})
     return JSONResponse(content=team.get("members", []))
@@ -6884,7 +6931,8 @@ async def list_team_members(team_id: str) -> JSONResponse:
 @app.post("/api/teams/{team_id}/members")
 async def add_team_member(team_id: str, req: AddMemberRequest) -> JSONResponse:
     """Add a member to a team."""
-    team = _teams_store.get(team_id)
+    store = _load_teams()
+    team = store.get(team_id)
     if not team:
         return JSONResponse(status_code=404, content={"error": "Team not found"})
     member_id = f"m-{uuid.uuid4().hex[:8]}"
@@ -6896,6 +6944,7 @@ async def add_team_member(team_id: str, req: AddMemberRequest) -> JSONResponse:
         "joined_at": datetime.now().isoformat(),
     }
     team.setdefault("members", []).append(member)
+    _save_teams(store)
     _audit("member.added", target=req.email, details=f"Role: {req.role}")
     return JSONResponse(content={"added": True, "member_id": member_id})
 
@@ -6903,7 +6952,7 @@ async def add_team_member(team_id: str, req: AddMemberRequest) -> JSONResponse:
 @app.get("/api/audit-log")
 async def get_audit_log() -> JSONResponse:
     """Get audit log entries."""
-    return JSONResponse(content=_audit_log)
+    return JSONResponse(content=_load_audit_log())
 
 
 # ---------------------------------------------------------------------------

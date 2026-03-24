@@ -1,3 +1,4 @@
-// Settings components barrel export
-// Placeholder for settings component implementations
-export {};
+export { SettingToggle } from './SettingToggle';
+export { SettingSelect } from './SettingSelect';
+export { SettingSlider } from './SettingSlider';
+export { SettingInput } from './SettingInput';
