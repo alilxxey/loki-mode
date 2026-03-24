@@ -451,6 +451,7 @@ export default function HomePage() {
                       aria-hidden="true"
             {/* One-line quick-start input */}
             <AnimateOnScroll animation="fade-in-up" delay={100} className="w-full max-w-2xl">
+            <div className="w-full max-w-2xl" data-tour="input-box">
               <div className="relative">
                 <input
                   ref={quickInputRef}

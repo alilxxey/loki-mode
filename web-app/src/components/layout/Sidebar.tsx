@@ -19,13 +19,17 @@ import {
   Users,
   Sparkles,
   BarChart3,
+  HelpCircle,
 } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
 import { useTheme } from '../../hooks/useTheme';
+import { FeatureDiscoveryDot, markFeatureDiscovered } from '../FeatureDiscoveryDot';
+import { GettingStarted } from '../GettingStarted';
 
 export interface SidebarProps {
   wsConnected: boolean;
   version: string;
+  onOpenDocs?: () => void;
 }
 
 const LS_KEY = 'pl_sidebar_collapsed';
@@ -35,12 +39,13 @@ interface NavItem {
   to: string;
   label: string;
   icon: React.ComponentType<{ size?: number }>;
+  discoveryFeature?: 'deploy_tab' | 'git_tab' | 'command_palette' | 'templates' | 'ai_chat';
 }
 
 const mainNav: NavItem[] = [
   { to: '/', label: 'Home', icon: Home },
   { to: '/projects', label: 'Projects', icon: FolderKanban },
-  { to: '/templates', label: 'Templates', icon: LayoutTemplate },
+  { to: '/templates', label: 'Templates', icon: LayoutTemplate, discoveryFeature: 'templates' },
   { to: '/teams', label: 'Teams', icon: Users },
   { to: '/metrics', label: 'Metrics', icon: BarChart3 },
   { to: '/showcase', label: 'Showcase', icon: Sparkles },
@@ -102,6 +107,7 @@ function setSectionState(state: Record<string, boolean>) {
 }
 
 export function Sidebar({ wsConnected, version }: SidebarProps) {
+export function Sidebar({ wsConnected, version, onOpenDocs }: SidebarProps) {
   const isMobile = useIsMobile();
   const location = useLocation();
   const { theme, toggleTheme } = useTheme();
@@ -230,6 +236,54 @@ export function Sidebar({ wsConnected, version }: SidebarProps) {
             </div>
           );
         })}
+      {/* Main navigation */}
+      <nav className="flex-1 px-2 py-3 flex flex-col gap-1" aria-label="Main navigation">
+        {mainNav.map((item) => (
+          <NavLink
+            key={item.to}
+            to={item.to}
+            end={item.to === '/'}
+            className={({ isActive }) => linkClasses(isActive)}
+            title={!showLabels ? item.label : undefined}
+            onClick={() => {
+              if (item.discoveryFeature) markFeatureDiscovered(item.discoveryFeature);
+            }}
+          >
+            <div className="relative">
+              <item.icon size={18} />
+              {/* Feature discovery dot (H83) */}
+              {item.discoveryFeature && (
+                <FeatureDiscoveryDot
+                  feature={item.discoveryFeature}
+                  className="absolute -top-1 -right-1"
+                />
+              )}
+            </div>
+            {showLabels && <span>{item.label}</span>}
+          </NavLink>
+        ))}
+
+        {/* Separator */}
+        <div className="my-2 border-t border-[#ECEAE3]" />
+
+        {secondaryNav.map((item) => (
+          <NavLink
+            key={item.to}
+            to={item.to}
+            className={({ isActive }) => linkClasses(isActive)}
+            title={!showLabels ? item.label : undefined}
+          >
+            <item.icon size={18} />
+            {showLabels && <span>{item.label}</span>}
+          </NavLink>
+        ))}
+
+        {/* Getting Started checklist (H84) -- only when expanded */}
+        {showLabels && (
+          <div className="mt-3 px-1">
+            <GettingStarted />
+          </div>
+        )}
       </nav>
 
       {/* Bottom section */}
@@ -277,7 +331,22 @@ export function Sidebar({ wsConnected, version }: SidebarProps) {
           {showLabels && <span>{theme === 'dark' ? 'Light Mode' : 'Dark Mode'}</span>}
         </button>
 
-        {/* Docs link */}
+        {/* Help & Docs button (H85) */}
+        <button
+          onClick={onOpenDocs}
+          className={[
+            'flex items-center gap-2 text-xs text-[#6B6960] hover:text-[#36342E] transition-colors',
+            !showLabels && 'justify-center',
+          ]
+            .filter(Boolean)
+            .join(' ')}
+          title={!showLabels ? 'Help & Docs' : undefined}
+        >
+          <HelpCircle size={14} />
+          {showLabels && <span>Help & Docs</span>}
+        </button>
+
+        {/* External docs link */}
         <a
           href="https://www.autonomi.dev/docs"
           target="_blank"

@@ -10,6 +10,7 @@ import {
 
 // B21: Smooth CSS transitions between build phases
 // B22: Phase icons that animate (spin on active, checkmark on complete)
+import { ContextualHelp, HELP_TOOLTIPS } from './ContextualHelp';
 
 interface BuildProgressBarProps {
   phase: string;       // 'planning' | 'building' | 'testing' | 'reviewing' | 'complete' | 'idle'
@@ -125,6 +126,24 @@ export function BuildProgressBar({ phase, iteration, maxIterations, cost, startT
               </div>
             );
           })}
+      {/* Phase labels + stats */}
+      <div className="px-4 py-1.5 flex items-center gap-4 bg-card border-b border-border text-xs" data-tour="build-progress">
+        {/* Phase indicators with contextual help (H80) */}
+        <div className="flex items-center gap-1">
+          <ContextualHelp text={HELP_TOOLTIPS.buildProgress} position="bottom" size={12} />
+          {phases.map((p, i) => (
+            <div key={p.id} className="flex items-center gap-1">
+              <div className={`w-2 h-2 rounded-full transition-colors ${
+                i < currentPhaseIndex ? 'bg-success' :
+                i === currentPhaseIndex ? `${p.color} animate-pulse` :
+                'bg-border'
+              }`} />
+              <span className={`text-[11px] font-medium ${
+                i === currentPhaseIndex ? 'text-ink' : 'text-muted'
+              }`}>{p.label}</span>
+              {i < phases.length - 1 && <span className="text-border mx-0.5">--</span>}
+            </div>
+          ))}
         </div>
 
         <div className="flex-1" />
