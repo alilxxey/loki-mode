@@ -1454,9 +1454,10 @@ class DevServerManager:
             except Exception:
                 logger.debug("Docker context gathering for auto-fix failed", exc_info=True)
 
-        # Save original command and multi_service flag before stop() removes the info dict
+        # Save original command, framework, and multi_service flag before stop() removes the info dict
         cmd = info.get("original_command")
         is_multi_service = info.get("multi_service", False)
+        framework = info.get("framework")
 
         try:
             auto_fix_env = {**os.environ}
@@ -1475,6 +1476,14 @@ class DevServerManager:
             )
             if result.returncode == 0:
                 logger.info("Auto-fix succeeded for session %s, restarting dev server", session_id)
+                # For Docker projects, rebuild images before restarting
+                # (fix may have changed Dockerfile, package.json, requirements.txt, etc.)
+                if framework == "docker":
+                    await asyncio.to_thread(
+                        subprocess.run,
+                        ["docker", "compose", "up", "-d", "--build"],
+                        capture_output=True, cwd=str(target), timeout=120
+                    )
                 # Restart the dev server
                 await self.stop(session_id)
                 await asyncio.sleep(1)
@@ -1723,7 +1732,17 @@ class DevServerManager:
                 was_running = prev.get("status") in ("running", None)
                 now_failed = svc["state"] in ("exited", "dead")
 
-                if was_running and now_failed:
+                # Also detect services that never started (failed on initial docker compose up).
+                # On first poll, prev is empty ({}) so prev.get("status") is None, which counts
+                # as "was_running" above. But if a service was already "exited" before we ever
+                # saw it as "running", the next poll would see prev.status="exited" and skip it.
+                # Detect this case: first time we see a service in a failed state with no prior fix.
+                first_seen_failed = (
+                    not prev  # No previous health record for this service
+                    and now_failed
+                )
+
+                if (was_running and now_failed) or first_seen_failed:
                     svc_health["restarts"] = prev.get("restarts", 0) + 1
                     logger.warning("Docker service '%s' failed (exit %s)", name, svc.get("exit_code"))
 
@@ -1794,24 +1813,70 @@ class DevServerManager:
             return
 
         try:
+            fix_env = {**os.environ, **_load_secrets()}
+            fix_env["LOKI_MAX_ITERATIONS"] = "5"  # More iterations for complex Docker fixes
+
             proc = await asyncio.to_thread(
                 subprocess.run,
                 [loki, "quick", fix_prompt],
                 capture_output=True, text=True, cwd=project_dir, timeout=300,
-                env={**os.environ, **_load_secrets()}
+                env=fix_env
             )
 
-            # After fix, restart the specific service
+            # Rebuild the image (fix may have changed Dockerfile or package.json)
+            # --no-deps prevents restarting healthy services, --build rebuilds with the fix
             await asyncio.to_thread(
                 subprocess.run,
-                ["docker", "compose", "restart", service_name],
-                capture_output=True, cwd=project_dir, timeout=30
+                ["docker", "compose", "up", "-d", "--build", "--no-deps", service_name],
+                capture_output=True, cwd=project_dir, timeout=120
             )
+
+            # Wait for service to stabilize after rebuild
+            await asyncio.sleep(10)
+
+            # Verify the fix actually worked
+            fix_worked = False
+            try:
+                verify_proc = await asyncio.to_thread(
+                    subprocess.run,
+                    ["docker", "compose", "ps", "-a", "--format", "json"],
+                    capture_output=True, text=True, cwd=project_dir, timeout=10
+                )
+                if verify_proc.returncode == 0 and verify_proc.stdout.strip():
+                    raw = verify_proc.stdout.strip()
+                    try:
+                        parsed = json.loads(raw)
+                        if not isinstance(parsed, list):
+                            parsed = [parsed]
+                    except json.JSONDecodeError:
+                        parsed = []
+                        for line in raw.split("\n"):
+                            if line.strip():
+                                try:
+                                    parsed.append(json.loads(line))
+                                except json.JSONDecodeError:
+                                    pass
+                    for svc in parsed:
+                        if isinstance(svc, dict) and svc.get("Name", svc.get("name", "")) == service_name:
+                            state = svc.get("State", svc.get("state", ""))
+                            fix_worked = state == "running"
+                            break
+            except Exception:
+                logger.debug("Post-fix verification failed for service '%s'", service_name, exc_info=True)
+
+            # Determine final fix status
+            if proc.returncode == 0 and fix_worked:
+                final_status = "fixed"
+            elif proc.returncode == 0 and not fix_worked:
+                final_status = "fix_failed"
+                logger.warning("loki quick succeeded but service '%s' still not running", service_name)
+            else:
+                final_status = "fix_failed"
 
             # BUG-V64-005: Re-fetch from live info dict to avoid writing to detached dict
             info = self.servers.get(session_id)
             if info and "docker_service_health" in info and service_name in info["docker_service_health"]:
-                info["docker_service_health"][service_name]["fix_status"] = "fixed" if proc.returncode == 0 else "fix_failed"
+                info["docker_service_health"][service_name]["fix_status"] = final_status
         except Exception as exc:
             logger.error("Auto-fix for service '%s' failed: %s", service_name, exc)
             # BUG-V64-005: Re-fetch from live info dict
@@ -1856,7 +1921,7 @@ async def _gather_docker_context(project_dir: Path) -> dict:
     # Get service status via docker compose ps
     try:
         ps_proc = await loop.run_in_executor(None, lambda: subprocess.run(
-            ["docker", "compose", "ps", "--format", "json"],
+            ["docker", "compose", "ps", "-a", "--format", "json"],
             capture_output=True, text=True, cwd=str(project_dir), timeout=10
         ))
         if ps_proc.returncode == 0 and ps_proc.stdout.strip():

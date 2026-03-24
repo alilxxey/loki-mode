@@ -580,6 +580,11 @@ PHASE_UAT=${LOKI_PHASE_UAT:-true}
 COMPLETION_PROMISE=${LOKI_COMPLETION_PROMISE:-""}
 MAX_ITERATIONS=${LOKI_MAX_ITERATIONS:-1000}
 ITERATION_COUNT=0
+
+# If this is an auto-fix task, allow more iterations
+if [[ "${LOKI_AUTO_FIX:-}" == "true" ]]; then
+    MAX_ITERATIONS="${LOKI_MAX_ITERATIONS:-5}"
+fi
 # Perpetual mode: never stop unless max iterations (ignores all completion signals)
 PERPETUAL_MODE=${LOKI_PERPETUAL_MODE:-false}
 

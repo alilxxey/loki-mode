@@ -398,6 +398,7 @@ show_help() {
     echo "  run <issue>      Issue-driven engineering (v6.0.0) - GitHub/GitLab/Jira/Azure DevOps"
     echo "  start [PRD]      Start Loki Mode (optionally with PRD file)"
     echo "  quick \"task\"     Quick single-task mode (lightweight, 3 iterations max)"
+    echo "  monitor [path]   Monitor Docker Compose services with auto-fix (v6.67.0)"
     echo "  demo             Run interactive demo (~60s simulated session)"
     echo "  init [name]      Project scaffolding with 22 PRD templates"
     echo "  issue <url|num>  [DEPRECATED] Use 'loki run' instead"
@@ -6987,11 +6988,12 @@ cmd_quick() {
 
     local task_desc="$*"
     local version=$(get_version)
+    local max_iter="${LOKI_MAX_ITERATIONS:-3}"
 
     echo -e "${BOLD}Loki Mode v$version - Quick Mode${NC}"
     echo ""
     echo -e "${CYAN}Task:${NC} $task_desc"
-    echo -e "${DIM}Running lightweight execution (3 iterations max, no quality council)${NC}"
+    echo -e "${DIM}Running lightweight execution ($max_iter iterations max, no quality council)${NC}"
     echo ""
 
     # Create quick PRD from task description
@@ -7028,7 +7030,7 @@ QPRDEOF
     echo ""
 
     # Set lightweight execution environment
-    export LOKI_MAX_ITERATIONS=3
+    export LOKI_MAX_ITERATIONS="$max_iter"
     export LOKI_COMPLEXITY=simple
     export LOKI_COUNCIL_ENABLED=false
     export LOKI_PHASE_CODE_REVIEW=false
@@ -7046,6 +7048,77 @@ QPRDEOF
 
     # Run the orchestrator with quick settings
     exec "$RUN_SH" "$quick_prd"
+}
+
+# Docker Compose monitoring with auto-fix (v6.67.0)
+cmd_monitor() {
+    local project_dir="${1:-.}"
+
+    if [[ ! -f "$project_dir/docker-compose.yml" ]] && [[ ! -f "$project_dir/docker-compose.yaml" ]]; then
+        echo -e "${RED}No docker-compose.yml found in $project_dir${NC}"
+        return 1
+    fi
+
+    echo -e "${CYAN}Monitoring Docker Compose services in $project_dir...${NC}"
+    echo "Press Ctrl+C to stop."
+    echo ""
+
+    local fix_count=0
+    local max_fixes=10
+
+    while true; do
+        # Check service status
+        local status
+        status=$(cd "$project_dir" && docker compose ps -a --format json 2>/dev/null)
+
+        if [[ -z "$status" ]]; then
+            echo -e "${YELLOW}No services found. Waiting...${NC}"
+            sleep 10
+            continue
+        fi
+
+        # Parse each service
+        local has_failure=false
+        while IFS= read -r line; do
+            [[ -z "$line" ]] && continue
+            local svc_name svc_state
+            svc_name=$(echo "$line" | python3 -c "import json,sys; d=json.loads(sys.stdin.read()); print(d.get('Service',d.get('Name','')))" 2>/dev/null)
+            svc_state=$(echo "$line" | python3 -c "import json,sys; d=json.loads(sys.stdin.read()); print(d.get('State',''))" 2>/dev/null)
+
+            if [[ "$svc_state" == "exited" ]] || [[ "$svc_state" == "dead" ]]; then
+                has_failure=true
+                echo -e "${RED}Service '$svc_name' is $svc_state${NC}"
+
+                if [[ $fix_count -lt $max_fixes ]]; then
+                    # Get logs for the failed service
+                    local logs
+                    logs=$(cd "$project_dir" && docker compose logs --tail 30 "$svc_name" 2>/dev/null)
+
+                    echo -e "${CYAN}Auto-fixing $svc_name...${NC}"
+
+                    # Run loki quick with targeted fix
+                    LOKI_MAX_ITERATIONS=5 LOKI_AUTO_FIX=true \
+                    loki quick "Fix the '$svc_name' Docker service. It exited with an error. Logs: $logs" \
+                        2>&1 | while IFS= read -r fline; do echo "  $fline"; done
+
+                    # Rebuild and restart
+                    echo -e "${CYAN}Rebuilding $svc_name...${NC}"
+                    (cd "$project_dir" && docker compose up -d --build --no-deps "$svc_name" 2>&1) | while IFS= read -r fline; do echo "  $fline"; done
+
+                    fix_count=$((fix_count + 1))
+                    echo -e "${GREEN}Fix attempt $fix_count/$max_fixes for $svc_name${NC}"
+                else
+                    echo -e "${YELLOW}Max fix attempts ($max_fixes) reached. Manual intervention needed.${NC}"
+                fi
+            fi
+        done <<< "$status"
+
+        if [[ "$has_failure" == "false" ]]; then
+            echo -e "\r${GREEN}All services healthy${NC} $(date +%H:%M:%S)  \c"
+        fi
+
+        sleep 10
+    done
 }
 
 # Project scaffolding (v6.28.0)
@@ -10486,6 +10559,9 @@ main() {
             ;;
         quick)
             cmd_quick "$@"
+            ;;
+        monitor)
+            cmd_monitor "$@"
             ;;
         demo)
             cmd_demo "$@"

@@ -91,6 +91,9 @@ function _loki {
                 completions)
                     _arguments '1:shell:(bash zsh)'
                     ;;
+                monitor)
+                    _directories
+                    ;;
                 context|ctx)
                     _loki_context
                     ;;
@@ -107,6 +110,7 @@ function _loki_commands {
     commands=(
         'start:Start Loki Mode'
         'quick:Quick single-task mode'
+        'monitor:Monitor Docker Compose services with auto-fix'
         'demo:Interactive 60-second demo'
         'init:Interactive PRD builder'
         'stop:Stop execution'
