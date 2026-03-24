@@ -5235,6 +5235,8 @@ async def _push_state_to_client(ws: WebSocket) -> None:
             _current_task = ""
             _pending_tasks = 0
             _agents = []
+            _cost_usd = 0.0
+            _max_iterations = 0
 
             state_file = loki_dir / "state" / "session.json"
             if state_file.exists():
@@ -5246,6 +5248,10 @@ async def _push_state_to_client(ws: WebSocket) -> None:
                     _complexity = state_data.get("complexity", _complexity)
                     _current_task = state_data.get("current_task", _current_task)
                     _pending_tasks = state_data.get("pending_tasks", _pending_tasks)
+                    # Extract cost from tokens object if present
+                    _tokens = state_data.get("tokens")
+                    if isinstance(_tokens, dict):
+                        _cost_usd = float(_tokens.get("cost_usd", 0) or 0)
                 except (json.JSONDecodeError, OSError):
                     pass
 
@@ -5259,9 +5265,22 @@ async def _push_state_to_client(ws: WebSocket) -> None:
                 except (json.JSONDecodeError, OSError):
                     pass
 
-            return _phase, _iteration, _complexity, _current_task, _pending_tasks, _agents
+            # Read max_iterations from autonomy state
+            autonomy_state = loki_dir / "autonomy-state.json"
+            if autonomy_state.exists():
+                try:
+                    with open(autonomy_state) as f:
+                        astate = json.load(f)
+                    _max_iterations = int(astate.get("maxIterations", 0) or 0)
+                except (json.JSONDecodeError, OSError, ValueError):
+                    pass
 
-        phase, iteration, complexity, current_task, pending_tasks, agents_payload = (
+            if _max_iterations <= 0:
+                _max_iterations = int(os.environ.get("LOKI_MAX_ITERATIONS", "10"))
+
+            return _phase, _iteration, _complexity, _current_task, _pending_tasks, _agents, _cost_usd, _max_iterations
+
+        phase, iteration, complexity, current_task, pending_tasks, agents_payload, ws_cost, ws_max_iter = (
             await asyncio.to_thread(_read_state_files)
         )
 
@@ -5281,6 +5300,9 @@ async def _push_state_to_client(ws: WebSocket) -> None:
             "version": "",
             "pid": str(session.process.pid) if session.process else "",
             "projectDir": session.project_dir,
+            "max_iterations": ws_max_iter,
+            "cost": round(ws_cost, 4),
+            "start_time": session.start_time if session.start_time > 0 else 0,
         }
 
         # Build incremental logs payload using absolute offset to handle truncation

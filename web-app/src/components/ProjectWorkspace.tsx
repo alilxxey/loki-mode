@@ -23,6 +23,7 @@ import { ContextMenu } from './ui/ContextMenu';
 import { ErrorBoundary } from './ErrorBoundary';
 import { Skeleton, SkeletonEditor } from './ui/Skeleton';
 import { ActivityPanel } from './ActivityPanel';
+import { BuildProgressBar } from './BuildProgressBar';
 import { useKeyboardShortcuts, KeyboardShortcutsModal, ShortcutsHelpButton } from './KeyboardShortcuts';
 import { CommandPalette } from './CommandPalette';
 import type { CommandItem } from './CommandPalette';
@@ -438,6 +439,13 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
   } | null>(null);
   const [isBuilding, setIsBuilding] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
+  const [buildStatus, setBuildStatus] = useState<{
+    phase: string;
+    iteration: number;
+    maxIterations: number;
+    cost: number;
+    startTime: number;
+  }>({ phase: 'idle', iteration: 0, maxIterations: 10, cost: 0, startTime: 0 });
   const [filesChangedIndicator, setFilesChangedIndicator] = useState(false);
   const [externalChangeFile, setExternalChangeFile] = useState<string | null>(null);
   const filesChangedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -477,7 +485,7 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
     } catch { /* ignore */ }
   }, []);
 
-  // Poll session status for build controls and provider
+  // Poll session status for build controls, provider, and progress
   useEffect(() => {
     const check = async () => {
       try {
@@ -485,12 +493,19 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
         setIsBuilding(status.running);
         setIsPaused(status.paused);
         if (status.provider) setSelectedProvider(status.provider);
+        setBuildStatus({
+          phase: status.phase || 'idle',
+          iteration: status.iteration || 0,
+          maxIterations: status.max_iterations || 10,
+          cost: status.cost || 0,
+          startTime: status.start_time ? status.start_time * 1000 : 0,
+        });
       } catch { /* ignore */ }
     };
     check();
-    const interval = setInterval(check, 10000);
+    const interval = setInterval(check, isBuilding ? 3000 : 10000);
     return () => clearInterval(interval);
-  }, []);
+  }, [isBuilding]);
 
   // Elapsed time counter for action progress
   useEffect(() => {
@@ -994,6 +1009,30 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
     },
   });
 
+  const paletteCommands: CommandItem[] = useMemo(() => [
+    { id: 'preview', label: 'Open Preview', category: 'command' as const, icon: Eye, action: () => setActiveWorkspaceTab('preview'), shortcut: '' },
+    { id: 'code', label: 'Open Code Editor', category: 'command' as const, icon: Code2, action: () => setActiveWorkspaceTab('code') },
+    { id: 'terminal', label: 'Open Terminal', category: 'command' as const, icon: Terminal, action: () => setBottomPanelVisible(true) },
+    { id: 'dashboard', label: 'Open Dashboard', category: 'command' as const, icon: LayoutDashboard, action: () => setActiveWorkspaceTab('dashboard') },
+    { id: 'deploy', label: 'Deploy Project', category: 'command' as const, icon: Rocket, action: () => setActiveWorkspaceTab('deploy' as any) },
+    { id: 'git', label: 'Git Status', category: 'command' as const, icon: GitBranch, action: () => setActiveWorkspaceTab('dashboard') },
+    { id: 'settings', label: 'Settings / Config', category: 'setting' as const, icon: Settings2, action: () => setActiveWorkspaceTab('config') },
+    { id: 'quick-open', label: 'Quick Open File', category: 'file' as const, icon: FileCode2, action: () => { setShowQuickOpen(true); setQuickOpenQuery(''); }, shortcut: 'Cmd+P' },
+    { id: 'zen', label: 'Toggle Zen Mode', category: 'setting' as const, icon: Maximize2, action: () => toggleZenMode() },
+    { id: 'sidebar', label: 'Toggle File Tree', category: 'setting' as const, icon: PanelLeftClose, action: () => setSidebarVisible(v => !v) },
+  ], [setActiveWorkspaceTab, toggleZenMode]);
+
+  // Derive build phase from session status for the progress bar
+  const buildPhase = useMemo(() => {
+    if (!isBuilding) return 'idle';
+    const status = (buildStatus.phase || sessionData.status || '').toLowerCase();
+    if (status.includes('plan') || status.includes('bootstrap')) return 'planning';
+    if (status.includes('review') || status.includes('council')) return 'reviewing';
+    if (status.includes('test') || status.includes('verify')) return 'testing';
+    if (status.includes('complete') || status.includes('fulfilled')) return 'complete';
+    return 'building';
+  }, [isBuilding, buildStatus.phase, sessionData.status]);
+
   return (
     <div className="flex flex-col h-full relative">
       {/* Header */}
@@ -1091,6 +1130,16 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
         <IconButton icon={BookOpen} label="Explain project" size="sm" onClick={handleExplain} disabled={!!actionState?.loading} />
         <ShortcutsHelpButton onClick={() => setShowHelp(true)} />
       </div>
+
+      {/* Build progress bar */}
+      <BuildProgressBar
+        phase={buildPhase}
+        iteration={buildStatus.iteration}
+        maxIterations={buildStatus.maxIterations}
+        cost={buildStatus.cost}
+        startTime={buildStatus.startTime}
+        isRunning={isBuilding}
+      />
 
       {/* Workspace: vertical split - top: editor, bottom: activity panel */}
       <div className="flex-1 min-h-0">
@@ -1781,6 +1830,9 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
 
       {/* Keyboard shortcuts modal */}
       <KeyboardShortcutsModal open={showHelp} onClose={() => setShowHelp(false)} />
+
+      {/* Command palette (Cmd+K) */}
+      <CommandPalette isOpen={commandPaletteOpen} onClose={() => setCommandPaletteOpen(false)} commands={paletteCommands} />
     </div>
   );
 }
