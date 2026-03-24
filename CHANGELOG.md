@@ -22,10 +22,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **RBAC** (sprint-5): Role-based access control with Admin, Developer, and Viewer roles governing Purple Lab project and agent permissions
 - **CI/CD Pipeline** (sprint-5): Built-in CI/CD pipeline configuration with automatic test running, build verification, and deployment gating
 
-### Fixed
-- Numerous bug fixes from 20 agent merge commits addressing CLI, dashboard, provider system, Docker, session lifecycle, edge cases, enterprise scenarios, architecture, and security issues
-- Phase-1 fixes from 15 agent bugfix sessions covering state management, healing hooks, memory consolidation, and token economics
-- WorkTree reference cleanup and index sanitization preventing phantom file staging
+### Fixed (117 bugs from 20-agent parallel hunt)
+- **CLI** (14 fixes): Shell injection via unquoted paths (x14), PID recycling guard, overwrite protection, division by zero, exit->return (x7)
+- **Purple Lab** (8 fixes): Crypto import crash, orphaned processes, path disclosure (x2), arbitrary projectDir, missing size limit, race conditions, input validation
+- **Dashboard** (7 fixes): Unauthenticated token endpoint, unauthenticated focus/token-listing endpoints, file handle leak, input validation (x3), asyncio deprecation
+- **Memory System** (11 fixes): Non-atomic writes, consolidation locking, schema validation, counter overflow, embedding fallback, vector index rebuild, TOCTOU races (x3)
+- **Provider System** (5 fixes): Gemini tier ignored, OAuth health check, stale LOKI_PROVIDER after failover, LOKI_CURRENT_TIER never exported, API key rotation
+- **Integration** (11 fixes): Provider not passed to CLI, wrong state file path, WebSocket ping/pong, file watcher false positives, hardcoded provider, temp file leaks, inflated agent counts, JSON format mismatch, stale status
+- **Session Lifecycle** (6 fixes): Pause signal delay, stop not waiting for exit, checkpoint validation, re-entrancy guard, atomic session.json, iteration count inflation
+- **Docker/Healing** (6 fixes): Health checks, phase transition validation, default case for providers, dead healing hooks, mkdir safety, atomic task writes
+- **E2E** (19 fixes): Prompt validation, WebSocket sequencing, chat history, preview reload, temp file leaks, phantom template, template fixes (x12)
+- **Architecture** (1 fix): Non-atomic phase write in orchestrator
+- **Security**: eval injection flagged, 40+ bare except:pass documented, stale fallback version fixed
+- Helm chart appVersion bumped from 5.52.0 to 6.71.1
+- 3 competitive analyses: bolt.new, Replit+Lovable, Emergence+Claude Code+Codex (1,806 lines)
+- 100 test scenarios: 50 edge cases + 50 enterprise (1,545 lines)
 
 ## [6.63.0] - 2026-03-22 - PRD-to-Task Parser with Rich Task Details
 
