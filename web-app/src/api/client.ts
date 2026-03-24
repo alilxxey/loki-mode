@@ -108,12 +108,26 @@ export interface StartSessionResponse {
   provider: string;
 }
 
+export interface QuickStartResponse {
+  started: boolean;
+  session_id: string;
+  project_dir: string;
+  pid: number;
+  provider: string;
+}
+
 export const api = {
   // Session management
   startSession: (req: StartSessionRequest) =>
     fetchJSON<StartSessionResponse>('/session/start', {
       method: 'POST',
       body: JSON.stringify(req),
+    }),
+
+  quickStart: (prompt: string, provider: string = 'claude') =>
+    fetchJSON<QuickStartResponse>('/session/quick-start', {
+      method: 'POST',
+      body: JSON.stringify({ prompt, provider }),
     }),
 
   stopSession: () =>

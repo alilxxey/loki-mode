@@ -78,6 +78,37 @@
 
   ::selection { background: #E8E4FD; color: #201515; }
 
+  /* Dark mode overrides */
+  .dark {
+    --color-background: #0F0F11;
+    --color-card: #1A1A1E;
+    --color-border: #2A2A30;
+    --color-hover: #222228;
+    --color-ink: #E8E6E3;
+    --color-muted: #8A8880;
+    --color-secondary: #C5C0B8;
+    color-scheme: dark;
+  }
+
+  .dark body { background-color: #0F0F11; color: #E8E6E3; }
+  .dark .bg-card { background-color: #1A1A1E !important; }
+  .dark .bg-background, .dark .bg-\[\#FFFEFB\], .dark .bg-\[\#FAF9F6\] { background-color: #0F0F11 !important; }
+  .dark .bg-hover, .dark .bg-\[\#F8F4F0\] { background-color: #222228 !important; }
+  .dark .bg-white { background-color: #1A1A1E !important; }
+  .dark .border-border, .dark .border-\[\#ECEAE3\] { border-color: #2A2A30 !important; }
+  .dark .text-ink, .dark .text-\[\#201515\] { color: #E8E6E3 !important; }
+  .dark .text-muted { color: #8A8880 !important; }
+  .dark .text-secondary, .dark .text-\[\#36342E\] { color: #C5C0B8 !important; }
+  .dark .text-\[\#939084\], .dark .text-\[\#6B6960\] { color: #8A8880 !important; }
+  .dark .card { background: #1A1A1E; border-color: #2A2A30; }
+  .dark ::selection { background: #553DE9; color: #E8E6E3; }
+  .dark .hover\:bg-\[\#F8F4F0\]:hover { background-color: #222228 !important; }
+  .dark .hover\:text-\[\#36342E\]:hover { color: #E8E6E3 !important; }
+  .dark .border-r { border-color: #2A2A30; }
+  .dark .border-b { border-color: #2A2A30; }
+  .dark .border-t { border-color: #2A2A30; }
+  .dark .border-l { border-color: #2A2A30; }
+
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { transition-duration: 0s !important; }
     .phase-active { animation: none; }
@@ -106,5 +137,21 @@
     animation: cursor-blink 1s step-end infinite;
     margin-left: 2px;
     vertical-align: text-bottom;
+  }
+
+  /* Cycling placeholder fade for quick-start input */
+  @keyframes placeholder-fade-in {
+    0% { opacity: 0; transform: translateY(4px); }
+    100% { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes placeholder-fade-out {
+    0% { opacity: 1; transform: translateY(0); }
+    100% { opacity: 0; transform: translateY(-4px); }
+  }
+  .quick-input-placeholder {
+    animation: placeholder-fade-in 0.4s ease-out forwards;
+  }
+  .quick-input-placeholder-exit {
+    animation: placeholder-fade-out 0.3s ease-in forwards;
   }
 }

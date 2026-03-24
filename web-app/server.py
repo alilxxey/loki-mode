@@ -314,6 +314,11 @@ class StartRequest(BaseModel):
     mode: Optional[str] = None  # "quick" for quick mode
 
 
+class QuickStartRequest(BaseModel):
+    prompt: str
+    provider: str = "claude"
+
+
 class StopResponse(BaseModel):
     stopped: bool
     message: str
@@ -2587,6 +2592,53 @@ async def start_session(req: StartRequest) -> JSONResponse:
         "projectDir": project_dir,
         "provider": req.provider,
     })
+
+
+@app.post("/api/session/quick-start")
+async def quick_start_session(req: QuickStartRequest) -> JSONResponse:
+    """Start a build from a one-line prompt. Auto-generates PRD and starts immediately."""
+    prompt = req.prompt.strip()
+    if not prompt:
+        return JSONResponse(status_code=400, content={"error": "Prompt required"})
+    if len(prompt.encode()) > _MAX_PRD_BYTES:
+        return JSONResponse(status_code=400, content={"error": "Prompt exceeds size limit"})
+
+    # Auto-generate a PRD from the one-liner
+    prd_content = f"""# {prompt}
+
+## Overview
+{prompt}
+
+## Requirements
+- Implement the feature described above
+- Create a clean, modern UI
+- Include proper error handling
+- Write tests where applicable
+- Include Dockerfile and docker-compose.yml for containerized deployment
+
+## Tech Stack
+- Choose appropriate technologies based on the requirements
+- Use modern frameworks and best practices
+
+## Success Criteria
+- The application works as described
+- Clean, maintainable code
+- Runs via docker compose up
+"""
+
+    # Delegate to start_session with the generated PRD
+    start_req = StartRequest(prd=prd_content, provider=req.provider)
+    result = await start_session(start_req)
+
+    # Unwrap the JSONResponse to add session_id
+    body = json.loads(result.body.decode())
+    if body.get("started"):
+        project_dir = body.get("projectDir", "")
+        session_id = os.path.basename(project_dir)
+        body["session_id"] = session_id
+        body["project_dir"] = project_dir
+
+    return JSONResponse(status_code=result.status_code, content=body)
 
 
 @app.post("/api/session/stop")

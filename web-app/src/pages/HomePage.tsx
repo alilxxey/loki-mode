@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import { usePolling } from '../hooks/usePolling';
@@ -18,6 +18,14 @@ import { MetricsPanel } from '../components/MetricsPanel';
 import { SessionHistory } from '../components/SessionHistory';
 import type { StatusResponse, Agent, LogEntry } from '../types/api';
 
+const CYCLING_PROMPTS = [
+  "Build a SaaS dashboard with user analytics...",
+  "Create a REST API with authentication...",
+  "Make a landing page with pricing tiers...",
+  "Build a chat app with real-time messaging...",
+  "Create an e-commerce store with Stripe...",
+];
+
 export default function HomePage() {
   const navigate = useNavigate();
   const [startError, setStartError] = useState<string | null>(null);
@@ -35,6 +43,26 @@ export default function HomePage() {
   );
   const [templatePrd, setTemplatePrd] = useState<string | undefined>(undefined);
 
+  // Quick-start input state
+  const [quickPrompt, setQuickPrompt] = useState('');
+  const [quickSubmitting, setQuickSubmitting] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [promptIndex, setPromptIndex] = useState(0);
+  const [placeholderFading, setPlaceholderFading] = useState(false);
+  const quickInputRef = useRef<HTMLInputElement>(null);
+
+  // Cycling placeholder animation
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setPlaceholderFading(true);
+      setTimeout(() => {
+        setPromptIndex(i => (i + 1) % CYCLING_PROMPTS.length);
+        setPlaceholderFading(false);
+      }, 300);
+    }, 3000);
+    return () => clearInterval(interval);
+  }, []);
+
   // Check for template prefill from TemplatesPage navigation
   useEffect(() => {
     const templateFile = sessionStorage.getItem('pl_template');
@@ -44,6 +72,7 @@ export default function HomePage() {
         .then(({ content }) => {
           if (content) {
             setTemplatePrd(content);
+            setShowAdvanced(true);
           }
         })
         .catch(() => {
@@ -109,6 +138,30 @@ export default function HomePage() {
   const agentsLoading = wsAgents === null;
   const logsLoading = wsLogs === null;
 
+  // Quick-start handler: one-line prompt -> build
+  const handleQuickStart = useCallback(async () => {
+    const prompt = quickPrompt.trim();
+    if (!prompt || quickSubmitting) return;
+    setStartError(null);
+    setQuickSubmitting(true);
+    setWasRunning(false);
+    setShowReport(false);
+    setActiveTab('terminal');
+    try {
+      const result = await api.quickStart(prompt, selectedProvider);
+      if (result.started && result.session_id) {
+        setCurrentPrd(prompt);
+        setIsRunning(true);
+        navigate(`/project/${result.session_id}`);
+      }
+    } catch (e) {
+      setStartError(e instanceof Error ? e.message : 'Failed to start build');
+    } finally {
+      setQuickSubmitting(false);
+    }
+  }, [quickPrompt, quickSubmitting, selectedProvider, navigate]);
+
+  // Full PRD start handler (used by advanced PRDInput)
   const handleStartBuild = useCallback(async (prd: string, provider: string, projectDir?: string, mode?: string) => {
     setStartError(null);
     setWasRunning(false);
@@ -171,29 +224,101 @@ export default function HomePage() {
       <div className="max-w-[1920px] mx-auto px-6 py-6 relative z-10">
         {!isRunning ? (
           <div className="flex flex-col items-center">
-            <div className="text-center mt-8 mb-8">
+            {/* Hero section */}
+            <div className="text-center mt-12 mb-10">
               <h2 className="font-heading text-h1 text-[#36342E]">
                 Describe it. Build it. Ship it.
               </h2>
-              <p className="text-[#6B6960] mt-2 text-base max-w-lg mx-auto">
-                Paste a PRD or pick a template. Purple Lab spins up autonomous agents
-                to build your project from scratch.
+              <p className="text-[#6B6960] mt-3 text-base max-w-xl mx-auto">
+                Type what you want to build. Purple Lab handles the rest --
+                from code to containers, autonomously.
               </p>
             </div>
 
-            <div className="w-full max-w-3xl">
-              <PRDInput
-                onSubmit={handleStartBuild}
-                running={isRunning}
-                error={startError}
-                provider={selectedProvider}
-                onProviderChange={handleProviderChange}
-                initialPrd={templatePrd}
-              />
+            {/* One-line quick-start input */}
+            <div className="w-full max-w-2xl">
+              <div className="relative">
+                <input
+                  ref={quickInputRef}
+                  type="text"
+                  value={quickPrompt}
+                  onChange={(e) => setQuickPrompt(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault();
+                      handleQuickStart();
+                    }
+                  }}
+                  className="w-full text-xl px-6 py-4 rounded-2xl bg-white border border-[#ECEAE3] shadow-sm focus:outline-none focus:ring-2 focus:ring-[#553DE9]/30 focus:border-[#553DE9]/40 focus:shadow-lg transition-all placeholder:text-transparent"
+                  disabled={quickSubmitting}
+                  aria-label="Describe what you want to build"
+                />
+                {/* Cycling placeholder overlay */}
+                {!quickPrompt && (
+                  <div
+                    className="absolute left-6 top-1/2 -translate-y-1/2 text-xl text-[#6B6960]/50 pointer-events-none select-none"
+                    aria-hidden="true"
+                  >
+                    <span
+                      key={promptIndex}
+                      className={placeholderFading ? 'quick-input-placeholder-exit' : 'quick-input-placeholder'}
+                    >
+                      {CYCLING_PROMPTS[promptIndex]}
+                    </span>
+                  </div>
+                )}
+              </div>
+
+              {/* Start Building button */}
+              <div className="mt-4 flex items-center justify-center gap-4">
+                <button
+                  onClick={handleQuickStart}
+                  disabled={!quickPrompt.trim() || quickSubmitting}
+                  className={`px-8 py-3 rounded-xl text-base font-semibold transition-all ${
+                    !quickPrompt.trim() || quickSubmitting
+                      ? 'bg-[#553DE9]/20 text-[#553DE9]/40 cursor-not-allowed'
+                      : 'bg-[#553DE9] text-white hover:bg-[#4832c7] shadow-lg shadow-[#553DE9]/25 hover:shadow-xl hover:shadow-[#553DE9]/30 active:scale-[0.98]'
+                  }`}
+                >
+                  {quickSubmitting ? 'Starting...' : 'Start Building'}
+                </button>
+              </div>
+
+              {/* Error display */}
+              {startError && (
+                <div className="mt-3 px-4 py-2.5 rounded-xl bg-[#C45B5B]/10 border border-[#C45B5B]/20 text-[#C45B5B] text-sm font-medium text-center">
+                  {startError}
+                </div>
+              )}
+
+              {/* Advanced (full PRD) toggle */}
+              <div className="mt-6 text-center">
+                <button
+                  onClick={() => setShowAdvanced(!showAdvanced)}
+                  className="text-sm text-[#553DE9] hover:text-[#4832c7] font-medium transition-colors"
+                >
+                  {showAdvanced ? 'Hide advanced options' : 'Advanced (write full PRD)'}
+                </button>
+              </div>
+
+              {/* Collapsible advanced PRD section */}
+              {showAdvanced && (
+                <div className="mt-4">
+                  <PRDInput
+                    onSubmit={handleStartBuild}
+                    running={isRunning}
+                    error={startError}
+                    provider={selectedProvider}
+                    onProviderChange={handleProviderChange}
+                    initialPrd={templatePrd}
+                  />
+                </div>
+              )}
             </div>
 
+            {/* Post-build actions */}
             {wasRunning && !isRunning && (
-              <div className="w-full max-w-3xl mt-4 flex flex-col gap-4">
+              <div className="w-full max-w-3xl mt-6 flex flex-col gap-4">
                 <button
                   onClick={async () => {
                     try {
@@ -220,7 +345,7 @@ export default function HomePage() {
               </div>
             )}
 
-            <div className="w-full max-w-3xl mt-4">
+            <div className="w-full max-w-3xl mt-6">
               <SessionHistory onLoadSession={handleLoadSession} />
             </div>
 

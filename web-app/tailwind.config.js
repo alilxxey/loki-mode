@@ -1,5 +1,6 @@
 /** @type {import('tailwindcss').Config} */
 export default {
+  darkMode: 'class',
   content: [
     "./index.html",
     "./src/**/*.{js,ts,jsx,tsx}",
@@ -24,6 +25,12 @@ export default {
         warning: '#D4A03C',
         danger: '#C45B5B',
         info: '#2F71E3',
+        'dark-bg': '#0F0F11',
+        'dark-card': '#1A1A1E',
+        'dark-border': '#2A2A30',
+        'dark-hover': '#222228',
+        'dark-ink': '#E8E6E3',
+        'dark-muted': '#8A8880',
       },
       fontFamily: {
         heading: ['DM Serif Display', 'Georgia', 'Times New Roman', 'serif'],
