@@ -123,6 +123,15 @@
     animation: phase-pulse 2s ease-in-out infinite;
   }
 
+  /* Shimmer animation for progress bar */
+  @keyframes shimmer {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(100%); }
+  }
+  .animate-shimmer {
+    animation: shimmer 2s infinite;
+  }
+
   /* Terminal cursor blink */
   @keyframes cursor-blink {
     0%, 100% { opacity: 1; }

@@ -13,6 +13,9 @@ export interface StatusResponse {
   version: string;
   pid: string;
   projectDir?: string;
+  max_iterations?: number;
+  cost?: number;
+  start_time?: number;
 }
 
 export interface Agent {

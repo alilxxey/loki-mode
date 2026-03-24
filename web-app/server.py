@@ -2747,6 +2747,8 @@ async def get_status() -> JSONResponse:
     complexity = "standard"
     current_task = ""
     pending_tasks = 0
+    max_iterations = 0
+    cost_usd = 0.0
 
     state_file = loki_dir / "state" / "session.json"
     if state_file.exists():
@@ -2758,8 +2760,39 @@ async def get_status() -> JSONResponse:
             complexity = state.get("complexity", complexity)
             current_task = state.get("current_task", current_task)
             pending_tasks = state.get("pending_tasks", pending_tasks)
+            # Extract cost from tokens object if present
+            tokens = state.get("tokens")
+            if isinstance(tokens, dict):
+                cost_usd = float(tokens.get("cost_usd", 0) or 0)
         except (json.JSONDecodeError, OSError):
             pass
+
+    # Read max_iterations from autonomy state
+    autonomy_state = loki_dir / "autonomy-state.json"
+    if autonomy_state.exists():
+        try:
+            with open(autonomy_state) as f:
+                astate = json.load(f)
+            max_iterations = int(astate.get("maxIterations", 0) or 0)
+        except (json.JSONDecodeError, OSError, ValueError):
+            pass
+
+    # Fall back: read LOKI_MAX_ITERATIONS env or config
+    if max_iterations <= 0:
+        config_file = loki_dir / "config.yaml"
+        if config_file.exists():
+            try:
+                with open(config_file) as f:
+                    for line in f:
+                        if "max_iterations" in line:
+                            parts = line.split(":")
+                            if len(parts) >= 2:
+                                max_iterations = int(parts[-1].strip())
+                                break
+            except (OSError, ValueError):
+                pass
+    if max_iterations <= 0:
+        max_iterations = int(os.environ.get("LOKI_MAX_ITERATIONS", "10"))
 
     uptime = time.time() - session.start_time if is_running else 0
 
@@ -2778,6 +2811,9 @@ async def get_status() -> JSONResponse:
         "version": "",
         "pid": str(session.process.pid) if session.process else "",
         "projectDir": session.project_dir,
+        "max_iterations": max_iterations,
+        "cost": round(cost_usd, 4),
+        "start_time": session.start_time if session.start_time > 0 else 0,
     })
 
 

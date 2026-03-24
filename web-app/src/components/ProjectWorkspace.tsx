@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import Editor from '@monaco-editor/react';
 import { Panel, Group as PanelGroup, Separator as PanelResizeHandle } from 'react-resizable-panels';
 import {
@@ -11,7 +11,7 @@ import {
   Square, Pause, Play,
   Code2, Eye as PreviewIcon, Settings2, KeyRound, FileText as PrdIcon,
   AlertTriangle,
-  Server, Package, Terminal,
+  Server, Package, Terminal, Rocket, GitBranch,
   RefreshCw, PanelLeftClose, PanelLeftOpen, PanelBottomClose, PanelBottomOpen, Maximize2, Minimize2,
   LayoutDashboard,
 } from 'lucide-react';
@@ -24,6 +24,8 @@ import { ErrorBoundary } from './ErrorBoundary';
 import { Skeleton, SkeletonEditor } from './ui/Skeleton';
 import { ActivityPanel } from './ActivityPanel';
 import { useKeyboardShortcuts, KeyboardShortcutsModal, ShortcutsHelpButton } from './KeyboardShortcuts';
+import { CommandPalette } from './CommandPalette';
+import type { CommandItem } from './CommandPalette';
 import type { FileNode } from '../types/api';
 import type { SessionDetail } from '../api/client';
 
@@ -439,6 +441,7 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
   const [filesChangedIndicator, setFilesChangedIndicator] = useState(false);
   const [externalChangeFile, setExternalChangeFile] = useState<string | null>(null);
   const filesChangedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
 
   // Subscribe to WebSocket for file_changed events
   const { subscribe } = useWebSocket();
@@ -915,6 +918,10 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
         e.preventDefault();
         setShowQuickOpen(prev => !prev);
         setQuickOpenQuery('');
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault();
+        setCommandPaletteOpen(v => !v);
       }
       if (e.key === 'Escape' && showQuickOpen) {
         setShowQuickOpen(false);

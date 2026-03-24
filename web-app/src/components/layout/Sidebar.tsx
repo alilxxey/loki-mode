@@ -13,8 +13,11 @@ import {
   ChevronUp,
   Menu,
   X,
+  Moon,
+  Sun,
 } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
+import { useTheme } from '../../hooks/useTheme';
 
 export interface SidebarProps {
   wsConnected: boolean;
@@ -54,6 +57,7 @@ function useIsMobile() {
 export function Sidebar({ wsConnected, version }: SidebarProps) {
   const isMobile = useIsMobile();
   const location = useLocation();
+  const { theme, toggleTheme } = useTheme();
   const [mobileOpen, setMobileOpen] = useState(false);
 
   const [collapsed, setCollapsed] = useState(() => {
@@ -190,6 +194,21 @@ export function Sidebar({ wsConnected, version }: SidebarProps) {
         {showLabels && version && (
           <span className="text-xs text-[#6B6960]">v{version}</span>
         )}
+
+        {/* Dark mode toggle */}
+        <button
+          onClick={toggleTheme}
+          title={theme === 'dark' ? 'Light mode' : 'Dark mode'}
+          className={[
+            'flex items-center gap-2 text-xs text-[#6B6960] hover:text-[#36342E] transition-colors',
+            !showLabels && 'justify-center',
+          ]
+            .filter(Boolean)
+            .join(' ')}
+        >
+          {theme === 'dark' ? <Sun size={14} /> : <Moon size={14} />}
+          {showLabels && <span>{theme === 'dark' ? 'Light Mode' : 'Dark Mode'}</span>}
+        </button>
 
         {/* Docs link */}
         <a
