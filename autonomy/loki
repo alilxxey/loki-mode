@@ -1350,18 +1350,22 @@ cmd_stop() {
         pkill -9 -f "loki-run-" 2>/dev/null || true
 
         # Mark session.json as stopped (skill-invoked sessions)
+        # BUG-ST-008: Atomic session.json update via temp file + mv (matches run.sh)
         if [ -f "$LOKI_DIR/session.json" ]; then
-            python3 -c "
-import json, sys, os
+            _LOKI_SESSION_FILE="$LOKI_DIR/session.json" python3 -c "
+import json, os, tempfile
+sf = os.environ['_LOKI_SESSION_FILE']
 try:
-    p = os.path.join(sys.argv[1], 'session.json')
-    with open(p, 'r+') as f:
+    with open(sf) as f:
         d = json.load(f)
-        d['status'] = 'stopped'
-        f.seek(0); f.truncate()
+    d['status'] = 'stopped'
+    sd = os.path.dirname(sf)
+    fd, tmp = tempfile.mkstemp(dir=sd, suffix='.json')
+    with os.fdopen(fd, 'w') as f:
         json.dump(d, f)
-except: pass
-" "$LOKI_DIR" 2>/dev/null || true
+    os.replace(tmp, sf)
+except (json.JSONDecodeError, OSError): pass
+" 2>/dev/null || true
         fi
 
         # Clean up control files

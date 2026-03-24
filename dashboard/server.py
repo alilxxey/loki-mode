@@ -2924,14 +2924,30 @@ async def stop_session(request: Request):
     stop_file.parent.mkdir(parents=True, exist_ok=True)
     stop_file.write_text(datetime.now(timezone.utc).isoformat())
 
-    # Try to kill the process
+    # BUG-ST-004: Send SIGTERM and wait for process to actually exit
     pid_file = _get_loki_dir() / "loki.pid"
+    process_stopped = False
     if pid_file.exists():
         try:
             pid = int(pid_file.read_text().strip())
             os.kill(pid, 15)  # SIGTERM
+            # Wait up to 5s for graceful shutdown
+            for _ in range(10):
+                await asyncio.sleep(0.5)
+                try:
+                    os.kill(pid, 0)  # Check if still alive
+                except OSError:
+                    process_stopped = True
+                    break
+            if not process_stopped:
+                # Process didn't exit gracefully, send SIGKILL
+                try:
+                    os.kill(pid, 9)
+                    process_stopped = True
+                except (OSError, ProcessLookupError):
+                    process_stopped = True
         except (ValueError, OSError, ProcessLookupError):
-            pass
+            process_stopped = True
 
     # Mark session.json as stopped
     session_file = _get_loki_dir() / "session.json"
@@ -2953,7 +2969,11 @@ async def stop_session(request: Request):
             except OSError:
                 pass
 
-    return {"success": True, "message": "Stop signal sent"}
+    return {
+        "success": True,
+        "message": "Session stopped" if process_stopped else "Stop signal sent",
+        "process_stopped": process_stopped,
+    }
 
 
 # =============================================================================
