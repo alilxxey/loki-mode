@@ -2878,8 +2878,10 @@ async def get_status() -> JSONResponse:
             # Tasks are nested in dashboard-state.json
             tasks = state.get("tasks")
             if isinstance(tasks, dict):
-                pending_tasks = int(tasks.get("pending", 0) or 0)
-                in_progress = int(tasks.get("inProgress", 0) or 0)
+                _p = tasks.get("pending", 0)
+                _ip = tasks.get("inProgress", 0)
+                pending_tasks = len(_p) if isinstance(_p, list) else int(_p or 0)
+                in_progress = len(_ip) if isinstance(_ip, list) else int(_ip or 0)
                 if in_progress > 0:
                     current_task = f"{in_progress} task(s) in progress"
             # Extract cost from tokens object if present
@@ -6088,8 +6090,10 @@ async def _push_state_to_client(ws: WebSocket) -> None:
                     _complexity = state_data.get("complexity", _complexity)
                     _tasks = state_data.get("tasks")
                     if isinstance(_tasks, dict):
-                        _pending_tasks = int(_tasks.get("pending", 0) or 0)
-                        _in_progress = int(_tasks.get("inProgress", 0) or 0)
+                        _tp = _tasks.get("pending", 0)
+                        _tip = _tasks.get("inProgress", 0)
+                        _pending_tasks = len(_tp) if isinstance(_tp, list) else int(_tp or 0)
+                        _in_progress = len(_tip) if isinstance(_tip, list) else int(_tip or 0)
                         if _in_progress > 0:
                             _current_task = f"{_in_progress} task(s) in progress"
                     # Extract cost from tokens object if present
