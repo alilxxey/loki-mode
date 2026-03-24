@@ -36,6 +36,15 @@ import { ChangePreview } from './ChangePreview';
 import type { FileNode, ChangePreviewData } from '../types/api';
 import { CICDPanel } from './CICDPanel';
 import type { SessionDetail } from '../api/client';
+import { BuildCelebration } from './BuildCelebration';
+import { TokenSparkline, useTokenHistory } from './TokenSparkline';
+import { StatusBar } from './StatusBar';
+import { DeviceFrameSelector, useDeviceFrame } from './DeviceFrameSelector';
+import {
+  ZoomControls, CopyUrlButton, ScreenshotButton, QRCodeButton,
+  FullscreenButton, PreviewConsole, RefreshButton, PreviewSkeleton,
+} from './PreviewToolbar';
+import type { ConsoleMessage } from './PreviewToolbar';
 
 // Wrapper to avoid inline import complexity
 function CICDPanelLazy({ sessionId }: { sessionId: string }) {
@@ -465,6 +474,35 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
   const [buildEvents, setBuildEvents] = useState<BuildEvent[]>([]);
   const [changePreviewData, setChangePreviewData] = useState<ChangePreviewData | null>(null);
 
+  // B16: Token sparkline history
+  const { history: tokenHistory, recordTokens } = useTokenHistory();
+
+  // B18: Auto-save tracking
+  const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
+
+  // B20: Cursor position for status bar
+  const [cursorPosition, setCursorPosition] = useState({ line: 1, column: 1 });
+  const [lineCount, setLineCount] = useState(0);
+
+  // C25: Device frame selector
+  const { device: previewDevice, setDevice: setPreviewDevice, iframeWidth, frameClass } = useDeviceFrame();
+
+  // C26: Zoom controls
+  const [previewZoom, setPreviewZoom] = useState(100);
+
+  // C30: Fullscreen preview
+  const [previewFullscreen, setPreviewFullscreen] = useState(false);
+
+  // C32: Preview iframe loading
+  const [previewLoading, setPreviewLoading] = useState(false);
+
+  // C33: Preview console messages
+  const [consoleMessages, setConsoleMessages] = useState<ConsoleMessage[]>([]);
+
+  // C31: Container width tracking for responsive breakpoint indicator
+  const previewContainerRef = useRef<HTMLDivElement>(null);
+  const [previewContainerWidth, setPreviewContainerWidth] = useState(0);
+
   // Subscribe to WebSocket for file_changed events
   const { subscribe } = useWebSocket();
 
@@ -560,12 +598,18 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
           cost: status.cost || 0,
           startTime: status.start_time ? status.start_time * 1000 : 0,
         });
+
+        // B16: Record token usage for sparkline
+        const tokensUsed = (status as unknown as Record<string, unknown>).tokens_used as number | undefined;
+        if (tokensUsed != null) {
+          recordTokens(tokensUsed);
+        }
       } catch { /* ignore */ }
     };
     check();
     const interval = setInterval(check, isBuilding ? 3000 : 10000);
     return () => clearInterval(interval);
-  }, [isBuilding]);
+  }, [isBuilding, recordTokens]);
 
   // Elapsed time counter for action progress
   useEffect(() => {
@@ -966,6 +1010,7 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
       await api.saveSessionFile(sessionData.id, selectedFile, editorContent);
       setFileContent(editorContent);
       setIsModified(false);
+      setLastSavedAt(Date.now());
       setOpenTabs(prev => prev.map(t =>
         t.path === selectedFile ? { ...t, content: editorContent, modified: false } : t
       ));
@@ -1050,11 +1095,26 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
     if (value !== undefined) {
       setEditorContent(value);
       setIsModified(value !== fileContent);
+      // B20: Update line count
+      setLineCount(value.split('\n').length);
     }
   }, [fileContent]);
 
   const handleEditorMount = useCallback((editor: unknown) => {
     editorRef.current = editor;
+    // B20: Track cursor position for status bar
+    const monacoEditor = editor as { onDidChangeCursorPosition?: (cb: (e: { position: { lineNumber: number; column: number } }) => void) => void; getModel?: () => { getLineCount?: () => number } | null };
+    if (monacoEditor?.onDidChangeCursorPosition) {
+      monacoEditor.onDidChangeCursorPosition((e: { position: { lineNumber: number; column: number } }) => {
+        setCursorPosition({ line: e.position.lineNumber, column: e.position.column });
+      });
+    }
+    if (monacoEditor?.getModel) {
+      const model = monacoEditor.getModel();
+      if (model?.getLineCount) {
+        setLineCount(model.getLineCount());
+      }
+    }
   }, []);
 
   const handleCreateFile = useCallback(async () => {
@@ -1162,6 +1222,13 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
           sessionData.status === 'completed' || sessionData.status === 'completion_promise_fulfilled'
             ? 'bg-success/10 text-success' : 'bg-muted/10 text-muted'
         }`}>{sessionData.status}</span>
+
+        {/* B16: Token usage sparkline */}
+        {tokenHistory.length >= 2 && (
+          <div className="flex items-center gap-1 border-l border-border pl-2 ml-1">
+            <TokenSparkline tokenHistory={tokenHistory} />
+          </div>
+        )}
 
         {/* Layout toggle buttons */}
         <div className="flex items-center gap-0.5 border-l border-border pl-2 ml-1">
@@ -1460,6 +1527,20 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
                                 </ErrorBoundary>
                               )}
                             </div>
+                            {/* B20: Status bar */}
+                            <StatusBar
+                              selectedFile={selectedFile}
+                              fileName={selectedFileName}
+                              isModified={isModified}
+                              isSaving={isSaving}
+                              lastSavedAt={lastSavedAt}
+                              lineCount={lineCount}
+                              cursorLine={cursorPosition.line}
+                              cursorColumn={cursorPosition.column}
+                              buildTime={buildStatus.phase === 'complete' && buildStatus.startTime ? Math.floor((Date.now() - buildStatus.startTime) / 1000) : undefined}
+                              sessionId={sessionData.id}
+                              prd={sessionData.prd}
+                            />
                           </>
                         ) : (
                           <div className="flex-1 flex flex-col items-center justify-center text-center p-8">
@@ -1475,21 +1556,46 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
 
                     {activeWorkspaceTab === 'preview' && (
                       <ErrorBoundary name="Preview">
-                      <div className="h-full flex flex-col">
-                        {/* Preview toolbar */}
-                        <div className="px-3 py-1.5 border-b border-border flex items-center gap-2 bg-hover">
+                      <div className={`h-full flex flex-col ${previewFullscreen ? 'preview-fullscreen' : ''}`}>
+                        {/* Preview toolbar - enhanced with device frames, zoom, and actions */}
+                        <div className="px-3 py-1.5 border-b border-border flex items-center gap-2 bg-hover flex-shrink-0">
                           {(devServer?.running || previewInfo?.preview_url) ? (
                             <>
                               <IconButton icon={PreviewBack} label="Back" size="sm" onClick={handlePreviewBack} disabled={previewHistoryIndex <= 0} />
                               <IconButton icon={PreviewForward} label="Forward" size="sm" onClick={handlePreviewForward} disabled={previewHistoryIndex >= previewHistory.length - 1} />
-                              <IconButton icon={RotateCw} label="Refresh" size="sm" onClick={() => setPreviewKey(k => k + 1)} />
+                              {/* C34: Refresh with spin */}
+                              <RefreshButton onClick={() => { setPreviewLoading(true); setPreviewKey(k => k + 1); }} />
                               <input
                                 value={previewInputUrl}
                                 onChange={e => setPreviewInputUrl(e.target.value)}
                                 onKeyDown={e => { if (e.key === 'Enter') navigatePreview(previewInputUrl); }}
                                 className="flex-1 px-3 py-1 text-xs font-mono bg-card border border-border rounded-btn"
                               />
+
+                              {/* C25: Device frame selector + C31: breakpoint indicator */}
+                              <DeviceFrameSelector
+                                selectedDevice={previewDevice}
+                                onDeviceChange={setPreviewDevice}
+                                containerWidth={previewContainerWidth}
+                              />
+
+                              {/* C26: Zoom controls */}
+                              <ZoomControls zoom={previewZoom} onZoomChange={setPreviewZoom} />
+
+                              {/* C29: Copy URL */}
+                              <CopyUrlButton url={currentPreviewUrl} />
+
+                              {/* C28: Screenshot */}
+                              <ScreenshotButton />
+
+                              {/* C27: QR code */}
+                              <QRCodeButton url={currentPreviewUrl} />
+
                               <IconButton icon={ExternalLink} label="Open in new tab" size="sm" onClick={() => window.open(currentPreviewUrl, '_blank')} />
+
+                              {/* C30: Fullscreen toggle */}
+                              <FullscreenButton isFullscreen={previewFullscreen} onToggle={() => setPreviewFullscreen(f => !f)} />
+
                               {devServer?.running && (
                                 <button
                                   onClick={handleStopDevServer}
@@ -1513,7 +1619,7 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
 
                         {/* Dev server status bar */}
                         {devServer && devServer.status !== 'stopped' && (
-                          <div className={`px-3 py-1 border-b flex items-center gap-2 text-xs ${
+                          <div className={`px-3 py-1 border-b flex items-center gap-2 text-xs flex-shrink-0 ${
                             devServer.running ? 'bg-green-50 border-green-200 text-green-700' :
                             devServer.status === 'starting' ? 'bg-yellow-50 border-yellow-200 text-yellow-700' :
                             devServer.status === 'error' ? 'bg-red-50 border-red-200 text-red-700' :
@@ -1548,26 +1654,59 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
 
                         {/* Content: iframe when running, controls when not */}
                         {devServer?.running ? (
-                          <div className="flex-1 bg-white">
-                            <iframe
-                              key={previewKey}
-                              ref={previewRef}
-                              src={currentPreviewUrl}
-                              title="Project Preview"
-                              className="w-full h-full border-0"
-                              sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
-                            />
+                          <div className="flex-1 min-h-0 flex flex-col">
+                            {/* C32: Preview loading skeleton while iframe loads */}
+                            {previewLoading && <PreviewSkeleton />}
+                            <div
+                              ref={previewContainerRef}
+                              className={`flex-1 bg-white overflow-auto flex justify-center ${previewLoading ? 'hidden' : ''}`}
+                            >
+                              <div className={`${frameClass} h-full preview-zoom-${previewZoom}`}>
+                                <iframe
+                                  key={previewKey}
+                                  ref={previewRef}
+                                  src={currentPreviewUrl}
+                                  title="Project Preview"
+                                  className="w-full h-full border-0"
+                                  sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+                                  onLoad={() => {
+                                    setPreviewLoading(false);
+                                    // C31: Track actual container width
+                                    if (previewContainerRef.current) {
+                                      setPreviewContainerWidth(previewContainerRef.current.clientWidth);
+                                    }
+                                  }}
+                                />
+                              </div>
+                            </div>
+                            {/* C33: Preview console panel */}
+                            <PreviewConsole messages={consoleMessages} />
                           </div>
                         ) : previewInfo?.preview_url ? (
-                          <div className="flex-1 bg-white">
-                            <iframe
-                              key={previewKey}
-                              ref={previewRef}
-                              src={currentPreviewUrl}
-                              title="Project Preview"
-                              className="w-full h-full border-0"
-                              sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
-                            />
+                          <div className="flex-1 min-h-0 flex flex-col">
+                            {previewLoading && <PreviewSkeleton />}
+                            <div
+                              ref={previewContainerRef}
+                              className={`flex-1 bg-white overflow-auto flex justify-center ${previewLoading ? 'hidden' : ''}`}
+                            >
+                              <div className={`${frameClass} h-full preview-zoom-${previewZoom}`}>
+                                <iframe
+                                  key={previewKey}
+                                  ref={previewRef}
+                                  src={currentPreviewUrl}
+                                  title="Project Preview"
+                                  className="w-full h-full border-0"
+                                  sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+                                  onLoad={() => {
+                                    setPreviewLoading(false);
+                                    if (previewContainerRef.current) {
+                                      setPreviewContainerWidth(previewContainerRef.current.clientWidth);
+                                    }
+                                  }}
+                                />
+                              </div>
+                            </div>
+                            <PreviewConsole messages={consoleMessages} />
                           </div>
                         ) : previewInfo ? (
                           <div className="flex-1 flex flex-col items-center justify-center gap-4 p-8 text-center">
@@ -1990,6 +2129,12 @@ export function ProjectWorkspace({ session, onClose }: ProjectWorkspaceProps) {
           onClose={() => setChangePreviewData(null)}
         />
       )}
+
+      {/* B15: Build completion celebration */}
+      <BuildCelebration
+        phase={buildPhase}
+        buildTime={buildStatus.startTime ? Math.floor((Date.now() - buildStatus.startTime) / 1000) : undefined}
+      />
     </div>
   );
 }
