@@ -5,6 +5,28 @@ All notable changes to Loki Mode will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [6.72.0] - 2026-03-24 - Dark Mode, RBAC/Teams, GitPanel, Template Gallery, CI/CD Pipeline, NotificationSystem
+
+### Added
+- **BuildActivityFeed** (sprint-2): Real-time build activity stream in Purple Lab dashboard showing agent actions, file changes, and build events as they happen
+- **DeployPanel** (sprint-2): Integrated deployment control panel with one-click deploy, environment selection, and live deployment status tracking
+- **CheckpointTimeline** (sprint-3): Visual timeline of project checkpoints with diff viewer, restore capability, and checkpoint annotations
+- **ChangePreview** (sprint-3): Side-by-side diff preview of pending changes before applying, with syntax highlighting and file tree navigation
+- **CommandPalette** (sprint-3): Keyboard-driven command palette (Cmd+K) for instant access to all Purple Lab actions, navigation, and agent commands
+- **Dark Mode** (sprint-3): Full dark mode support across the entire Purple Lab dashboard with system preference detection and manual toggle
+- **GitPanel** (sprint-4): Integrated Git panel with branch management, commit history, diff viewer, and one-click push/pull operations
+- **Template Gallery** (sprint-4): Curated gallery of 21+ PRD templates (SaaS, CLI, Discord bot, mobile, etc.) with preview and instant project creation
+- **Screenshot-to-Change** (sprint-4): AI-powered screenshot ingestion that converts visual mockups and design screenshots into implementation tasks
+- **NotificationSystem** (sprint-5): Unified in-app notification system with configurable alerts for build status, agent completions, errors, and deployment events
+- **Teams** (sprint-5): Multi-user team support with shared projects, activity feeds, and collaborative session management
+- **RBAC** (sprint-5): Role-based access control with Admin, Developer, and Viewer roles governing Purple Lab project and agent permissions
+- **CI/CD Pipeline** (sprint-5): Built-in CI/CD pipeline configuration with automatic test running, build verification, and deployment gating
+
+### Fixed
+- Numerous bug fixes from 20 agent merge commits addressing CLI, dashboard, provider system, Docker, session lifecycle, edge cases, enterprise scenarios, architecture, and security issues
+- Phase-1 fixes from 15 agent bugfix sessions covering state management, healing hooks, memory consolidation, and token economics
+- WorkTree reference cleanup and index sanitization preventing phantom file staging
+
 ## [6.63.0] - 2026-03-22 - PRD-to-Task Parser with Rich Task Details
 
 ### Added
