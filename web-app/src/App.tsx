@@ -21,6 +21,7 @@ const TemplatesPage = lazy(() => import('./pages/TemplatesPage'));
 const SettingsPage = lazy(() => import('./pages/SettingsPage'));
 const LoginPage = lazy(() => import('./pages/LoginPage'));
 const TeamsPage = lazy(() => import('./pages/TeamsPage'));
+const MetricsPage = lazy(() => import('./pages/MetricsPage'));
 const NotFoundPage = lazy(() => import('./pages/NotFoundPage'));
 
 function LoadingFallback() {
@@ -56,6 +57,7 @@ export default function App() {
           <Route path="/templates" element={<Suspense fallback={<LoadingFallback />}><TemplatesPage /></Suspense>} />
           <Route path="/settings" element={<Suspense fallback={<LoadingFallback />}><SettingsPage /></Suspense>} />
           <Route path="/teams" element={<Suspense fallback={<LoadingFallback />}><TeamsPage /></Suspense>} />
+          <Route path="/metrics" element={<Suspense fallback={<LoadingFallback />}><MetricsPage /></Suspense>} />
           <Route path="*" element={<Suspense fallback={<LoadingFallback />}><NotFoundPage /></Suspense>} />
         </Route>
       </Routes>
