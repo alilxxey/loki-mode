@@ -11,9 +11,11 @@ from __future__ import annotations
 
 import uuid
 import time
+import fcntl
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple
 
 try:
@@ -44,6 +46,7 @@ class ConsolidationResult:
         links_created: Number of Zettelkasten links created
         episodes_processed: Number of episodes that were processed
         duration_seconds: How long the consolidation took
+        vector_index_stale: Whether vector indices need rebuilding
     """
     patterns_created: int = 0
     patterns_merged: int = 0
@@ -51,6 +54,7 @@ class ConsolidationResult:
     links_created: int = 0
     episodes_processed: int = 0
     duration_seconds: float = 0.0
+    vector_index_stale: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
@@ -61,6 +65,7 @@ class ConsolidationResult:
             "links_created": self.links_created,
             "episodes_processed": self.episodes_processed,
             "duration_seconds": self.duration_seconds,
+            "vector_index_stale": self.vector_index_stale,
         }
 
 
@@ -131,12 +136,34 @@ class ConsolidationPipeline:
         """
         Run the full consolidation pipeline.
 
+        Uses a file lock to prevent concurrent consolidation runs from
+        corrupting data (BUG-MEM-003 fix). If another consolidation is
+        already in progress, this call blocks until it completes.
+
         Args:
             since_hours: Only process episodes from the last N hours
 
         Returns:
             ConsolidationResult with statistics about the consolidation run
         """
+        lock_path = Path(self.base_path) / ".consolidation.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_file = None
+        try:
+            lock_file = open(lock_path, "w")
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            return self._consolidate_locked(since_hours)
+        finally:
+            if lock_file is not None:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                lock_file.close()
+                try:
+                    lock_path.unlink()
+                except OSError:
+                    pass
+
+    def _consolidate_locked(self, since_hours: int) -> ConsolidationResult:
+        """Run the consolidation pipeline under an exclusive lock."""
         start_time = time.time()
         result = ConsolidationResult()
 
@@ -237,6 +264,12 @@ class ConsolidationPipeline:
                 pattern.links.extend(links)
                 self.storage.update_pattern(pattern)
                 result.links_created += len(links)
+
+        # Flag vector indices as stale when patterns changed (BUG-MEM-007).
+        # Callers should rebuild vector indices when this flag is True to
+        # ensure semantic search returns up-to-date results.
+        if result.patterns_created > 0 or result.patterns_merged > 0 or result.anti_patterns_created > 0:
+            result.vector_index_stale = True
 
         result.duration_seconds = time.time() - start_time
         return result

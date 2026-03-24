@@ -277,11 +277,25 @@ class VectorIndex:
         else:
             embeddings_matrix = np.array([]).reshape(0, self.dimension)
 
-        np.savez(
-            f"{path}.npz",
-            embeddings=embeddings_matrix,
-            dimension=np.array([self.dimension])
-        )
+        # Write to temp file then atomically rename to prevent corruption
+        import tempfile
+        npz_path = f"{path}.npz"
+        npz_dir = os.path.dirname(npz_path) or "."
+        tmp_fd, tmp_path = tempfile.mkstemp(dir=npz_dir, suffix=".npz.tmp")
+        os.close(tmp_fd)
+        try:
+            np.savez(
+                tmp_path,
+                embeddings=embeddings_matrix,
+                dimension=np.array([self.dimension])
+            )
+            os.replace(tmp_path, npz_path)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
         # Save metadata as JSON sidecar
         sidecar_data = {
@@ -290,8 +304,23 @@ class VectorIndex:
             "dimension": self.dimension
         }
 
-        with open(f"{path}.json", "w", encoding="utf-8") as f:
-            json.dump(sidecar_data, f, indent=2)
+        import tempfile
+        json_path = f"{path}.json"
+        # Use atomic write to avoid corruption on crash (BUG-MEM-013 fix)
+        tmp_fd, tmp_path = tempfile.mkstemp(
+            dir=os.path.dirname(json_path) or ".",
+            suffix=".json.tmp"
+        )
+        try:
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                json.dump(sidecar_data, f, indent=2, ensure_ascii=False)
+            os.replace(tmp_path, json_path)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
     def load(self, path: str) -> None:
         """

@@ -1001,10 +1001,19 @@ class EmbeddingEngine:
             self._metrics["provider_calls"][provider_name] += 1
 
         except Exception as e:
-            logger.warning(f"Primary provider failed: {e}, trying fallback")
+            logger.warning("Primary provider failed: %s, trying fallback", e)
+            old_dimension = self.dimension
             self._use_fallback()
             embedding = self._primary_provider.embed(text)
             embedding = self._normalize(embedding)
+            # If dimension changed after fallback, log a warning so callers
+            # know existing vector indices may be incompatible (BUG-MEM-006).
+            if self.dimension != old_dimension:
+                logger.warning(
+                    "Embedding dimension changed from %d to %d after fallback. "
+                    "Existing vector indices may need to be rebuilt.",
+                    old_dimension, self.dimension
+                )
 
         # Ensure proper shape and type
         embedding = np.asarray(embedding, dtype=np.float32)

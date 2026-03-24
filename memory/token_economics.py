@@ -465,6 +465,12 @@ class TokenEconomics:
 
         self._full_load_baseline: Optional[int] = None
 
+    # Maximum token counter value to prevent unbounded growth in very long
+    # sessions.  Python ints don't overflow, but downstream JSON serializers
+    # and dashboard charts can choke on extremely large numbers.
+    # 10 billion tokens is well beyond any realistic single-session usage.
+    _MAX_TOKEN_COUNTER = 10_000_000_000
+
     def record_discovery(self, tokens: int) -> None:
         """
         Record tokens used for memory discovery/creation.
@@ -473,7 +479,10 @@ class TokenEconomics:
             tokens: Number of tokens used
         """
         if tokens > 0:
-            self.metrics["discovery_tokens"] += tokens
+            self.metrics["discovery_tokens"] = min(
+                self.metrics["discovery_tokens"] + tokens,
+                self._MAX_TOKEN_COUNTER,
+            )
 
     def record_read(self, tokens: int, layer: int) -> None:
         """
@@ -484,7 +493,10 @@ class TokenEconomics:
             layer: Memory layer accessed (1=topic, 2=summary, 3=full)
         """
         if tokens > 0:
-            self.metrics["read_tokens"] += tokens
+            self.metrics["read_tokens"] = min(
+                self.metrics["read_tokens"] + tokens,
+                self._MAX_TOKEN_COUNTER,
+            )
 
         if layer in (1, 2, 3):
             layer_key = f"layer{layer}_loads"

@@ -75,6 +75,10 @@ class MemoryEngine:
     - Procedural memory: Learned action sequences (skills)
     """
 
+    # Supported schema versions (BUG-MEM-004 fix)
+    SUPPORTED_SCHEMA_VERSIONS = {"1.0", "1.1.0"}
+    CURRENT_SCHEMA_VERSION = "1.1.0"
+
     def __init__(
         self,
         storage: Optional[MemoryStorage] = None,
@@ -99,10 +103,36 @@ class MemoryEngine:
     # Lifecycle Operations
     # -------------------------------------------------------------------------
 
+    def _validate_schema_version(self, data: Dict[str, Any], source: str) -> None:
+        """
+        Validate that a memory data structure has a supported schema version.
+
+        Logs a warning for unknown versions and upgrades old versions to current.
+        This prevents silent data corruption from loading incompatible formats
+        (BUG-MEM-004 fix).
+
+        Args:
+            data: Memory data dictionary (index.json, timeline.json, patterns.json, etc.)
+            source: Description of the data source (for logging)
+        """
+        version = data.get("version")
+        if version is None:
+            # Legacy data without version -- assign current version
+            data["version"] = self.CURRENT_SCHEMA_VERSION
+            logger.info("Assigned schema version %s to %s (no version found)",
+                        self.CURRENT_SCHEMA_VERSION, source)
+        elif version not in self.SUPPORTED_SCHEMA_VERSIONS:
+            logger.warning(
+                "Unsupported schema version '%s' in %s. "
+                "Supported versions: %s. Data may not load correctly.",
+                version, source, ", ".join(sorted(self.SUPPORTED_SCHEMA_VERSIONS))
+            )
+
     def initialize(self) -> None:
         """
         Initialize the memory system.
         Ensures all required directories and files exist.
+        Validates schema versions on existing data (BUG-MEM-004).
         """
         # Create directory structure
         directories = [
@@ -116,25 +146,29 @@ class MemoryEngine:
         for directory in directories:
             self.storage.ensure_directory(directory)
 
-        # Initialize index if not exists
-        if not self.storage.read_json("index.json"):
+        # Initialize index if not exists, validate schema version if it does
+        existing_index = self.storage.read_json("index.json")
+        if not existing_index:
             self.storage.write_json(
                 "index.json",
                 {
-                    "version": "1.0",
+                    "version": self.CURRENT_SCHEMA_VERSION,
                     "last_updated": datetime.now(timezone.utc).isoformat(),
                     "topics": [],
                     "total_memories": 0,
                     "total_tokens_available": 0,
                 },
             )
+        else:
+            self._validate_schema_version(existing_index, "index.json")
 
-        # Initialize timeline if not exists
-        if not self.storage.read_json("timeline.json"):
+        # Initialize timeline if not exists, validate schema version if it does
+        existing_timeline = self.storage.read_json("timeline.json")
+        if not existing_timeline:
             self.storage.write_json(
                 "timeline.json",
                 {
-                    "version": "1.0",
+                    "version": self.CURRENT_SCHEMA_VERSION,
                     "last_updated": datetime.now(timezone.utc).isoformat(),
                     "recent_actions": [],
                     "key_decisions": [],
@@ -145,6 +179,8 @@ class MemoryEngine:
                     },
                 },
             )
+        else:
+            self._validate_schema_version(existing_timeline, "timeline.json")
 
         # Initialize semantic patterns if not exists
         if not self.storage.read_json("semantic/patterns.json"):
@@ -282,24 +318,33 @@ class MemoryEngine:
         """
         Retrieve an episode by ID.
 
+        Supports multiple ID formats:
+        - ep-YYYY-MM-DD-XXX (standard from EpisodeTrace.create)
+        - {prefix}-YYYY-MM-DD-XXX (variable-length prefix)
+        - Any other format (falls back to directory scan)
+
         Args:
             episode_id: Episode identifier
 
         Returns:
             EpisodeTrace instance or None if not found
         """
-        # Parse date from episode ID (format: ep-YYYY-MM-DD-XXX)
-        parts = episode_id.split("-")
-        if len(parts) >= 5 and len(parts[1]) == 4 and len(parts[2]) == 2 and len(parts[3]) == 2:
-            date_str = f"{parts[1]}-{parts[2]}-{parts[3]}"
-        else:
-            # Non-standard ID format; search all directories
-            return self._search_episode(episode_id)
+        import re
 
-        data = self.storage.read_json(f"episodic/{date_str}/task-{episode_id}.json")
-        if data:
-            return self._dict_to_episode(data)
-        return None
+        # Try to extract YYYY-MM-DD from anywhere in the episode ID.
+        # This handles variable-length prefixes (ep-, episode-, etc.)
+        # and avoids the fragile fixed-offset parsing that produced
+        # garbage paths for non-standard prefixes (BUG-MEM-001).
+        date_match = re.search(r'(\d{4})-(\d{2})-(\d{2})', episode_id)
+        if date_match:
+            date_str = date_match.group(0)
+            data = self.storage.read_json(f"episodic/{date_str}/task-{episode_id}.json")
+            if data:
+                return self._dict_to_episode(data)
+
+        # Non-standard ID format or file not found at parsed path;
+        # search all directories as fallback
+        return self._search_episode(episode_id)
 
     def get_recent_episodes(self, limit: int = 10) -> List[EpisodeTrace]:
         """
@@ -416,18 +461,26 @@ class MemoryEngine:
         """
         Increment usage count for a pattern.
 
+        Uses the storage layer's pattern update which holds an exclusive lock
+        during the read-modify-write cycle, preventing TOCTOU race conditions
+        when multiple agents update patterns concurrently.
+
         Args:
             pattern_id: Pattern identifier
         """
-        patterns_data = self.storage.read_json("semantic/patterns.json") or {"patterns": []}
+        # Load pattern via storage (which acquires read lock)
+        pattern_data = self.storage.load_pattern(pattern_id)
+        if pattern_data is None:
+            return
 
-        for pattern in patterns_data["patterns"]:
-            if pattern.get("id") == pattern_id:
-                pattern["usage_count"] = pattern.get("usage_count", 0) + 1
-                pattern["last_used"] = datetime.now(timezone.utc).isoformat()
-                break
+        # Update fields
+        pattern_data["usage_count"] = pattern_data.get("usage_count", 0) + 1
+        pattern_data["last_used"] = datetime.now(timezone.utc).isoformat()
 
-        self.storage.write_json("semantic/patterns.json", patterns_data)
+        # Write back via save_pattern which holds an exclusive lock during
+        # the full read-modify-write (upsert) cycle
+        pattern_obj = self._dict_to_pattern(pattern_data)
+        self.storage.save_pattern(pattern_obj)
 
     # -------------------------------------------------------------------------
     # Skill Operations
@@ -758,15 +811,12 @@ class MemoryEngine:
         return "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
 
     def _update_timeline_with_episode(self, episode: Dict[str, Any]) -> None:
-        """Update timeline with episode summary."""
-        timeline = self.storage.read_json("timeline.json") or {
-            "version": "1.0",
-            "recent_actions": [],
-            "key_decisions": [],
-            "active_context": {},
-        }
+        """Update timeline with episode summary.
 
-        # Create action summary
+        Delegates to the storage layer's update_timeline method which holds
+        an exclusive lock during the read-modify-write cycle, preventing
+        concurrent timeline corruption.
+        """
         context = episode.get("context", {})
         action_entry = {
             "timestamp": episode.get("timestamp", datetime.now(timezone.utc).isoformat()),
@@ -775,12 +825,7 @@ class MemoryEngine:
             "topic_id": context.get("phase", "general"),
         }
 
-        # Add to recent actions (keep last 50)
-        timeline["recent_actions"].insert(0, action_entry)
-        timeline["recent_actions"] = timeline["recent_actions"][:50]
-        timeline["last_updated"] = datetime.now(timezone.utc).isoformat()
-
-        self.storage.write_json("timeline.json", timeline)
+        self.storage.update_timeline(action_entry)
 
     def _update_index_with_pattern(self, pattern: Dict[str, Any]) -> None:
         """Update index with pattern topic."""

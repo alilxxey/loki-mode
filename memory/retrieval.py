@@ -285,6 +285,10 @@ class MemoryRetrieval:
         self.vector_indices = vector_indices or {}
         self.base_path = Path(base_path)
         self._namespace = namespace
+        # Track when indices were last built to detect staleness (BUG-MEM-002).
+        # When consolidation modifies patterns, indices become stale and should
+        # be rebuilt before the next similarity search.
+        self._indices_built_at: Optional[float] = None
 
     @property
     def namespace(self) -> Optional[str]:
@@ -692,6 +696,15 @@ class MemoryRetrieval:
     # Multi-Modal Retrieval
     # -------------------------------------------------------------------------
 
+    def mark_indices_stale(self) -> None:
+        """
+        Mark vector indices as stale so they are rebuilt before next search.
+
+        Should be called after consolidation modifies the semantic memory
+        to prevent returning stale results (BUG-MEM-002 fix).
+        """
+        self._indices_built_at = None
+
     def retrieve_by_similarity(
         self,
         query: str,
@@ -702,6 +715,8 @@ class MemoryRetrieval:
         Retrieve by semantic similarity using embeddings.
 
         Falls back to keyword search if embeddings are not available.
+        Checks for index staleness and falls back to keyword search
+        if indices may be stale (BUG-MEM-002 fix).
 
         Args:
             query: Search query text
@@ -716,6 +731,21 @@ class MemoryRetrieval:
 
         if collection not in self.vector_indices:
             return self.retrieve_by_keyword(query.split(), collection)[:top_k]
+
+        # Check if indices need rebuilding after consolidation (BUG-MEM-002).
+        # If patterns.json was modified more recently than we last built
+        # indices, fall back to keyword search for accuracy.
+        if collection == "semantic" and self._indices_built_at is not None:
+            patterns_path = self.base_path / "semantic" / "patterns.json"
+            if patterns_path.exists():
+                import os
+                patterns_mtime = os.path.getmtime(patterns_path)
+                if patterns_mtime > self._indices_built_at:
+                    logger.info(
+                        "Semantic index is stale (patterns modified after index build). "
+                        "Falling back to keyword search for accuracy."
+                    )
+                    return self.retrieve_by_keyword(query.split(), collection)[:top_k]
 
         # Generate query embedding
         query_embedding = self.embedding_engine.embed(query)
@@ -1254,9 +1284,12 @@ class MemoryRetrieval:
 
         Reads all memories and creates vector embeddings for similarity search.
         Requires embedding_engine to be configured.
+        Records build timestamp so staleness can be detected (BUG-MEM-002).
         """
         if self.embedding_engine is None:
             return
+
+        import time as _time
 
         # Build episodic index
         if "episodic" in self.vector_indices:
@@ -1273,6 +1306,9 @@ class MemoryRetrieval:
         # Build anti-patterns index
         if "anti_patterns" in self.vector_indices:
             self._build_anti_patterns_index()
+
+        # Record build timestamp for staleness detection (BUG-MEM-002)
+        self._indices_built_at = _time.time()
 
     def update_index(
         self,
