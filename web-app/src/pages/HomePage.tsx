@@ -24,6 +24,8 @@ import {
   Heart,
   ExternalLink,
 } from 'lucide-react';
+import { PageTransition } from '../components/PageTransition';
+import { AnimateOnScroll } from '../components/AnimateOnScroll';
 import type { StatusResponse, Agent, LogEntry } from '../types/api';
 
 const CYCLING_PROMPTS = [
@@ -368,6 +370,7 @@ export default function HomePage() {
 
       <div className="max-w-[1920px] mx-auto px-6 py-6 relative z-10">
         {!isRunning ? (
+          <PageTransition>
           <div className="flex flex-col items-center">
             {/* A1: Hero section with constellation background */}
             <div className="hero-bg w-full rounded-3xl pt-8 pb-12 mb-2">
@@ -379,6 +382,7 @@ export default function HomePage() {
             {/* Hero section */}
             <div className="text-center mt-12 mb-10">
               <p className="text-sm text-primary font-medium mb-2">{getGreeting()}</p>
+            <AnimateOnScroll animation="fade-in-up" className="text-center mt-12 mb-10">
               <h2 className="font-heading text-h1 text-[#36342E]">
                 Describe it. Build it. Ship it.
               </h2>
@@ -386,7 +390,7 @@ export default function HomePage() {
                 Type what you want to build. Purple Lab handles the rest --
                 from code to containers, autonomously.
               </p>
-            </div>
+            </AnimateOnScroll>
 
                 {/* A6: Gradient text on heading */}
                 <h2 className="font-heading text-h1 gradient-text">
@@ -422,6 +426,33 @@ export default function HomePage() {
                     <div
                       className="absolute left-6 top-1/2 -translate-y-1/2 text-xl text-[#6B6960]/50 pointer-events-none select-none"
                       aria-hidden="true"
+            {/* One-line quick-start input */}
+            <AnimateOnScroll animation="fade-in-up" delay={100} className="w-full max-w-2xl">
+              <div className="relative">
+                <input
+                  ref={quickInputRef}
+                  type="text"
+                  value={quickPrompt}
+                  onChange={(e) => setQuickPrompt(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault();
+                      handleQuickStart();
+                    }
+                  }}
+                  className="w-full text-xl px-6 py-4 rounded-2xl bg-white border border-[#ECEAE3] shadow-sm focus:outline-none focus:ring-2 focus:ring-[#553DE9]/30 focus:border-[#553DE9]/40 focus:shadow-lg transition-all placeholder:text-transparent"
+                  disabled={quickSubmitting}
+                  aria-label="Describe what you want to build"
+                />
+                {/* Cycling placeholder overlay */}
+                {!quickPrompt && (
+                  <div
+                    className="absolute left-6 top-1/2 -translate-y-1/2 text-xl text-[#6B6960]/50 pointer-events-none select-none"
+                    aria-hidden="true"
+                  >
+                    <span
+                      key={promptIndex}
+                      className={placeholderFading ? 'quick-input-placeholder-exit' : 'quick-input-placeholder'}
                     >
                       <span
                         key={promptIndex}
@@ -613,10 +644,12 @@ export default function HomePage() {
                 </div>
               </div>
             </div>
+              )}
+            </AnimateOnScroll>
 
             {/* Post-build actions */}
             {wasRunning && !isRunning && (
-              <div className="w-full max-w-3xl mt-6 flex flex-col gap-4">
+              <AnimateOnScroll animation="fade-in-up" delay={200} className="w-full max-w-3xl mt-6 flex flex-col gap-4">
                 <button
                   onClick={async () => {
                     try {
@@ -640,14 +673,14 @@ export default function HomePage() {
                 </div>
                 <ReportPanel visible={showReport} />
                 <MetricsPanel visible={showMetrics} />
-              </div>
+              </AnimateOnScroll>
             )}
 
-            <div className="w-full max-w-3xl mt-6">
+            <AnimateOnScroll animation="fade-in" delay={300} className="w-full max-w-3xl mt-6">
               <SessionHistory onLoadSession={handleLoadSession} />
-            </div>
+            </AnimateOnScroll>
 
-            <div className="mt-6 text-xs text-[#6B6960] flex items-center gap-2">
+            <div className="mt-6 text-xs text-[#6B6960] flex items-center gap-2 animate-fade-in animation-fill-both animation-delay-400">
               <div className={`w-2 h-2 rounded-full ${connected ? 'bg-[#1FC5A8]' : 'bg-[#C45B5B]'}`} />
               {connected ? 'Connected to Purple Lab backend' : 'Waiting for backend connection...'}
             </div>
@@ -687,6 +720,7 @@ export default function HomePage() {
               </div>
             </footer>
           </div>
+          </PageTransition>
         ) : (
           <>
             <ErrorBoundary name="ControlBar">
