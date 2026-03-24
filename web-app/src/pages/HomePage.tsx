@@ -26,6 +26,9 @@ import {
 } from 'lucide-react';
 import { PageTransition } from '../components/PageTransition';
 import { AnimateOnScroll } from '../components/AnimateOnScroll';
+import { Showcase } from '../components/Showcase';
+import { OpenSourceStats } from '../components/OpenSourceStats';
+import { NewsletterSignup } from '../components/NewsletterSignup';
 import type { StatusResponse, Agent, LogEntry } from '../types/api';
 
 const CYCLING_PROMPTS = [
@@ -214,6 +217,17 @@ export default function HomePage() {
         .catch(() => {
           // Template load failed -- ignore, user can still type manually
         });
+    }
+  }, []);
+
+  // Check for showcase prompt prefill from ShowcasePage navigation
+  useEffect(() => {
+    const showcasePrompt = sessionStorage.getItem('pl_showcase_prompt');
+    if (showcasePrompt) {
+      sessionStorage.removeItem('pl_showcase_prompt');
+      setQuickPrompt(showcasePrompt);
+      // Focus the input after a brief delay so user sees the pre-filled prompt
+      setTimeout(() => quickInputRef.current?.focus(), 100);
     }
   }, []);
 
@@ -719,6 +733,16 @@ export default function HomePage() {
                 </div>
               </div>
             </footer>
+            {/* Built with Loki Mode showcase */}
+            <div className="w-full max-w-3xl mt-6">
+              <Showcase />
+            </div>
+
+            {/* Newsletter and open source stats footer */}
+            <div className="w-full max-w-3xl mt-4">
+              <NewsletterSignup />
+              <OpenSourceStats />
+            </div>
           </div>
           </PageTransition>
         ) : (

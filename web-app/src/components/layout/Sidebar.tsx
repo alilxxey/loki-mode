@@ -17,6 +17,7 @@ import {
   Moon,
   Sun,
   Users,
+  Sparkles,
   BarChart3,
 } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
@@ -42,6 +43,8 @@ const mainNav: NavItem[] = [
   { to: '/templates', label: 'Templates', icon: LayoutTemplate },
   { to: '/teams', label: 'Teams', icon: Users },
   { to: '/metrics', label: 'Metrics', icon: BarChart3 },
+  { to: '/showcase', label: 'Showcase', icon: Sparkles },
+  { to: '/compare', label: 'Compare', icon: BarChart3 },
 ];
 interface NavSection {
   key: string;
