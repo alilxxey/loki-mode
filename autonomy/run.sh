@@ -1364,6 +1364,9 @@ get_phase_names() {
 
 # Global tier for current iteration (set by get_rarv_tier)
 CURRENT_TIER="development"
+# Export for provider helper functions (e.g., gemini.sh:provider_get_current_model)
+LOKI_CURRENT_TIER="$CURRENT_TIER"
+export LOKI_CURRENT_TIER
 
 # Get the appropriate tier based on RARV cycle step
 # Args: iteration_count (defaults to ITERATION_COUNT)
@@ -3026,7 +3029,15 @@ invoke_gemini() {
     local prompt="$1"
     shift
 
-    local model="${PROVIDER_MODEL:-${GEMINI_DEFAULT_PRO:-gemini-3-pro-preview}}"
+    # BUG-PROV-001/006 fix: Use dynamic model resolution instead of frozen PROVIDER_MODEL.
+    # provider_get_current_model() resolves based on LOKI_CURRENT_TIER at runtime.
+    # Falls back to provider_get_tier_param if available, then to GEMINI_DEFAULT_PRO.
+    local model
+    if type provider_get_current_model &>/dev/null; then
+        model=$(provider_get_current_model)
+    else
+        model="${GEMINI_DEFAULT_PRO:-gemini-3-pro-preview}"
+    fi
     local fallback="${PROVIDER_MODEL_FALLBACK:-${GEMINI_DEFAULT_FLASH:-gemini-3-flash-preview}}"
 
     # Create temp file for output to preserve streaming while checking for rate limit
@@ -3057,7 +3068,13 @@ invoke_gemini_capture() {
     local prompt="$1"
     shift
 
-    local model="${PROVIDER_MODEL:-${GEMINI_DEFAULT_PRO:-gemini-3-pro-preview}}"
+    # BUG-PROV-001/006 fix: Use dynamic model resolution instead of frozen PROVIDER_MODEL
+    local model
+    if type provider_get_current_model &>/dev/null; then
+        model=$(provider_get_current_model)
+    else
+        model="${GEMINI_DEFAULT_PRO:-gemini-3-pro-preview}"
+    fi
     local fallback="${PROVIDER_MODEL_FALLBACK:-${GEMINI_DEFAULT_FLASH:-gemini-3-flash-preview}}"
     local output
 
@@ -6859,16 +6876,32 @@ except Exception:
 PYEOF
 }
 
-# Check provider health: API key exists + CLI installed
+# Check provider health: CLI installed + authentication available
 # Returns: 0 if healthy, 1 if unhealthy
+# BUG-PROV-003 fix: Claude Code supports OAuth sessions in addition to API keys.
+# Checking only for ANTHROPIC_API_KEY incorrectly marks OAuth users as unhealthy,
+# causing unnecessary failover to degraded providers. Now also checks for OAuth
+# session files and `claude auth status` as fallback.
 check_provider_health() {
     local provider="$1"
 
-    # Check CLI is installed
+    # Check CLI is installed and authentication is available
     case "$provider" in
         claude)
             command -v claude &>/dev/null || return 1
-            [ -n "${ANTHROPIC_API_KEY:-}" ] || return 1
+            # Accept API key OR OAuth session (Claude Code supports both)
+            if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+                return 0
+            fi
+            # Check for OAuth session files (~/.claude/ stores sessions)
+            if [ -d "${HOME}/.claude" ] && [ -f "${HOME}/.claude/.credentials.json" ]; then
+                return 0
+            fi
+            # Last resort: ask the CLI if it has valid auth
+            if claude auth status &>/dev/null 2>&1; then
+                return 0
+            fi
+            return 1
             ;;
         codex)
             command -v codex &>/dev/null || return 1
@@ -6876,7 +6909,15 @@ check_provider_health() {
             ;;
         gemini)
             command -v gemini &>/dev/null || return 1
-            [ -n "${GOOGLE_API_KEY:-${GEMINI_API_KEY:-}}" ] || return 1
+            # BUG-PROV-003: Also accept GEMINI_API_KEY and gcloud ADC
+            if [ -n "${GOOGLE_API_KEY:-}" ] || [ -n "${GEMINI_API_KEY:-}" ]; then
+                return 0
+            fi
+            # Check for gcloud Application Default Credentials
+            if [ -f "${HOME}/.config/gcloud/application_default_credentials.json" ]; then
+                return 0
+            fi
+            return 1
             ;;
         cline)
             command -v cline &>/dev/null || return 1
@@ -6944,7 +6985,13 @@ attempt_provider_failover() {
             update_failover_health "$provider" "healthy"
 
             # Update runtime provider vars
+            # BUG-PROV-008 fix: Update BOTH PROVIDER_NAME and LOKI_PROVIDER.
+            # Without this, subprocesses and the MCP server (which read LOKI_PROVIDER)
+            # continue using the old provider name, causing provider-specific behavior
+            # in child processes to use the wrong config.
             PROVIDER_NAME="$provider"
+            LOKI_PROVIDER="$provider"
+            export LOKI_PROVIDER
 
             emit_event_json "provider_failover" \
                 "from=$current" \
@@ -6996,7 +7043,10 @@ check_primary_recovery() {
         update_failover_state "currentProvider" "$primary"
         update_failover_health "$primary" "healthy"
 
+        # BUG-PROV-008 fix: Update BOTH PROVIDER_NAME and LOKI_PROVIDER on recovery
         PROVIDER_NAME="$primary"
+        LOKI_PROVIDER="$primary"
+        export LOKI_PROVIDER
 
         emit_event_json "provider_recovery" \
             "from=$current" \
@@ -9375,6 +9425,11 @@ run_autonomous() {
 
         # Dynamic tier selection based on RARV cycle phase
         CURRENT_TIER=$(get_rarv_tier "$ITERATION_COUNT")
+        # NEW BUG FIX: Export LOKI_CURRENT_TIER so provider helper functions
+        # (e.g., gemini.sh:provider_get_current_model) can resolve the correct model.
+        # Without this, LOKI_CURRENT_TIER is always empty and defaults to "planning".
+        LOKI_CURRENT_TIER="$CURRENT_TIER"
+        export LOKI_CURRENT_TIER
         local rarv_phase=$(get_rarv_phase_name "$ITERATION_COUNT")
         local tier_param=$(get_provider_tier_param "$CURRENT_TIER")
         echo "=== RARV Phase: $rarv_phase, Tier: $CURRENT_TIER ($tier_param) ===" | tee -a "$log_file" "$agent_log"
@@ -9635,25 +9690,46 @@ if __name__ == "__main__":
             gemini)
                 # Gemini: Degraded mode - no stream-json, no agent tracking
                 # Uses invoke_gemini helper for rate limit fallback to flash model
-                local model="${PROVIDER_MODEL:-${GEMINI_DEFAULT_PRO:-gemini-3-pro-preview}}"
+                # BUG-PROV-001 fix: Use tier_param (resolved model) instead of frozen PROVIDER_MODEL
+                # tier_param is computed above via get_provider_tier_param() -> resolve_model_for_tier()
+                # which returns the correct model name for the current RARV tier
+                local model="$tier_param"
                 local fallback="${PROVIDER_MODEL_FALLBACK:-${GEMINI_DEFAULT_FLASH:-gemini-3-flash-preview}}"
-                echo "[loki] Gemini model: $model (fallback: $fallback), tier: $tier_param" >> "$log_file"
-                echo "[loki] Gemini model: $model (fallback: $fallback), tier: $tier_param" >> "$agent_log"
+                echo "[loki] Gemini model: $model (fallback: $fallback), tier: $CURRENT_TIER" >> "$log_file"
+                echo "[loki] Gemini model: $model (fallback: $fallback), tier: $CURRENT_TIER" >> "$agent_log"
 
-                # Try primary model, fallback on rate limit
-                local tmp_output
+                # BUG-PROV-003: Resolve API key (supports GEMINI_API_KEY alias and ADC)
+                if type _gemini_resolve_api_key &>/dev/null; then
+                    _gemini_resolve_api_key || true
+                fi
+
+                # Try primary model, fallback on rate limit or auth error
+                local tmp_output tmp_stderr
                 tmp_output=$(mktemp)
+                tmp_stderr=$(mktemp)
                 # BUG-RUN-011/RUN-013: Use PIPESTATUS[0] for primary invocation too
-                gemini --approval-mode=yolo --model "$model" "$prompt" < /dev/null 2>&1 | tee "$tmp_output" | tee -a "$log_file" "$agent_log" "$iter_output"
+                gemini --approval-mode=yolo --model "$model" "$prompt" < /dev/null 2>"$tmp_stderr" | tee "$tmp_output" | tee -a "$log_file" "$agent_log" "$iter_output"
                 exit_code=${PIPESTATUS[0]}
 
-                if [[ $exit_code -ne 0 ]] && grep -qiE "(rate.?limit|429|quota|resource.?exhausted)" "$tmp_output"; then
+                # BUG-PROV-003: Handle auth errors with API key rotation
+                if [[ $exit_code -ne 0 ]] && grep -qiE "(401|403|unauthorized|forbidden|invalid.?api.?key|permission.?denied)" "$tmp_stderr" 2>/dev/null; then
+                    if type _gemini_rotate_api_key &>/dev/null && _gemini_rotate_api_key; then
+                        log_warn "Auth error on Gemini, rotated to next API key"
+                        rm -f "$tmp_output" "$tmp_stderr"
+                        tmp_output=$(mktemp)
+                        tmp_stderr=$(mktemp)
+                        gemini --approval-mode=yolo --model "$model" "$prompt" < /dev/null 2>"$tmp_stderr" | tee "$tmp_output" | tee -a "$log_file" "$agent_log" "$iter_output"
+                        exit_code=${PIPESTATUS[0]}
+                    fi
+                fi
+
+                if [[ $exit_code -ne 0 ]] && grep -qiE "(rate.?limit|429|quota|resource.?exhausted)" "$tmp_stderr" "$tmp_output" 2>/dev/null; then
                     log_warn "Rate limit hit on $model, falling back to $fallback"
                     echo "[loki] Fallback to $fallback due to rate limit" >> "$log_file"
                     gemini --approval-mode=yolo --model "$fallback" "$prompt" < /dev/null 2>&1 | tee -a "$log_file" "$agent_log" "$iter_output"
                     exit_code=${PIPESTATUS[0]}
                 fi
-                rm -f "$tmp_output"
+                rm -f "$tmp_output" "$tmp_stderr"
                 ;;
 
             cline)

@@ -120,6 +120,61 @@ PROVIDER_DEGRADED_REASONS=(
     "No MCP server integration"
 )
 
+# BUG-PROV-003 fix: API key resolution with fallback and rotation support.
+# Gemini CLI accepts GOOGLE_API_KEY or GEMINI_API_KEY env vars.
+# If LOKI_GEMINI_API_KEYS is set (comma-separated), rotate through them on auth errors.
+# This function sets GOOGLE_API_KEY for the current invocation.
+_gemini_resolve_api_key() {
+    # Already have a key set -- nothing to do
+    if [ -n "${GOOGLE_API_KEY:-}" ]; then
+        return 0
+    fi
+    # Try GEMINI_API_KEY as alias
+    if [ -n "${GEMINI_API_KEY:-}" ]; then
+        export GOOGLE_API_KEY="$GEMINI_API_KEY"
+        return 0
+    fi
+    # Try gcloud ADC (Application Default Credentials) -- gemini CLI supports this natively
+    if [ -f "${HOME}/.config/gcloud/application_default_credentials.json" ]; then
+        return 0  # Let gemini CLI handle ADC
+    fi
+    return 1
+}
+
+# Rotate to next API key from LOKI_GEMINI_API_KEYS (comma-separated list)
+# Called after auth errors (401/403) to try the next key
+_gemini_rotate_api_key() {
+    local keys="${LOKI_GEMINI_API_KEYS:-}"
+    [ -z "$keys" ] && return 1  # No key list configured
+
+    local current="${GOOGLE_API_KEY:-}"
+    local IFS=','
+    local found_current=false
+    local first_key=""
+
+    for key in $keys; do
+        key=$(echo "$key" | tr -d ' ')  # trim whitespace
+        [ -z "$key" ] && continue
+        [ -z "$first_key" ] && first_key="$key"
+
+        if [ "$found_current" = "true" ]; then
+            export GOOGLE_API_KEY="$key"
+            return 0
+        fi
+        if [ "$key" = "$current" ]; then
+            found_current=true
+        fi
+    done
+
+    # Wrap around to first key (or set first key if current wasn't in list)
+    if [ -n "$first_key" ] && [ "$first_key" != "$current" ]; then
+        export GOOGLE_API_KEY="$first_key"
+        return 0
+    fi
+
+    return 1  # All keys exhausted or only one key
+}
+
 # Detection function - check if provider CLI is available
 provider_detect() {
     command -v gemini >/dev/null 2>&1
@@ -130,13 +185,17 @@ provider_version() {
     gemini --version 2>/dev/null | head -1
 }
 
-# Invocation function with rate limit fallback
+# Invocation function with rate limit fallback and API key rotation
 # Uses --model flag to specify model, --approval-mode=yolo for autonomous mode
 # Falls back to flash model if pro hits rate limit
+# BUG-PROV-003 fix: rotates API keys on auth errors (401/403)
 # Accepts optional --model <name> as first args to override default model
 # BUG-PROV-010 fix: uses tee to stream output while still capturing for rate-limit check
 # Note: < /dev/null prevents Gemini from pausing on stdin
 provider_invoke() {
+    # Resolve API key before invocation
+    _gemini_resolve_api_key || true
+
     local model
     model=$(provider_get_current_model)
 
@@ -156,6 +215,18 @@ provider_invoke() {
     stderr_file=$(mktemp)
     gemini --approval-mode=yolo --model "$model" "$prompt" "$@" < /dev/null 2>"$stderr_file" | tee "$output_file"
     exit_code=${PIPESTATUS[0]}
+
+    # Check for auth errors (401/403) -- try rotating API key
+    if [[ $exit_code -ne 0 ]] && grep -qiE "(401|403|unauthorized|forbidden|invalid.?api.?key|permission.?denied)" "$stderr_file" 2>/dev/null; then
+        if _gemini_rotate_api_key; then
+            echo "[loki] Auth error on Gemini, rotated to next API key" >&2
+            rm -f "$stderr_file" "$output_file"
+            output_file=$(mktemp)
+            stderr_file=$(mktemp)
+            gemini --approval-mode=yolo --model "$model" "$prompt" "$@" < /dev/null 2>"$stderr_file" | tee "$output_file"
+            exit_code=${PIPESTATUS[0]}
+        fi
+    fi
 
     # Check for rate limit (429) or quota exceeded (check stderr for error indicators)
     if [[ $exit_code -ne 0 ]] && grep -qiE "(rate.?limit|429|quota|resource.?exhausted)" "$stderr_file" 2>/dev/null; then
@@ -221,11 +292,15 @@ resolve_model_for_tier() {
     echo "$model"
 }
 
-# Tier-aware invocation with rate limit fallback
+# Tier-aware invocation with rate limit fallback and API key rotation
 # BUG-PROV-001 fix: uses resolve_model_for_tier to select actual model for the tier
+# BUG-PROV-003 fix: rotates API keys on auth errors (401/403)
 # BUG-PROV-010 fix: uses tee to stream output while capturing for rate-limit check
 # Note: < /dev/null prevents Gemini from pausing on stdin
 provider_invoke_with_tier() {
+    # Resolve API key before invocation
+    _gemini_resolve_api_key || true
+
     local tier="$1"
     local prompt="$2"
     shift 2
@@ -243,6 +318,18 @@ provider_invoke_with_tier() {
     stderr_file=$(mktemp)
     gemini --approval-mode=yolo --model "$model" "$prompt" "$@" < /dev/null 2>"$stderr_file" | tee "$output_file"
     exit_code=${PIPESTATUS[0]}
+
+    # Check for auth errors (401/403) -- try rotating API key
+    if [[ $exit_code -ne 0 ]] && grep -qiE "(401|403|unauthorized|forbidden|invalid.?api.?key|permission.?denied)" "$stderr_file" 2>/dev/null; then
+        if _gemini_rotate_api_key; then
+            echo "[loki] Auth error on Gemini, rotated to next API key" >&2
+            rm -f "$stderr_file" "$output_file"
+            output_file=$(mktemp)
+            stderr_file=$(mktemp)
+            gemini --approval-mode=yolo --model "$model" "$prompt" "$@" < /dev/null 2>"$stderr_file" | tee "$output_file"
+            exit_code=${PIPESTATUS[0]}
+        fi
+    fi
 
     # Check for rate limit (429) or quota exceeded - fallback to flash
     if [[ $exit_code -ne 0 ]] && grep -qiE "(rate.?limit|429|quota|resource.?exhausted)" "$stderr_file" 2>/dev/null; then
