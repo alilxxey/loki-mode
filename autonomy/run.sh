@@ -7956,6 +7956,37 @@ EOF
 load_state() {
     if [ -f ".loki/autonomy-state.json" ]; then
         if command -v python3 &> /dev/null; then
+            # BUG-ST-006: Validate checkpoint integrity before loading state
+            local state_valid
+            state_valid=$(python3 -c "
+import json, sys
+try:
+    with open('.loki/autonomy-state.json') as f:
+        d = json.load(f)
+    # Validate required fields exist and have sane types
+    rc = d.get('retryCount', 0)
+    ic = d.get('iterationCount', 0)
+    status = d.get('status', 'unknown')
+    if not isinstance(rc, (int, float)) or not isinstance(ic, (int, float)):
+        print('invalid')
+        sys.exit(0)
+    if rc < 0 or ic < 0:
+        print('invalid')
+        sys.exit(0)
+    print('valid')
+except (json.JSONDecodeError, KeyError, TypeError, OSError):
+    print('invalid')
+" 2>/dev/null || echo "invalid")
+
+            if [ "$state_valid" != "valid" ]; then
+                log_warn "State file corrupted or invalid - starting fresh"
+                RETRY_COUNT=0
+                ITERATION_COUNT=0
+                # Back up corrupted state file for diagnosis
+                mv ".loki/autonomy-state.json" ".loki/autonomy-state.json.corrupt.$(date +%s)" 2>/dev/null || true
+                return
+            fi
+
             # Load retry count, iteration count, and status from previous session
             local prev_status
             prev_status=$(python3 -c "import json; print(json.load(open('.loki/autonomy-state.json')).get('status', 'unknown'))" 2>/dev/null || echo "unknown")
@@ -9280,16 +9311,9 @@ run_autonomous() {
     fi
 
     while [ $retry -lt $MAX_RETRIES ]; do
-        # Increment iteration count
-        ((ITERATION_COUNT++))
-
-        # Check max iterations
-        if check_max_iterations; then
-            save_state $retry "max_iterations_reached" 0
-            return 0
-        fi
-
-        # Check for human intervention (PAUSE, HUMAN_INPUT.md, STOP)
+        # Check for human intervention BEFORE incrementing iteration count
+        # BUG-ST-010: Moved pause/stop checks before ITERATION_COUNT increment
+        # to prevent spurious count increases when resuming from pause
         check_human_intervention
         local intervention_result=$?
         case $intervention_result in
@@ -9302,6 +9326,15 @@ run_autonomous() {
             log_warn "Session paused due to budget limit. Remove .loki/PAUSE to resume."
             save_state $retry "budget_exceeded" 0
             continue  # Will hit PAUSE check on next iteration
+        fi
+
+        # Increment iteration count (after pause/stop checks to avoid spurious increments)
+        ((ITERATION_COUNT++))
+
+        # Check max iterations
+        if check_max_iterations; then
+            save_state $retry "max_iterations_reached" 0
+            return 0
         fi
 
         # Watchdog: periodic process health check (opt-in via LOKI_WATCHDOG=true)
@@ -9775,6 +9808,16 @@ if __name__ == "__main__":
                     log_warn "Static analysis FAILED ($sa_count consecutive) - findings injected into next iteration"
                 fi
             fi
+            # BUG-ST-002: Check pause signal between quality gates
+            if [ -f "${TARGET_DIR:-.}/.loki/PAUSE" ] || [ -f "${TARGET_DIR:-.}/.loki/STOP" ]; then
+                log_warn "Pause/stop signal detected between quality gates - deferring remaining gates"
+                # Store partial gate failures before breaking out
+                if [ -n "$gate_failures" ]; then
+                    echo "$gate_failures" > "${TARGET_DIR:-.}/.loki/quality/gate-failures.txt"
+                fi
+                # Let the main loop handle the pause/stop on next iteration
+                continue
+            fi
             # Test coverage gate
             if [ "${PHASE_UNIT_TESTS:-true}" = "true" ]; then
                 log_info "Quality gate: test coverage..."
@@ -9786,6 +9829,14 @@ if __name__ == "__main__":
                     gate_failures="${gate_failures}test_coverage,"
                     log_warn "Test coverage gate FAILED ($tc_count consecutive) - must pass next iteration"
                 fi
+            fi
+            # BUG-ST-002: Check pause signal between quality gates (after test coverage)
+            if [ -f "${TARGET_DIR:-.}/.loki/PAUSE" ] || [ -f "${TARGET_DIR:-.}/.loki/STOP" ]; then
+                log_warn "Pause/stop signal detected between quality gates - deferring remaining gates"
+                if [ -n "$gate_failures" ]; then
+                    echo "$gate_failures" > "${TARGET_DIR:-.}/.loki/quality/gate-failures.txt"
+                fi
+                continue
             fi
             # Code review gate (upgraded from advisory, with escalation)
             if [ "$PHASE_CODE_REVIEW" = "true" ] && [ "$ITERATION_COUNT" -gt 0 ]; then
@@ -10109,8 +10160,17 @@ check_human_intervention() {
 
 # Handle pause state - wait for resume
 handle_pause() {
+    # BUG-ST-007: Guard against concurrent pause handler execution
+    if [ "${_PAUSE_IN_PROGRESS:-0}" -eq 1 ]; then
+        return 0
+    fi
+    _PAUSE_IN_PROGRESS=1
+
     PAUSED=true
     local loki_dir="${TARGET_DIR:-.}/.loki"
+
+    # Save state before pausing so it persists across potential crashes
+    save_state ${RETRY_COUNT:-0} "paused" 0
 
     log_header "Execution Paused"
     echo ""
@@ -10141,6 +10201,7 @@ EOF
         if [ -f "$loki_dir/STOP" ]; then
             rm -f "$loki_dir/STOP" "$loki_dir/PAUSED.md"
             PAUSED=false
+            _PAUSE_IN_PROGRESS=0
             return 1
         fi
 
@@ -10163,6 +10224,7 @@ EOF
     rm -f "$loki_dir/PAUSED.md"
     log_info "Resuming execution..."
     PAUSED=false
+    _PAUSE_IN_PROGRESS=0
     return 0
 }
 
