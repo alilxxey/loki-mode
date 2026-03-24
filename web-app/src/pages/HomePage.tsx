@@ -26,6 +26,14 @@ const CYCLING_PROMPTS = [
   "Create an e-commerce store with Stripe...",
 ];
 
+function getGreeting(): string {
+  const hour = new Date().getHours();
+  if (hour >= 5 && hour < 12) return 'Good morning! What shall we build today?';
+  if (hour >= 12 && hour < 17) return 'Good afternoon! Ready to create something amazing?';
+  if (hour >= 17 && hour < 22) return 'Good evening! Late night coding session?';
+  return 'Burning the midnight oil? Let\'s build something cool.';
+}
+
 export default function HomePage() {
   const navigate = useNavigate();
   const [startError, setStartError] = useState<string | null>(null);
@@ -226,6 +234,7 @@ export default function HomePage() {
           <div className="flex flex-col items-center">
             {/* Hero section */}
             <div className="text-center mt-12 mb-10">
+              <p className="text-sm text-primary font-medium mb-2">{getGreeting()}</p>
               <h2 className="font-heading text-h1 text-[#36342E]">
                 Describe it. Build it. Ship it.
               </h2>
