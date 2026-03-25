@@ -2605,6 +2605,8 @@ def _cleanup_chat_tasks() -> None:
 @app.post("/api/session/start")
 async def start_session(req: StartRequest) -> JSONResponse:
     """Start a new loki session with the given PRD."""
+    logger.info("START_SESSION called: provider=%s, projectDir=%s, mode=%s, prd_len=%d",
+                req.provider, req.projectDir, req.mode, len(req.prd))
     if len(req.prd.encode()) > _MAX_PRD_BYTES:
         return JSONResponse(status_code=400, content={"error": "PRD exceeds 1 MB limit"})
 
@@ -2687,6 +2689,8 @@ async def start_session(req: StartRequest) -> JSONResponse:
                 status_code=500,
                 content={"error": f"Failed to start session: {e}"},
             )
+
+        logger.info("START_SESSION: process spawned pid=%d, cmd=%s", proc.pid, cmd)
 
         # Update session state
         session.reset()
@@ -2878,8 +2882,11 @@ async def get_status() -> JSONResponse:
     # Check if process is still alive (read-only -- do not mutate session.running
     # here; that is handled by _read_process_output under the lock)
     is_running = session.running
+    poll_result = session.process.poll() if session.process else None
     if session.process and is_running:
-        if session.process.poll() is not None:
+        if poll_result is not None:
+            logger.info("STATUS: process pid=%d exited with code=%s, session.running=%s, elapsed=%.1fs",
+                        session.process.pid, poll_result, session.running, time.time() - session.start_time)
             # BUG-RACE-001: The process has exited, but if the session was
             # started very recently (within 5 seconds), report "running" with
             # a "starting" phase so the UI does not flash "stopped" before the
