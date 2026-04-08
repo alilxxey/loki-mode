@@ -3595,8 +3595,12 @@ except: pass
     prd_escaped=$(printf '%s' "${prd:-Codebase Analysis}" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g')
 
     # Build enriched task JSON with pending task context
-    local task_json
-    if [[ -n "$next_task_context" ]]; then
+    # NOTE: Must initialize to empty string. Under `set -u` (line 152), declaring
+    # `local task_json` without a value leaves it unset, and when the `if` below
+    # is false (e.g. iteration 2+ with empty pending queue), the `-z` check on
+    # line 3626 crashes with "unbound variable".
+    local task_json=""
+    if [[ -n "${next_task_context:-}" ]]; then
         task_json=$(python3 -c "
 import json, sys
 ctx = json.loads('''$next_task_context''')
@@ -3619,11 +3623,11 @@ if ctx.get('source'):
 if ctx.get('project'):
     task['project'] = ctx['project']
 print(json.dumps(task, indent=2))
-" 2>/dev/null)
+" 2>/dev/null) || task_json=""
     fi
 
     # Fallback to basic task JSON if enrichment failed
-    if [[ -z "$task_json" ]]; then
+    if [[ -z "${task_json:-}" ]]; then
         task_json=$(cat <<EOF
 {
   "id": "$task_id",

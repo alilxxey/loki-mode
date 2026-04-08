@@ -8,6 +8,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOKI="$SCRIPT_DIR/../autonomy/loki"
+RUN_SH="$SCRIPT_DIR/../autonomy/run.sh"
 VERSION_FILE="$SCRIPT_DIR/../VERSION"
 
 PASS=0
@@ -81,6 +82,22 @@ test_source_absent() {
         log_fail "$desc" "Pattern should NOT be in source: $pattern"
     else
         log_pass "$desc"
+    fi
+    return 0
+}
+
+# Grep an arbitrary source file for a pattern (for fixes in run.sh etc.)
+test_source_in() {
+    local file="$1"
+    local desc="$2"
+    local pattern="$3"
+
+    ((TOTAL++))
+
+    if grep -qE "$pattern" "$file"; then
+        log_pass "$desc"
+    else
+        log_fail "$desc" "Pattern not found in $(basename "$file"): $pattern"
     fi
     return 0
 }
@@ -350,13 +367,40 @@ test_source "BUG-GH-011: gh status has space before version" \
     'installed \$\(gh --version'
 
 # -------------------------------------------
+# BUG-RUN-003: track_iteration_start crashes with unbound variable
+# Under `set -uo pipefail`, `local task_json` (uninitialized) becomes unset.
+# When the pending queue is empty (e.g. iteration 2+), next_task_context is
+# empty, the enrichment `if` block is skipped, and the subsequent `[[ -z ]]`
+# check on $task_json triggers "unbound variable" and kills the run.
+# Fix: initialize `local task_json=""` and use `${task_json:-}` on read.
+# -------------------------------------------
+test_source_in "$RUN_SH" \
+    "BUG-RUN-003: task_json initialized to empty string in track_iteration_start" \
+    '^[[:space:]]+local task_json=""'
+
+test_source_in "$RUN_SH" \
+    "BUG-RUN-003: task_json fallback read uses defensive guard" \
+    '\[\[ -z "\$\{task_json:-\}" \]\]'
+
+test_source_in "$RUN_SH" \
+    "BUG-RUN-003: next_task_context read uses defensive guard" \
+    '\[\[ -n "\$\{next_task_context:-\}" \]\]'
+
+# -------------------------------------------
 # Syntax validation
 # -------------------------------------------
 ((TOTAL++))
 if bash -n "$LOKI" 2>/dev/null; then
-    log_pass "bash -n syntax validation passes"
+    log_pass "bash -n syntax validation passes (loki)"
 else
-    log_fail "bash -n syntax validation" "script has syntax errors"
+    log_fail "bash -n syntax validation (loki)" "script has syntax errors"
+fi
+
+((TOTAL++))
+if bash -n "$RUN_SH" 2>/dev/null; then
+    log_pass "bash -n syntax validation passes (run.sh)"
+else
+    log_fail "bash -n syntax validation (run.sh)" "script has syntax errors"
 fi
 
 # -------------------------------------------
